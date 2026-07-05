@@ -222,7 +222,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add bucket/leanstack.json
           git diff --cached --quiet || git commit -m "scoop manifest: leanstack ${VERSION}"
-          git push origin HEAD:main
+          git push origin HEAD:master
 
   update-winget:
     name: Update Winget
