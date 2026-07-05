@@ -19,8 +19,8 @@ supports them:
 |---|---|---|
 | **lean-ctx** | tool I/O *within* a session — reads, shell output, search, up to 99% | [yvgude/lean-ctx](https://github.com/yvgude/lean-ctx) |
 | **engram** | knowledge *across* sessions — decisions, facts, preferences that survive a session ending | [Gentleman-Programming/engram](https://github.com/Gentleman-Programming/engram) |
-| **Caveman** (Claude Code only) | conversation verbosity, ~75% | companion plugin |
-| **Ponytail** (Claude Code only) | code-writing over-engineering, 47-77% on code tasks | companion plugin |
+| **Caveman** (Claude Code only) | conversation verbosity, ~65% | companion plugin |
+| **Ponytail** (Claude Code only) | code-writing over-engineering | companion plugin |
 
 lean-ctx and engram aren't substitutes for each other — one saves tokens inside a
 session, the other saves the re-explaining tax across sessions. Neither has a
@@ -28,6 +28,36 @@ credible replacement for the other's job.
 
 Every host gets one of three tiers, matched to what that host actually supports —
 no auto-install machinery built against an unverified surface.
+
+## Metrics
+
+Numbers below are each project's own published, reproducible benchmarks — attributed,
+not blended into a fake combined total, and not accepted on faith. Where a claim had no
+supporting evidence in its own repo, it's flagged instead of repeated.
+
+| Tool | Published claim | Methodology | Confidence |
+|---|---|---|---|
+| lean-ctx | 98.1% compression (`map` mode), 96.7% (`signatures`), ~99.99% cached re-read | CI-gated, reproducible via `lean-ctx benchmark report .`, measured on a 50-file repo with the GPT-4o tokenizer | High — real, reproducible, methodology named |
+| Caveman | 65% avg output-token reduction (range 22–87%, 10 prompts) | Committed in `benchmarks/`/`evals/` — and its own docs flag the failure mode: ~1–1.5k input-token overhead per turn can make it net-negative on already-terse workloads (`docs/HONEST-NUMBERS.md`) | High — reproducible, unusually transparent about limits |
+| Ponytail | ~54% less code (94% ceiling on best task), ~20% cheaper, ~27% faster, 100% safe | 12 real feature tasks on a FastAPI+React repo, Haiku 4.5, n=4 — self-corrected an earlier overgeneralized single-shot figure | High — reproducible, self-corrected once already |
+| engram | "95.8% accuracy on LongMemEval-S — #1 globally" | **Not citing this.** No benchmark directory, results file, or harness exists anywhere in the repo, despite being listed as a shipped feature. | Unverifiable — flagged, not repeated |
+
+### Real usage, one live project
+
+Not a demo — pulled live from the maintainer's own project while building this repo,
+for a sense of scale. Not a controlled benchmark; one data point, your mileage varies.
+
+```
+lean-ctx   34.2M tokens saved   92% compression   $88.45 saved   (lifetime; lean-ctx gain)
+caveman    1.16M tokens saved (~65%)                              (single session; caveman-stats hook)
+ponytail   23 `ponytail:` shortcut markers logged, no token figure (ponytail doesn't measure per-repo savings)
+engram     2 sessions, 11 observations tracked, across 2 projects  (engram stats)
+```
+
+Check your own: `lean-ctx gain` · `/caveman-stats` (Claude Code) · `ponytail-debt` skill ·
+`engram stats`. Don't trust this table blindly either — re-run those commands yourself.
+
+---
 
 ## Tier 1 — live plugin (marketplace-installable, real hooks)
 
