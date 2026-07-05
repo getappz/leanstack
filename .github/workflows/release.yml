@@ -124,6 +124,7 @@ jobs:
 
           git clone "https://x-access-token:${HOMEBREW_TOKEN}@github.com/getappz/homebrew-leanstack.git"
           cd homebrew-leanstack
+          mkdir -p Formula
 
           cat > Formula/leanstack.rb <<EOF
           class Leanstack < Formula
