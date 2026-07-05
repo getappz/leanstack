@@ -110,3 +110,93 @@ fn wire_cursor() {
         Err(e) => println!("  fail  writing .cursor/hooks.json: {e}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::test_support::{with_temp_cwd, with_temp_home};
+
+    #[test]
+    fn wire_claude_code_writes_hooks_to_fresh_settings() {
+        with_temp_home(|| {
+            wire_claude_code();
+            let content = fs::read_to_string(home().join(".claude").join("settings.json")).unwrap();
+            assert!(content.contains("leanstack"));
+            assert!(content.contains("SessionStart"));
+            assert!(content.contains("UserPromptSubmit"));
+        });
+    }
+
+    #[test]
+    fn wire_claude_code_is_idempotent() {
+        with_temp_home(|| {
+            let path = home().join(".claude").join("settings.json");
+            wire_claude_code();
+            let first = fs::read_to_string(&path).unwrap();
+            wire_claude_code();
+            let second = fs::read_to_string(&path).unwrap();
+            assert_eq!(first, second, "second run should not duplicate hooks");
+        });
+    }
+
+    #[test]
+    fn wire_claude_code_preserves_existing_unrelated_settings() {
+        with_temp_home(|| {
+            let path = home().join(".claude").join("settings.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, r#"{"theme": "dark", "otherSetting": true}"#).unwrap();
+            wire_claude_code();
+            let content = fs::read_to_string(&path).unwrap();
+            assert!(content.contains("dark"));
+            assert!(content.contains("leanstack"));
+        });
+    }
+
+    #[test]
+    fn wire_claude_code_recovers_from_corrupt_settings_file() {
+        with_temp_home(|| {
+            let path = home().join(".claude").join("settings.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "not valid json{{{").unwrap();
+            wire_claude_code();
+            let content = fs::read_to_string(&path).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert!(parsed.is_object());
+            assert!(content.contains("leanstack"));
+        });
+    }
+
+    #[test]
+    fn wire_cursor_writes_fresh_hooks_json() {
+        with_temp_cwd(|| {
+            wire_cursor();
+            let content = fs::read_to_string(cwd().join(".cursor").join("hooks.json")).unwrap();
+            assert!(content.contains("leanstack"));
+            assert!(content.contains("sessionStart"));
+        });
+    }
+
+    #[test]
+    fn wire_cursor_skips_when_already_wired() {
+        with_temp_cwd(|| {
+            let path = cwd().join(".cursor").join("hooks.json");
+            wire_cursor();
+            let first = fs::read_to_string(&path).unwrap();
+            wire_cursor();
+            let second = fs::read_to_string(&path).unwrap();
+            assert_eq!(first, second);
+        });
+    }
+
+    #[test]
+    fn wire_cursor_does_not_clobber_foreign_hooks_file() {
+        with_temp_cwd(|| {
+            let path = cwd().join(".cursor").join("hooks.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, r#"{"version": 1, "hooks": {}}"#).unwrap();
+            wire_cursor();
+            let content = fs::read_to_string(&path).unwrap();
+            assert!(!content.contains("leanstack"));
+        });
+    }
+}

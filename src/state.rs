@@ -36,3 +36,33 @@ pub fn save(state: &State) {
         let _ = fs::write(state_path(), json + "\n");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::test_support::with_temp_home;
+
+    #[test]
+    fn load_defaults_to_active_when_no_state_file() {
+        with_temp_home(|| {
+            assert!(load().active);
+        });
+    }
+
+    #[test]
+    fn save_then_load_roundtrips() {
+        with_temp_home(|| {
+            save(&State { active: false });
+            assert!(!load().active);
+        });
+    }
+
+    #[test]
+    fn load_falls_back_to_default_on_corrupt_file() {
+        with_temp_home(|| {
+            fs::create_dir_all(state_dir()).unwrap();
+            fs::write(state_path(), "not json").unwrap();
+            assert!(load().active);
+        });
+    }
+}

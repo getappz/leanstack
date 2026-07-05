@@ -43,12 +43,8 @@ pub fn session_start(agent: &str) {
     println!("{}", lines.join("\n"));
 }
 
-pub fn prompt_submit(agent: &str) {
-    let mut input = String::new();
-    if std::io::stdin().read_to_string(&mut input).is_err() {
-        return;
-    }
-    let prompt: String = serde_json::from_str::<serde_json::Value>(&input)
+fn extract_prompt(input: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(input)
         .ok()
         .and_then(|v| {
             v.get("prompt")
@@ -57,7 +53,15 @@ pub fn prompt_submit(agent: &str) {
                 .and_then(|p| p.as_str())
                 .map(str::to_lowercase)
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+pub fn prompt_submit(agent: &str) {
+    let mut input = String::new();
+    if std::io::stdin().read_to_string(&mut input).is_err() {
+        return;
+    }
+    let prompt = extract_prompt(&input);
     let prompt = prompt.trim();
 
     let mut s = state::load();
@@ -96,4 +100,39 @@ pub fn prompt_submit(agent: &str) {
         }
     });
     println!("{out}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_prompt_reads_prompt_key() {
+        assert_eq!(extract_prompt(r#"{"prompt": "Hello World"}"#), "hello world");
+    }
+
+    #[test]
+    fn extract_prompt_falls_back_to_text_key() {
+        assert_eq!(extract_prompt(r#"{"text": "Foo"}"#), "foo");
+    }
+
+    #[test]
+    fn extract_prompt_falls_back_to_message_key() {
+        assert_eq!(extract_prompt(r#"{"message": "Bar"}"#), "bar");
+    }
+
+    #[test]
+    fn extract_prompt_prefers_prompt_over_text_and_message() {
+        assert_eq!(extract_prompt(r#"{"prompt": "A", "text": "B", "message": "C"}"#), "a");
+    }
+
+    #[test]
+    fn extract_prompt_returns_empty_on_invalid_json() {
+        assert_eq!(extract_prompt("not json"), "");
+    }
+
+    #[test]
+    fn extract_prompt_returns_empty_when_no_known_key() {
+        assert_eq!(extract_prompt(r#"{"other": "value"}"#), "");
+    }
 }
