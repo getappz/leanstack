@@ -13,26 +13,25 @@
 
 ## What this is
 
-A fork of [espresso](https://github.com/mirkobozzetto/espresso) with
-[lean-ctx](https://github.com/yvgude/lean-ctx) swapped in as the context-compression
-backbone, replacing the two pieces that overlap it (RTK's CLI-output compression and
-GitNexus's knowledge-graph code lookup — lean-ctx's `ctx_shell` and `ctx_compose`/
-`ctx_callgraph` already cover both).
+A Claude Code plugin built around [lean-ctx](https://github.com/yvgude/lean-ctx) as the
+context-compression backbone (95+ shell-output compression patterns, cached reads,
+tree-sitter-backed code search and callgraphs), plus the two companion layers that
+compress a *different* axis and so don't overlap it:
 
 | What gets configured | Savings | How |
 |---|---|---|
-| **lean-ctx** | up to 99% on tool I/O | MCP server + `ctx_*` tool rules (context compression, code search, callgraphs) |
+| **lean-ctx** | up to 99% on tool I/O | MCP server + `ctx_*` tool usage rules |
 | **Global rules** | context savings | `~/.claude/rules/` — Exa search, clean git, lean-ctx usage |
 | **Caveman ultra** | ~75% | Conversation compression (if Caveman plugin installed) |
 | **Ponytail** | 47-77% on code tasks | YAGNI ladder — stdlib/native first, no speculative abstraction |
 
-**Detection-first**: checks what's already configured and skips it. Never overwrites
-existing rules or config.
+**Detection-first**: a component registry (`src/hooks/components.js`) checks what's
+already configured and skips it. Never overwrites existing rules or config.
 
 **Consent-gated installs**: the first session only *lists* what's missing and the exact
-command each would run. Nothing is installed until you type `/leanstack confirm`. Static
-rule files (which just add usage guidance, not packages) are the one exception — those
-write on first run same as espresso's always did, since they aren't installing anything.
+command each would run. Nothing that installs a package or plugin runs until you type
+`/leanstack confirm`. Rule files are the one exception — those are just usage guidance,
+not installs, so they write on first run.
 
 ---
 
@@ -49,6 +48,23 @@ Restart Claude Code. First session prints what's missing and asks for
 
 ---
 
+## Architecture
+
+```
+src/hooks/
+├── state.js          # single JSON state blob (~/.claude/leanstack/state.json)
+├── components.js      # registry: each entry knows how to check + fix itself
+├── session-start.js   # SessionStart hook — runs non-consent components,
+│                       # lists consent-gated ones if not yet confirmed
+└── prompt-submit.js    # UserPromptSubmit hook — /leanstack confirm|on|off,
+                         # reinforces rules every turn
+```
+
+Adding a new managed component means adding one entry to `components.js` — neither
+hook hardcodes per-tool logic.
+
+---
+
 ## What Gets Created
 
 ```
@@ -59,24 +75,10 @@ Restart Claude Code. First session prints what's missing and asks for
 
 ~/.config/caveman/config.json   # {"defaultMode": "ultra"} (if Caveman found)
 ~/.config/ponytail/config.json  # {"defaultMode": "ultra"}
-~/.claude/.leanstack-rules-done       # rules written marker
-~/.claude/.leanstack-confirmed        # install-confirmed marker
-~/.claude/.leanstack-active           # mode flag
+~/.claude/leanstack/state.json  # active/confirmed state
 ```
 
 Nothing is created if it already exists.
-
----
-
-## How It Works
-
-Two hooks:
-
-1. **SessionStart** — writes rule files (if missing), lists any pending package/plugin
-   installs and how to confirm them, injects a short reminder into context.
-2. **UserPromptSubmit** — handles `/leanstack confirm` (runs the actual installs),
-   `/leanstack off`/`on`, and reinforces the lean-ctx/Exa/git rules every turn so they
-   don't drift mid-session.
 
 ---
 
@@ -88,8 +90,8 @@ Two hooks:
 
 ```bash
 rm ~/.claude/rules/exa.md ~/.claude/rules/git.md ~/.claude/rules/lean-ctx.md
-rm ~/.claude/.leanstack-active ~/.claude/.leanstack-rules-done ~/.claude/.leanstack-confirmed
-rm ~/.config/ponytail/config.json  # ~/.config/caveman/config.json if you want that reset too
+rm -rf ~/.claude/leanstack
+rm ~/.config/ponytail/config.json  # ~/.config/caveman/config.json too if you want that reset
 ```
 
 Ponytail/Caveman plugins themselves stay installed (uninstall separately if wanted).
@@ -98,6 +100,6 @@ Ponytail/Caveman plugins themselves stay installed (uninstall separately if want
 
 <div align="center">
 
-MIT License — forked from [espresso](https://github.com/mirkobozzetto/espresso) by Mirko Bozzetto
+MIT License
 
 </div>
