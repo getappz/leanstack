@@ -9,11 +9,14 @@ const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
 const RULE_TEXT = require('../src/rule-text.js');
+const engramInstall = require('../src/engram-install.js');
 
 const HOME = os.homedir();
 const CWD = process.cwd();
 const LEANCTX_MCP_ENTRY = { command: 'lean-ctx', args: ['serve'] };
+const ENGRAM_MCP_ENTRY = { command: 'engram', args: ['mcp', '--tools=agent'] };
 const RULES_BLOCK = Object.values(RULE_TEXT).join('\n\n') + '\n';
+const ENGRAM_LOG = path.join(HOME, '.leanstack', 'engram-install.log');
 
 function which(cmd) {
   try {
@@ -46,6 +49,26 @@ function leanctxNote() {
     : 'lean-ctx not installed — skipped MCP registration. Run: npm install -g lean-ctx-bin && lean-ctx onboard';
 }
 
+// engram has a native `engram setup <name>` for some tools; for the rest we
+// register its MCP command manually (`engram mcp`, stdio, same as the tools
+// engram's own docs mark as auto-launched). Auto-installs engram itself
+// (go install/brew) if missing, same as engram-install.js does for the hook path.
+function engramSetup(nativeName, mcpConfigPath) {
+  if (engramInstall.engramInstalled()) {
+    if (nativeName) {
+      try {
+        execSync(`engram setup ${nativeName}`, { stdio: 'pipe' });
+        return `engram setup ${nativeName} done`;
+      } catch (e) {
+        return `engram setup ${nativeName} failed: ${e.message.split('\n')[0]}`;
+      }
+    }
+    mergeJson(mcpConfigPath, { mcpServers: { engram: ENGRAM_MCP_ENTRY } });
+    return path.relative(HOME, mcpConfigPath) + ' (engram registered)';
+  }
+  return engramInstall.startInstall(nativeName || 'codex', ENGRAM_LOG).message;
+}
+
 const TOOLS = {
   cursor: {
     detect: () => fs.existsSync(path.join(HOME, '.cursor')) || which('cursor'),
@@ -56,9 +79,10 @@ const TOOLS = {
       for (const f of ['state.js', 'components.js', 'session-start.js', 'prompt-submit.js']) {
         fs.copyFileSync(path.join(__dirname, '..', 'src', 'hooks', f), path.join(hooksDest, f));
       }
-      // components.js does require('../rule-text.js') relative to .cursor/leanstack/,
-      // so the copy lands one level up, at .cursor/rule-text.js.
+      // components.js does require('../rule-text.js') and require('../engram-install.js')
+      // relative to .cursor/leanstack/, so both copies land one level up.
       fs.copyFileSync(path.join(__dirname, '..', 'src', 'rule-text.js'), path.join(CWD, '.cursor', 'rule-text.js'));
+      fs.copyFileSync(path.join(__dirname, '..', 'src', 'engram-install.js'), path.join(CWD, '.cursor', 'engram-install.js'));
       out.push('.cursor/leanstack/*.js (hook scripts copied in)');
 
       const hooksJsonPath = path.join(CWD, '.cursor', 'hooks.json');
@@ -77,6 +101,7 @@ const TOOLS = {
         mergeJson(path.join(HOME, '.cursor', 'mcp.json'), { mcpServers: { 'lean-ctx': LEANCTX_MCP_ENTRY } });
         out.push('~/.cursor/mcp.json (lean-ctx registered)');
       }
+      out.push(engramSetup('cursor', path.join(HOME, '.cursor', 'mcp.json')));
       return out;
     },
   },
@@ -90,6 +115,7 @@ const TOOLS = {
         mergeJson(path.join(HOME, '.codeium', 'windsurf', 'mcp_config.json'), { mcpServers: { 'lean-ctx': LEANCTX_MCP_ENTRY } });
         out.push('windsurf mcp_config.json (lean-ctx registered)');
       }
+      out.push(engramSetup('windsurf'));
       const wrote = writeIfAbsent(path.join(CWD, '.windsurf', 'rules', 'leanstack.md'), RULES_BLOCK);
       out.push(wrote ? '.windsurf/rules/leanstack.md' : '.windsurf/rules/leanstack.md (exists, skipped)');
       return out;
@@ -110,6 +136,7 @@ const TOOLS = {
           out.push('code --add-mcp failed (' + e.message.split('\n')[0] + ') — add manually to .vscode/mcp.json: ' + payload);
         }
       }
+      out.push(engramSetup('vscode-copilot'));
       const wrote = writeIfAbsent(path.join(CWD, '.github', 'copilot-instructions.md'), RULES_BLOCK);
       out.push(wrote ? '.github/copilot-instructions.md' : '.github/copilot-instructions.md (exists, skipped)');
       return out;
@@ -125,6 +152,9 @@ const TOOLS = {
         mergeJson(path.join(HOME, '.cline', 'mcp.json'), { mcpServers: { 'lean-ctx': LEANCTX_MCP_ENTRY } });
         out.push('~/.cline/mcp.json (lean-ctx registered)');
       }
+      // No native `engram setup cline` — register the MCP command directly,
+      // same shape engram's docs use for any other MCP client.
+      out.push(engramSetup(null, path.join(HOME, '.cline', 'mcp.json')));
       const wrote = writeIfAbsent(path.join(CWD, '.clinerules', 'leanstack.md'), RULES_BLOCK);
       out.push(wrote ? '.clinerules/leanstack.md' : '.clinerules/leanstack.md (exists, skipped)');
       return out;
@@ -139,6 +169,12 @@ const TOOLS = {
       else {
         const wrote = writeIfAbsent(path.join(CWD, '.continue', 'mcpServers', 'leanstack.json'), JSON.stringify(LEANCTX_MCP_ENTRY, null, 2) + '\n');
         out.push(wrote ? '.continue/mcpServers/leanstack.json' : '.continue/mcpServers/leanstack.json (exists, skipped)');
+      }
+      if (engramInstall.engramInstalled()) {
+        const wrote = writeIfAbsent(path.join(CWD, '.continue', 'mcpServers', 'engram.json'), JSON.stringify(ENGRAM_MCP_ENTRY, null, 2) + '\n');
+        out.push(wrote ? '.continue/mcpServers/engram.json' : '.continue/mcpServers/engram.json (exists, skipped)');
+      } else {
+        out.push(engramInstall.startInstall('codex', ENGRAM_LOG).message);
       }
       return out;
     },

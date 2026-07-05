@@ -11,14 +11,16 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawn } = require('child_process');
+const { execSync } = require('child_process');
 const { STATE_DIR } = require('./state.js');
 const RULE_TEXT = require('../rule-text.js');
+const engramInstall = require('../engram-install.js');
 
 const HOME = os.homedir();
 const CAVEMAN_CONFIG = path.join(HOME, '.config', 'caveman', 'config.json');
 const PONYTAIL_CONFIG = path.join(HOME, '.config', 'ponytail', 'config.json');
 const LEANCTX_LOG = path.join(STATE_DIR, 'leanctx-install.log');
+const ENGRAM_LOG = path.join(STATE_DIR, 'engram-install.log');
 
 function enabledPlugins() {
   // Only meaningful on Claude Code — Codex/Cursor don't have this settings
@@ -50,12 +52,13 @@ function ruleTargets(host) {
       { path: path.join(dir, 'exa.md'), content: RULE_TEXT.exa },
       { path: path.join(dir, 'git.md'), content: RULE_TEXT.git },
       { path: path.join(dir, 'lean-ctx.md'), content: RULE_TEXT.leanctx },
+      { path: path.join(dir, 'engram.md'), content: RULE_TEXT.engram },
     ];
   }
   if (host === 'cursor') {
     return [{
       path: path.join(process.cwd(), '.cursor', 'rules', 'leanstack.mdc'),
-      content: '---\nalwaysApply: true\n---\n\n' + [RULE_TEXT.exa, RULE_TEXT.git, RULE_TEXT.leanctx].join('\n\n'),
+      content: '---\nalwaysApply: true\n---\n\n' + [RULE_TEXT.exa, RULE_TEXT.git, RULE_TEXT.leanctx, RULE_TEXT.engram].join('\n\n'),
     }];
   }
   if (host === 'codex') {
@@ -63,7 +66,7 @@ function ruleTargets(host) {
     // project doesn't already have one — never clobber existing content.
     return [{
       path: path.join(process.cwd(), 'AGENTS.md'),
-      content: '# Rules (leanstack)\n\n' + [RULE_TEXT.exa, RULE_TEXT.git, RULE_TEXT.leanctx].join('\n\n') + '\n',
+      content: '# Rules (leanstack)\n\n' + [RULE_TEXT.exa, RULE_TEXT.git, RULE_TEXT.leanctx, RULE_TEXT.engram].join('\n\n') + '\n',
     }];
   }
   return [];
@@ -104,11 +107,39 @@ module.exports = function getComponents(host) {
         fs.mkdirSync(path.dirname(LEANCTX_LOG), { recursive: true });
         const cmd = 'npm install -g lean-ctx-bin && lean-ctx onboard';
         const fd = fs.openSync(LEANCTX_LOG, 'a');
+        const { spawn } = require('child_process');
         const child = process.platform === 'win32'
           ? spawn('cmd', ['/c', cmd], { detached: true, stdio: ['ignore', fd, fd] })
           : spawn('sh', ['-c', cmd], { detached: true, stdio: ['ignore', fd, fd] });
         child.unref();
         return 'lean-ctx install started in background — ready next session (log: ' + LEANCTX_LOG + ')';
+      },
+    },
+    {
+      id: 'engram',
+      needsConsent: true,
+      describe: () => claudeCodeOnly
+        ? 'engram (cross-session memory) — claude plugin marketplace add Gentleman-Programming/engram && claude plugin install engram'
+        : `engram (cross-session memory) — engram setup ${host} (auto-installs engram itself first via go install/brew if missing)`,
+      check() {
+        if (claudeCodeOnly) return enabledPlugins()['engram@engram'] === true;
+        if (fs.existsSync(ENGRAM_LOG)) return true; // install/setup already triggered once
+        return engramInstall.engramInstalled();
+      },
+      apply() {
+        if (claudeCodeOnly) {
+          execSync('claude plugin marketplace add Gentleman-Programming/engram', { stdio: 'pipe' });
+          execSync('claude plugin install engram', { stdio: 'pipe' });
+          return 'engram plugin installed — restart to activate';
+        }
+        if (engramInstall.engramInstalled()) {
+          execSync(`engram setup ${host}`, { stdio: 'pipe' });
+          fs.mkdirSync(path.dirname(ENGRAM_LOG), { recursive: true });
+          fs.writeFileSync(ENGRAM_LOG, new Date().toISOString());
+          return `engram setup ${host} done`;
+        }
+        const result = engramInstall.startInstall(host, ENGRAM_LOG);
+        return result.message;
       },
     },
     // Ponytail/Caveman are Claude Code plugins installed via the `claude
