@@ -73,6 +73,9 @@ fn wire_claude_code() {
     hooks_obj.entry("UserPromptSubmit").or_insert_with(|| json!([])).as_array_mut().unwrap().push(json!({
         "hooks": [{ "type": "command", "command": format!("\"{bin}\" hook prompt-submit --agent claude-code"), "timeout": 5 }]
     }));
+    hooks_obj.entry("PreToolUse").or_insert_with(|| json!([])).as_array_mut().unwrap().push(json!({
+        "hooks": [{ "type": "command", "command": format!("\"{bin}\" hook pre-tool-use --agent claude-code"), "timeout": 5 }]
+    }));
 
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -124,6 +127,7 @@ mod tests {
             assert!(content.contains("agentflare"));
             assert!(content.contains("SessionStart"));
             assert!(content.contains("UserPromptSubmit"));
+            assert!(content.contains("PreToolUse"));
         });
     }
 

@@ -70,6 +70,10 @@ enum HookEvent {
         #[arg(long, value_enum)]
         agent: Agent,
     },
+    PreToolUse {
+        #[arg(long, value_enum)]
+        agent: Agent,
+    },
 }
 
 fn main() {
@@ -79,6 +83,7 @@ fn main() {
         Commands::Hook { event } => match event {
             HookEvent::SessionStart { agent } => hook::session_start(agent.as_str()),
             HookEvent::PromptSubmit { agent } => hook::prompt_submit(agent.as_str()),
+            HookEvent::PreToolUse { agent } => hook::pre_tool_use(agent.as_str()),
         },
     }
 }
