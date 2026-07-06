@@ -36,6 +36,7 @@ pub fn run(agent: &str) {
     match agent {
         "claude-code" => wire_claude_code(),
         "cursor" => wire_cursor(),
+        "opencode" => wire_opencode(),
         _ => {}
     }
 
@@ -111,6 +112,63 @@ fn wire_cursor() {
     match fs::write(&path, serde_json::to_string_pretty(&content).unwrap() + "\n") {
         Ok(_) => println!("  ok    .cursor/hooks.json written"),
         Err(e) => println!("  fail  writing .cursor/hooks.json: {e}"),
+    }
+}
+
+fn wire_opencode() {
+    let path = home().join(".config").join("opencode").join("opencode.jsonc");
+    let rules_dir = home().join(".config").join("opencode").join("rules");
+    let rule_files: &[&str] = &["exa.md", "git.md", "lean-ctx.md", "engram.md"];
+
+    let mut config: Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    if !config.is_object() {
+        config = json!({});
+    }
+
+    let instructions = config
+        .as_object_mut()
+        .unwrap()
+        .entry("instructions")
+        .or_insert_with(|| json!([]));
+
+    let arr = match instructions.as_array_mut() {
+        Some(a) => a,
+        None => {
+            *instructions = json!([]);
+            instructions.as_array_mut().unwrap()
+        }
+    };
+
+    let mut added = 0;
+    for &file in rule_files {
+        let rule_path = rules_dir.join(file);
+        let path_str = rule_path.to_string_lossy().replace('\\', "/");
+        let has_it = arr.iter().any(|v| {
+            v.as_str()
+                .map(|s| s.contains(file))
+                .unwrap_or(false)
+        });
+        if !has_it && rule_path.exists() {
+            arr.push(json!(path_str));
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match fs::write(&path, serde_json::to_string_pretty(&config).unwrap() + "\n") {
+            Ok(_) => println!("  ok    opencode.jsonc instructions wired ({added} rule(s))"),
+            Err(e) => println!("  fail  writing opencode.jsonc: {e}"),
+        }
+    } else if arr.is_empty() {
+        println!("  info  opencode.jsonc — no rules to wire yet (run with rules present)");
+    } else {
+        println!("  skip  opencode.jsonc (already wired)");
     }
 }
 
@@ -203,4 +261,58 @@ mod tests {
             assert!(!content.contains("agentflare"));
         });
     }
+
+    #[test]
+    fn wire_opencode_adds_instructions_to_fresh_config() {
+        with_temp_home(|| {
+            let config_path = home().join(".config").join("opencode").join("opencode.jsonc");
+            let rules_dir = home().join(".config").join("opencode").join("rules");
+            fs::create_dir_all(&rules_dir).unwrap();
+            for &f in &["exa.md", "git.md", "lean-ctx.md", "engram.md"] {
+                fs::write(rules_dir.join(f), format!("# {f}\n")).unwrap();
+            }
+
+            wire_opencode();
+            let content = fs::read_to_string(&config_path).unwrap();
+            let parsed: Value = serde_json::from_str(&content).unwrap();
+            let instructions = parsed["instructions"].as_array().unwrap();
+            assert!(instructions.len() >= 1);
+            assert!(instructions.iter().any(|v| v.as_str().unwrap().contains("exa.md")));
+        });
+    }
+
+    #[test]
+    fn wire_opencode_is_idempotent() {
+        with_temp_home(|| {
+            let config_path = home().join(".config").join("opencode").join("opencode.jsonc");
+            let rules_dir = home().join(".config").join("opencode").join("rules");
+            fs::create_dir_all(&rules_dir).unwrap();
+            fs::write(rules_dir.join("exa.md"), "# exa\n").unwrap();
+
+            wire_opencode();
+            let first = fs::read_to_string(&config_path).unwrap();
+            wire_opencode();
+            let second = fs::read_to_string(&config_path).unwrap();
+            assert_eq!(first, second, "second run should not duplicate instructions");
+        });
+    }
+
+    #[test]
+    fn wire_opencode_preserves_existing_instructions() {
+        with_temp_home(|| {
+            let config_path = home().join(".config").join("opencode").join("opencode.jsonc");
+            let rules_dir = home().join(".config").join("opencode").join("rules");
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(&config_path, r#"{"instructions": ["/some/existing/rule.md"], "mcp": {}}"#).unwrap();
+            fs::create_dir_all(&rules_dir).unwrap();
+            fs::write(rules_dir.join("exa.md"), "# exa\n").unwrap();
+
+            wire_opencode();
+            let content = fs::read_to_string(&config_path).unwrap();
+            assert!(content.contains("/some/existing/rule.md"));
+            let parsed: Value = serde_json::from_str(&content).unwrap();
+            assert!(parsed["mcp"].is_object());
+        });
+    }
+
 }

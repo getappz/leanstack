@@ -2,6 +2,7 @@
 // whichever agents this machine has run `agentflare init`/hooks for.
 use crate::paths::home;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -9,6 +10,20 @@ use std::path::PathBuf;
 pub struct State {
     #[serde(default = "default_true")]
     pub active: bool,
+    /// `agentflare agents` version-resolution cache, keyed by `Agent::as_str()`.
+    #[serde(default)]
+    pub version_cache: HashMap<String, VersionCacheEntry>,
+}
+
+/// One cached `--version` resolution for an agent's binary. Keyed on both
+/// `binary_path` and `mtime` in `agent_detect.rs` — a reinstall to a
+/// different location invalidates the cache even if it happens to share an
+/// mtime, and a rebuilt binary at the same path invalidates via mtime.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VersionCacheEntry {
+    pub binary_path: String,
+    pub mtime: u64,
+    pub version: String,
 }
 
 fn default_true() -> bool {
@@ -27,7 +42,7 @@ pub fn load() -> State {
     fs::read_to_string(state_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| State { active: true })
+        .unwrap_or_else(|| State { active: true, ..Default::default() })
 }
 
 pub fn save(state: &State) {
@@ -52,7 +67,7 @@ mod tests {
     #[test]
     fn save_then_load_roundtrips() {
         with_temp_home(|| {
-            save(&State { active: false });
+            save(&State { active: false, ..Default::default() });
             assert!(!load().active);
         });
     }
@@ -63,6 +78,46 @@ mod tests {
             fs::create_dir_all(state_dir()).unwrap();
             fs::write(state_path(), "not json").unwrap();
             assert!(load().active);
+        });
+    }
+
+    #[test]
+    fn version_cache_defaults_to_empty_when_absent_from_state_file() {
+        with_temp_home(|| {
+            assert!(load().version_cache.is_empty());
+        });
+    }
+
+    #[test]
+    fn version_cache_roundtrips_through_save_and_load() {
+        with_temp_home(|| {
+            let mut s = load();
+            s.version_cache.insert(
+                "claude-code".to_string(),
+                VersionCacheEntry {
+                    binary_path: "/usr/local/bin/claude".to_string(),
+                    mtime: 1_700_000_000,
+                    version: "1.2.3".to_string(),
+                },
+            );
+            save(&s);
+
+            let reloaded = load();
+            let entry = reloaded.version_cache.get("claude-code").unwrap();
+            assert_eq!(entry.binary_path, "/usr/local/bin/claude");
+            assert_eq!(entry.mtime, 1_700_000_000);
+            assert_eq!(entry.version, "1.2.3");
+        });
+    }
+
+    #[test]
+    fn old_state_file_without_version_cache_field_still_loads() {
+        with_temp_home(|| {
+            fs::create_dir_all(state_dir()).unwrap();
+            fs::write(state_path(), r#"{"active": false}"#).unwrap();
+            let s = load();
+            assert!(!s.active);
+            assert!(s.version_cache.is_empty());
         });
     }
 }

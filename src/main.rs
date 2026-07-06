@@ -1,3 +1,9 @@
+mod agent_registry;
+mod agent_detect;
+mod agent_install;
+mod agent_launch;
+mod agents;
+mod alias;
 mod components;
 mod coaching;
 mod cost;
@@ -9,35 +15,11 @@ mod optimize;
 mod paths;
 mod pricing;
 mod rule_text;
+mod shell;
 mod state;
 
-use clap::{Parser, Subcommand, ValueEnum};
-
-#[derive(Copy, Clone, ValueEnum, Debug)]
-#[value(rename_all = "kebab-case")]
-enum Agent {
-    ClaudeCode,
-    Codex,
-    Cursor,
-    Windsurf,
-    VscodeCopilot,
-    Cline,
-    Continue,
-}
-
-impl Agent {
-    fn as_str(self) -> &'static str {
-        match self {
-            Agent::ClaudeCode => "claude-code",
-            Agent::Codex => "codex",
-            Agent::Cursor => "cursor",
-            Agent::Windsurf => "windsurf",
-            Agent::VscodeCopilot => "vscode-copilot",
-            Agent::Cline => "cline",
-            Agent::Continue => "continue",
-        }
-    }
-}
+use agent_registry::Agent;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "agentflare", version, about = "Optimize AI CLI agents for cost and performance")]
@@ -79,6 +61,36 @@ enum Commands {
     /// Start an MCP (Model Context Protocol) server on stdio,
     /// exposing agentflare optimization state as resources and tools.
     Mcp,
+    /// Detect installed AI coding agents and show their versions.
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
+    },
+    /// Set up a shell alias (e.g. af) for agentflare with collision detection
+    /// and managed-block persistence. First free alias from the fallback chain
+    /// af → agf → afl → agentf → agentflare wins; --force bypasses.
+    Alias {
+        /// Desired alias name (default: af)
+        preferred: Option<String>,
+        /// Use exact alias even if occupied
+        #[arg(long)]
+        force: bool,
+        /// Print shell snippet without editing files
+        #[arg(long)]
+        print: bool,
+        /// Skip prompts (installer usage)
+        #[arg(long)]
+        yes: bool,
+        /// Override auto-detected shell (bash, zsh, fish, powershell)
+        #[arg(long)]
+        shell: Option<String>,
+        /// Override target profile file path
+        #[arg(long)]
+        profile: Option<String>,
+        /// Machine-readable output for scripting
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -95,6 +107,50 @@ enum CoachingAction {
     },
     /// Remove a coaching rule.
     Remove { id: String },
+}
+
+#[derive(Subcommand)]
+enum AgentsAction {
+    /// List installed AI coding agents with version and status.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Health check across all installed agents with error details.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install an agent via its package manager (npm, pip, etc.).
+    Install {
+        agent: String,
+        /// Print the install command without executing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Update an agent to the latest version.
+    Update {
+        agent: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Uninstall an agent.
+    Uninstall {
+        agent: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Launch an agent with optional model/mode and pass-through args.
+    Launch {
+        agent: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        mode: Option<String>,
+        /// Arguments passed through to the agent binary.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -137,6 +193,19 @@ fn main() {
                 eprintln!("agentflare mcp: {e}");
                 std::process::exit(1);
             }
+        }
+        Commands::Agents { action } => match action {
+            AgentsAction::List { json } => agents::cli_list(json),
+            AgentsAction::Doctor { json } => agents::cli_doctor(json),
+            AgentsAction::Install { agent, dry_run } => agents::cli_install(&agent, dry_run),
+            AgentsAction::Update { agent, dry_run } => agents::cli_update(&agent, dry_run),
+            AgentsAction::Uninstall { agent, dry_run } => agents::cli_uninstall(&agent, dry_run),
+            AgentsAction::Launch { agent, model, mode, args } => {
+                agents::cli_launch(&agent, model.as_deref(), mode.as_deref(), &args)
+            }
+        },
+        Commands::Alias { preferred, force, print, yes, shell, profile, json } => {
+            alias::run(preferred, force, print, yes, shell, profile, json)
         }
     }
 }
