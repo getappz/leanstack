@@ -71,7 +71,7 @@ fn pricing_fingerprint() -> String {
 /// forever, since they never get reindexed on their own. Detect that via a
 /// fingerprint and, on mismatch, wipe the cache tables so `sync()` rebuilds
 /// them from the JSONL source of truth with current pricing.
-fn invalidate_if_pricing_changed(conn: &Connection) {
+fn invalidate_if_pricing_changed(conn: &mut Connection) {
     let current = pricing_fingerprint();
     let stored: Option<String> = conn
         .query_row(
@@ -85,20 +85,39 @@ fn invalidate_if_pricing_changed(conn: &Connection) {
         return;
     }
 
-    let _ = conn.execute("DELETE FROM file_rollup", []);
-    let _ = conn.execute("DELETE FROM session_files", []);
-    let _ = conn.execute("DELETE FROM dedup_keys", []);
-    let _ = conn.execute(
-        "INSERT INTO meta (key, value) VALUES ('pricing_fingerprint', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![current],
-    );
+    // Atomic: a failed wipe must leave the OLD fingerprint in place (not a
+    // fresh fingerprint over a partially-wiped cache), so this check
+    // correctly retries on the next open instead of silently serving
+    // undercounted totals forever.
+    let Ok(tx) = conn.transaction() else {
+        return;
+    };
+    if tx.execute("DELETE FROM file_rollup", []).is_err() {
+        return;
+    }
+    if tx.execute("DELETE FROM session_files", []).is_err() {
+        return;
+    }
+    if tx.execute("DELETE FROM dedup_keys", []).is_err() {
+        return;
+    }
+    if tx
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('pricing_fingerprint', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![current],
+        )
+        .is_err()
+    {
+        return;
+    }
+    let _ = tx.commit();
 }
 
-fn migrate_new_connection(conn: Connection) -> Option<Connection> {
+fn migrate_new_connection(mut conn: Connection) -> Option<Connection> {
     let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     migrate(&conn).ok()?;
-    invalidate_if_pricing_changed(&conn);
+    invalidate_if_pricing_changed(&mut conn);
     Some(conn)
 }
 
@@ -727,6 +746,33 @@ mod tests {
             let conn = open_or_rebuild();
             assert_eq!(row_count(&conn, "file_rollup"), 0, "stale rollup rows must be cleared when the pricing fingerprint no longer matches");
             assert_eq!(row_count(&conn, "session_files"), 0);
+
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn matching_pricing_fingerprint_does_not_wipe_the_cache() {
+        with_temp_home(|| {
+            let dir = std::env::temp_dir().join("agentflare-test-rollup-pricing-no-op");
+            let _ = std::fs::remove_dir_all(&dir);
+            let line = r#"{"type":"assistant","timestamp":"2026-07-06T10:00:00Z","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":50}},"requestId":"r1"}"#;
+            write_session_file(&dir, "proj1", "session1.jsonl", &format!("{line}\n"));
+
+            {
+                let mut conn = open_or_rebuild();
+                sync(&mut conn, &dir);
+                assert_eq!(row_count(&conn, "file_rollup"), 1);
+            }
+
+            // Reopening with an UNCHANGED fingerprint must be a no-op: the
+            // already-indexed rollup row must survive.
+            let conn = open_or_rebuild();
+            assert_eq!(
+                row_count(&conn, "file_rollup"),
+                1,
+                "reopening with a matching pricing fingerprint must not wipe the cache"
+            );
 
             let _ = std::fs::remove_dir_all(&dir);
         });
