@@ -117,20 +117,20 @@ fn rule_targets(host: &str) -> Vec<(PathBuf, String)> {
         }
         "cursor" => {
             let content = format!("---\nalwaysApply: true\n---\n\n{}", joined());
-            vec![(cwd().join(".cursor").join("rules").join("leanstack.mdc"), content)]
+            vec![(cwd().join(".cursor").join("rules").join("agentflare.mdc"), content)]
         }
         "codex" => {
-            let content = format!("# Rules (leanstack)\n\n{}\n", joined());
+            let content = format!("# Rules (agentflare)\n\n{}\n", joined());
             vec![(cwd().join("AGENTS.md"), content)]
         }
         "windsurf" => {
-            vec![(cwd().join(".windsurf").join("rules").join("leanstack.md"), joined() + "\n")]
+            vec![(cwd().join(".windsurf").join("rules").join("agentflare.md"), joined() + "\n")]
         }
         "vscode-copilot" => {
             vec![(cwd().join(".github").join("copilot-instructions.md"), joined() + "\n")]
         }
         "cline" => {
-            vec![(cwd().join(".clinerules").join("leanstack.md"), joined() + "\n")]
+            vec![(cwd().join(".clinerules").join("agentflare.md"), joined() + "\n")]
         }
         _ => vec![], // "continue" — no dedicated rules convention found
     }
