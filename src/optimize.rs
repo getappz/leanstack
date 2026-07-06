@@ -124,6 +124,15 @@ pub fn batching_nudge(recent_calls: &[ToolCallRecord], next_tool: &str) -> Optio
     None
 }
 
+pub fn schedule_wakeup_nudge(delay_seconds: u64) -> Option<&'static str> {
+    if (271..300).contains(&delay_seconds) {
+        return Some(
+            "This delay is in the cache-miss dead zone (271-299s) — drop under 270s to stay in cache, or extend past 1200s to make the miss worth it.",
+        );
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +269,20 @@ mod tests {
     fn batching_ignores_short_history() {
         let recent = vec![ToolCallRecord { name: "Read".to_string(), ts: 1 }];
         assert!(batching_nudge(&recent, "Read").is_none());
+    }
+
+    #[test]
+    fn schedule_wakeup_nudges_dead_zone() {
+        assert!(schedule_wakeup_nudge(280).is_some());
+    }
+
+    #[test]
+    fn schedule_wakeup_silent_under_dead_zone() {
+        assert!(schedule_wakeup_nudge(200).is_none());
+    }
+
+    #[test]
+    fn schedule_wakeup_silent_over_dead_zone() {
+        assert!(schedule_wakeup_nudge(1500).is_none());
     }
 }
