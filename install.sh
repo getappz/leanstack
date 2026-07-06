@@ -1,5 +1,5 @@
 #!/bin/sh
-# install.sh — Install leanstack (download pre-built binary or build from source)
+# install.sh — Install agentflare (download pre-built binary or build from source)
 #
 # Usage:
 #   ./install.sh                # download pre-built binary if run outside the repo,
@@ -9,15 +9,15 @@
 #   ./install.sh --uninstall    # remove the installed binary
 #
 # One-liner (no Rust required):
-#   curl -fsSL https://raw.githubusercontent.com/getappz/leanstack/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/getappz/agentflare/main/install.sh | sh
 #
 # Uninstall one-liner:
-#   curl -fsSL https://raw.githubusercontent.com/getappz/leanstack/main/install.sh | sh -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/getappz/agentflare/main/install.sh | sh -s -- --uninstall
 
 set -eu
 
-REPO="getappz/leanstack"
-INSTALL_DIR="${LEANSTACK_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="getappz/agentflare"
+INSTALL_DIR="${AGENTFLARE_INSTALL_DIR:-$HOME/.local/bin}"
 # Resolve the script's directory when invoked as a file. When piped via
 # `curl ... | sh`, $0 is "sh" (or similar) — the [ -f "$0" ] guard then
 # falls back to pwd, which routes to install_download since Cargo.toml
@@ -31,7 +31,7 @@ SCRIPT_DIR="$(
   fi
 )"
 
-echo "leanstack installer"
+echo "agentflare installer"
 
 finish() {
   case ":$PATH:" in
@@ -53,9 +53,9 @@ finish() {
       ;;
   esac
   echo ""
-  echo "Done! Verify with: leanstack --version"
+  echo "Done! Verify with: agentflare --version"
   echo ""
-  echo "Next step: leanstack init --agent <claude-code|codex|cursor|windsurf|vscode-copilot|cline|continue>"
+  echo "Next step: agentflare init --agent <claude-code|codex|cursor|windsurf|vscode-copilot|cline|continue>"
 }
 
 detect_target() {
@@ -118,7 +118,7 @@ install_download() {
   fi
   echo "Latest: $latest"
 
-  asset_url="https://github.com/${REPO}/releases/download/${latest}/leanstack-${target}.tar.gz"
+  asset_url="https://github.com/${REPO}/releases/download/${latest}/agentflare-${target}.tar.gz"
   sums_url="https://github.com/${REPO}/releases/download/${latest}/SHA256SUMS"
 
   tmpdir="$(mktemp -d)"
@@ -126,35 +126,35 @@ install_download() {
   trap 'rm -rf "${tmpdir:-}"; [ -n "${tmp_bin:-}" ] && rm -f "${tmp_bin:-}" 2>/dev/null || true' EXIT
 
   echo "Downloading binary..."
-  if ! curl -fsSL "$asset_url" -o "$tmpdir/leanstack.tar.gz"; then
+  if ! curl -fsSL "$asset_url" -o "$tmpdir/agentflare.tar.gz"; then
     echo "Error: download failed. Check: https://github.com/${REPO}/releases"
     exit 1
   fi
 
   echo "Downloading checksums..."
   if curl -fsSL "$sums_url" -o "$tmpdir/SHA256SUMS" 2>/dev/null; then
-    expected="$(grep "leanstack-${target}.tar.gz" "$tmpdir/SHA256SUMS" | cut -d' ' -f1)"
+    expected="$(grep "agentflare-${target}.tar.gz" "$tmpdir/SHA256SUMS" | cut -d' ' -f1)"
     if [ -n "$expected" ]; then
-      verify_checksum "$tmpdir/leanstack.tar.gz" "$expected"
+      verify_checksum "$tmpdir/agentflare.tar.gz" "$expected"
     fi
   else
     echo "  Warning: checksums not available, skipping verification"
   fi
 
-  tar -xzf "$tmpdir/leanstack.tar.gz" -C "$tmpdir"
+  tar -xzf "$tmpdir/agentflare.tar.gz" -C "$tmpdir"
 
   mkdir -p "$INSTALL_DIR"
-  tmp_bin="$INSTALL_DIR/.leanstack.new.$$"
-  install -m755 "$tmpdir/leanstack" "$tmp_bin"
+  tmp_bin="$INSTALL_DIR/.agentflare.new.$$"
+  install -m755 "$tmpdir/agentflare" "$tmp_bin"
 
   if [ "$(uname -s)" = "Darwin" ]; then
     xattr -cr "$tmp_bin" 2>/dev/null || true
     codesign --force --sign - "$tmp_bin" 2>/dev/null || true
   fi
-  mv -f "$tmp_bin" "$INSTALL_DIR/leanstack"
+  mv -f "$tmp_bin" "$INSTALL_DIR/agentflare"
   tmp_bin=""
 
-  echo "  Installed: $INSTALL_DIR/leanstack"
+  echo "  Installed: $INSTALL_DIR/agentflare"
 
   finish
 }
@@ -170,7 +170,7 @@ install_from_source() {
 
   echo "Mode: build from source"
   echo ""
-  echo "Building leanstack (release)..."
+  echo "Building agentflare (release)..."
 
   (cd "$SCRIPT_DIR" && cargo build --release)
   target_dir=$( (cd "$SCRIPT_DIR" && cargo metadata --no-deps --format-version=1 2>/dev/null) \
@@ -178,7 +178,7 @@ install_from_source() {
       | head -1 \
       | sed -E 's/^"target_directory":"(.*)"$/\1/' \
       | sed 's/\\\\/\//g' || true)
-  binary="${target_dir:-$SCRIPT_DIR/target}/release/leanstack"
+  binary="${target_dir:-$SCRIPT_DIR/target}/release/agentflare"
 
   if [ ! -x "$binary" ]; then
     echo "Error: build failed — binary not found at $binary"
@@ -192,10 +192,10 @@ install_from_source() {
   fi
 
   mkdir -p "$INSTALL_DIR"
-  tmp_link="$INSTALL_DIR/.leanstack.link.$$"
+  tmp_link="$INSTALL_DIR/.agentflare.link.$$"
   ln -sf "$binary" "$tmp_link"
-  mv -f "$tmp_link" "$INSTALL_DIR/leanstack"
-  echo "  Linked: $INSTALL_DIR/leanstack -> $binary"
+  mv -f "$tmp_link" "$INSTALL_DIR/agentflare"
+  echo "  Linked: $INSTALL_DIR/agentflare -> $binary"
 
   finish
 }
@@ -203,15 +203,15 @@ install_from_source() {
 uninstall() {
   echo "Mode: uninstall"
   echo ""
-  for b in "$INSTALL_DIR/leanstack" "/usr/local/bin/leanstack"; do
+  for b in "$INSTALL_DIR/agentflare" "/usr/local/bin/agentflare"; do
     if [ -e "$b" ] || [ -L "$b" ]; then
       rm -f "$b" 2>/dev/null && echo "  Removed $b" || true
     fi
   done
   echo ""
-  echo "leanstack binary removed. Hooks/rules/MCP config leanstack init wrote are untouched —"
+  echo "agentflare binary removed. Hooks/rules/MCP config agentflare init wrote are untouched —"
   echo "see README.md#uninstall to remove those too."
-  echo "Verify with: command -v leanstack   # should print nothing"
+  echo "Verify with: command -v agentflare   # should print nothing"
 }
 
 case "${1:-}" in
@@ -221,13 +221,13 @@ case "${1:-}" in
   --help|-h)
     echo "Usage: $0 [--download|--build-only|--uninstall|--help]"
     echo ""
-    echo "  (no args)     Build from source if run inside a leanstack checkout, else download"
+    echo "  (no args)     Build from source if run inside a agentflare checkout, else download"
     echo "  --download    Download pre-built binary (no Rust needed)"
     echo "  --build-only  Build only, don't install"
     echo "  --uninstall   Remove the installed binary"
     echo ""
     echo "Environment:"
-    echo "  LEANSTACK_INSTALL_DIR  Custom install directory (default: ~/.local/bin)"
+    echo "  AGENTFLARE_INSTALL_DIR  Custom install directory (default: ~/.local/bin)"
     ;;
   *)
     if [ -f "$SCRIPT_DIR/Cargo.toml" ]; then

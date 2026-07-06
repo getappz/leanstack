@@ -1,5 +1,5 @@
 <#
-install.ps1 - Build leanstack locally on Windows and install it into Cargo's bin directory.
+install.ps1 - Build agentflare locally on Windows and install it into Cargo's bin directory.
 
 Building locally (rather than downloading a prebuilt .exe) means the binary
 compiled on your own machine, so there's no unsigned-binary AV heuristic to
@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 if ($Help) {
     Write-Host 'Usage: .\install.ps1 [-BuildOnly] [-Help]'
     Write-Host ''
-    Write-Host '  (no args)    Build leanstack locally and install it into Cargo''s bin directory'
+    Write-Host '  (no args)    Build agentflare locally and install it into Cargo''s bin directory'
     Write-Host '  -BuildOnly   Build only, do not install'
     Write-Host '  -Help        Show this help message'
     exit 0
@@ -37,7 +37,7 @@ function Get-CargoBinDir {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 if (-not (Test-Path (Join-Path $scriptDir 'Cargo.toml') -PathType Leaf)) {
-    throw "Cargo.toml not found next to this script — run install.ps1 from a leanstack checkout, or clone https://github.com/getappz/leanstack first."
+    throw "Cargo.toml not found next to this script — run install.ps1 from an agentflare checkout, or clone https://github.com/getappz/agentflare first."
 }
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -45,13 +45,13 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 }
 
 $cargoBinDir = Get-CargoBinDir
-$builtBinary = Join-Path $scriptDir 'target\release\leanstack.exe'
-$installedBinary = Join-Path $cargoBinDir 'leanstack.exe'
+$builtBinary = Join-Path $scriptDir 'target\release\agentflare.exe'
+$installedBinary = Join-Path $cargoBinDir 'agentflare.exe'
 
-Write-Host 'leanstack Windows installer'
+Write-Host 'agentflare Windows installer'
 Write-Host 'Mode: build from source'
 Write-Host ''
-Write-Host 'Building leanstack (release)...'
+Write-Host 'Building agentflare (release)...'
 
 Push-Location $scriptDir
 try {
@@ -74,7 +74,7 @@ if ($BuildOnly) {
 
 New-Item -ItemType Directory -Path $cargoBinDir -Force | Out-Null
 
-$tempBinary = Join-Path $cargoBinDir ('.leanstack.new.' + $PID + '.exe')
+$tempBinary = Join-Path $cargoBinDir ('.agentflare.new.' + $PID + '.exe')
 Copy-Item -Path $builtBinary -Destination $tempBinary -Force
 Move-Item -Path $tempBinary -Destination $installedBinary -Force
 
@@ -88,5 +88,5 @@ if ($pathEntries -notcontains $cargoBinDir) {
 }
 
 Write-Host ''
-Write-Host 'Done! Verify with: leanstack --version'
-Write-Host 'Next step: leanstack init --agent <claude-code|codex|cursor|windsurf|vscode-copilot|cline|continue>'
+Write-Host 'Done! Verify with: agentflare --version'
+Write-Host 'Next step: agentflare init --agent <claude-code|codex|cursor|windsurf|vscode-copilot|cline|continue>'
