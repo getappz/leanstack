@@ -33,7 +33,7 @@ pub enum InstallOutcome {
 }
 
 /// Runs synchronously (unlike the old JS's detached background spawn) since
-/// `leanstack init` is an explicit, one-shot user command — the user is
+/// `agentflare init` is an explicit, one-shot user command — the user is
 /// already waiting on it to finish, there's no session-start timeout budget
 /// to protect here.
 pub fn install_and_setup(agent: &str) -> InstallOutcome {

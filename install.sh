@@ -221,7 +221,7 @@ case "${1:-}" in
   --help|-h)
     echo "Usage: $0 [--download|--build-only|--uninstall|--help]"
     echo ""
-    echo "  (no args)     Build from source if run inside a agentflare checkout, else download"
+    echo "  (no args)     Build from source if run inside an agentflare checkout, else download"
     echo "  --download    Download pre-built binary (no Rust needed)"
     echo "  --build-only  Build only, don't install"
     echo "  --uninstall   Remove the installed binary"

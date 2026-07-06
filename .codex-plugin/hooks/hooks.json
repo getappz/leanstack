@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "leanstack hook session-start --agent codex",
+            "command": "agentflare hook session-start --agent codex",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "leanstack hook prompt-submit --agent codex",
+            "command": "agentflare hook prompt-submit --agent codex",
             "timeout": 5
           }
         ]
