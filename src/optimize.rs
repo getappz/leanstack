@@ -69,9 +69,26 @@ pub fn session_hygiene_nudge(record: &SessionRecord, now: u64) -> Option<String>
 
 const LOCATE_KEYWORDS: &[&str] = &["find ", "where is", "where's", "search for", "locate "];
 
+fn has_word_boundary_match(text: &str, keyword: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    while let Some(pos) = text[start..].find(keyword) {
+        let abs_pos = start + pos;
+        let preceded_ok = abs_pos == 0 || !bytes[abs_pos - 1].is_ascii_alphabetic();
+        if preceded_ok {
+            return true;
+        }
+        start = abs_pos + keyword.len().max(1);
+        if start > text.len() {
+            break;
+        }
+    }
+    false
+}
+
 pub fn model_routing_nudge(prompt: &str) -> Option<&'static str> {
     let lower = prompt.to_lowercase();
-    if LOCATE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    if LOCATE_KEYWORDS.iter().any(|kw| has_word_boundary_match(&lower, kw)) {
         return Some(
             "This looks like a locate/investigate task — consider a cheap-model subagent (e.g. haiku) instead of running it inline.",
         );
@@ -163,5 +180,24 @@ mod tests {
     #[test]
     fn model_routing_ignores_unrelated_prompts() {
         assert!(model_routing_nudge("refactor the payment module for clarity").is_none());
+    }
+
+    #[test]
+    fn model_routing_ignores_locate_as_substring_of_allocate_words() {
+        assert!(model_routing_nudge("let's reallocate the buffer").is_none());
+        assert!(model_routing_nudge("we need to allocate more memory").is_none());
+        assert!(model_routing_nudge("relocate the config file later").is_none());
+    }
+
+    #[test]
+    fn model_routing_ignores_where_is_as_substring_of_other_words() {
+        assert!(model_routing_nudge("documented elsewhere is fine").is_none());
+        assert!(model_routing_nudge("it works nowhere is that a problem").is_none());
+    }
+
+    #[test]
+    fn model_routing_still_flags_real_locate_and_where_is_prompts() {
+        assert!(model_routing_nudge("please locate the missing file").is_some());
+        assert!(model_routing_nudge("where is the auth check?").is_some());
     }
 }
