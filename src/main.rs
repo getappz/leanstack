@@ -63,6 +63,27 @@ enum Commands {
     },
     /// Print today's Claude Code token usage and estimated cost, by model.
     Cost,
+    /// Manage local coaching rules surfaced alongside built-in nudges.
+    Coaching {
+        #[command(subcommand)]
+        action: CoachingAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CoachingAction {
+    /// List all active coaching rules.
+    List,
+    /// Add or update a coaching rule.
+    Apply {
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        body: String,
+    },
+    /// Remove a coaching rule.
+    Remove { id: String },
 }
 
 #[derive(Subcommand)]
@@ -91,5 +112,10 @@ fn main() {
             HookEvent::PreToolUse { agent } => hook::pre_tool_use(agent.as_str()),
         },
         Commands::Cost => cost::run(),
+        Commands::Coaching { action } => match action {
+            CoachingAction::List => coaching::print_list(),
+            CoachingAction::Apply { id, title, body } => coaching::cli_apply(&id, &title, &body),
+            CoachingAction::Remove { id } => coaching::cli_remove(&id),
+        },
     }
 }
