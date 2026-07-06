@@ -7,9 +7,9 @@ use crate::optimize::Router;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        AnnotateAble, ErrorData, ListResourcesResult, PaginatedRequestParams, RawResource,
-        ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-        ServerInfo,
+        AnnotateAble, ErrorData, Implementation, ListResourcesResult, PaginatedRequestParams,
+        RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+        ServerCapabilities, ServerInfo,
     },
     schemars,
     service::{RequestContext, RoleServer},
@@ -190,6 +190,11 @@ impl ServerHandler for AgentflareMcp {
                 .enable_tools()
                 .enable_resources()
                 .build(),
+            server_info: Implementation {
+                name: env!("CARGO_PKG_NAME").into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                ..Implementation::from_build_env()
+            },
             ..Default::default()
         }
     }
@@ -220,6 +225,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_info_reports_agentflare_identity() {
+        let s = AgentflareMcp::new();
+        let info = s.get_info();
+        assert_eq!(info.server_info.name, env!("CARGO_PKG_NAME"));
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+    }
 
     #[test]
     fn routing_suggestion_returns_null_for_non_locate() {
