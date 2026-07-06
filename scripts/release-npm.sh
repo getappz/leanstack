@@ -20,6 +20,9 @@ dist_tag_from_version() {
 }
 dist_tag="$(dist_tag_from_version "$AGENTFLARE_VERSION")"
 
+# Strip leading 'v' for npm (npm versions don't allow 'v' prefix)
+AGENTFLARE_NPM_VERSION="${AGENTFLARE_VERSION#v}"
+
 # Map npm platform id → Rust target triple + archive type
 # Format: npm_os-npm_arch:rust_target:archive_ext
 platforms=(
@@ -67,7 +70,7 @@ extract_asset() {
 
 for entry in "${platforms[@]}"; do
 	IFS=":" read -r npm_plat rust_target ext <<<"$entry"
-	IFS="-" read -r os arch <<<"$(echo "$npm_plat" | tr '-' ' ')"
+	IFS="-" read -r os arch <<<"$npm_plat"
 
 	asset="agentflare-${rust_target}.${ext}"
 	archive_path="$RELEASE_DIR/$asset"
@@ -90,7 +93,7 @@ for entry in "${platforms[@]}"; do
 	cat <<EOF >"$RELEASE_DIR/npm/package.json"
 {
   "name": "$pkg_name",
-  "version": "$AGENTFLARE_VERSION",
+  "version": "$AGENTFLARE_NPM_VERSION",
   "description": "Optimize AI CLI agents for cost and performance",
   "bin": {
     "agentflare": "bin/${bin_name}"
@@ -113,11 +116,11 @@ EOF
 
 	pushd "$RELEASE_DIR/npm"
 	if [ "${DRY_RUN:-0}" == 1 ]; then
-		echo "DRY RUN: would publish $pkg_name@$AGENTFLARE_VERSION"
+		echo "DRY RUN: would publish $pkg_name@$AGENTFLARE_NPM_VERSION"
 	else
 		npm publish --access public --tag "$dist_tag" --provenance || {
-			if npm view "$pkg_name@$AGENTFLARE_VERSION" version &>/dev/null; then
-				echo "Version $AGENTFLARE_VERSION already published for $pkg_name, skipping"
+			if npm view "$pkg_name@$AGENTFLARE_NPM_VERSION" version &>/dev/null; then
+				echo "Version $AGENTFLARE_NPM_VERSION already published for $pkg_name, skipping"
 			else
 				echo "Failed to publish $pkg_name"
 				exit 1
@@ -210,7 +213,7 @@ cat <<EOF >"$RELEASE_DIR/npm/package.json"
 {
   "name": "${NPM_PREFIX}",
   "description": "Optimize AI CLI agents for cost and performance",
-  "version": "$AGENTFLARE_VERSION",
+  "version": "$AGENTFLARE_NPM_VERSION",
   "repository": {
     "type": "git",
     "url": "https://github.com/getappz/agentflare"
@@ -235,11 +238,11 @@ EOF
 
 pushd "$RELEASE_DIR/npm"
 if [ "${DRY_RUN:-0}" == 1 ]; then
-	echo "DRY RUN: would publish ${NPM_PREFIX}@$AGENTFLARE_VERSION"
+	echo "DRY RUN: would publish ${NPM_PREFIX}@$AGENTFLARE_NPM_VERSION"
 else
 	npm publish --access public --tag "$dist_tag" --provenance || {
-		if npm view "${NPM_PREFIX}@$AGENTFLARE_VERSION" version &>/dev/null; then
-			echo "Version $AGENTFLARE_VERSION already published, skipping"
+		if npm view "${NPM_PREFIX}@$AGENTFLARE_NPM_VERSION" version &>/dev/null; then
+			echo "Version $AGENTFLARE_NPM_VERSION already published, skipping"
 		else
 			echo "Failed to publish main package"
 			exit 1
@@ -248,4 +251,4 @@ else
 fi
 popd
 
-echo "npm publish complete for v$AGENTFLARE_VERSION"
+echo "npm publish complete for v$AGENTFLARE_NPM_VERSION"
