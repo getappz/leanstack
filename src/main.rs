@@ -1,6 +1,7 @@
 mod agent_registry;
 mod agent_detect;
 mod agent_install;
+mod agent_launch;
 mod agents;
 mod components;
 mod coaching;
@@ -112,6 +113,17 @@ enum AgentsAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Launch an agent with optional model/mode and pass-through args.
+    Launch {
+        agent: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        mode: Option<String>,
+        /// Arguments passed through to the agent binary.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -161,6 +173,9 @@ fn main() {
             AgentsAction::Install { agent, dry_run } => agents::cli_install(&agent, dry_run),
             AgentsAction::Update { agent, dry_run } => agents::cli_update(&agent, dry_run),
             AgentsAction::Uninstall { agent, dry_run } => agents::cli_uninstall(&agent, dry_run),
+            AgentsAction::Launch { agent, model, mode, args } => {
+                agents::cli_launch(&agent, model.as_deref(), mode.as_deref(), &args)
+            }
         },
     }
 }

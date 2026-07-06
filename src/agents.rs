@@ -3,6 +3,7 @@
 // println!/format concerns and is fully unit-testable in isolation.
 use crate::agent_detect::{self, DetectedAgent, VersionRunner};
 use crate::agent_install::{self, Outcome};
+use crate::agent_launch::{self, LaunchOutcome};
 use crate::agent_registry::{self, AgentSpec};
 use crate::state;
 use serde::Serialize;
@@ -177,6 +178,15 @@ pub fn cli_uninstall(agent: &str, dry_run: bool) {
         Outcome::Ok(msg) => println!("{msg}"),
         Outcome::Skipped(msg) => println!("skip: {msg}"),
         Outcome::Err(msg) => eprintln!("error: {msg}"),
+    }
+}
+
+pub fn cli_launch(agent: &str, model: Option<&str>, mode: Option<&str>, args: &[String]) {
+    match agent_launch::run_launch(agent_registry::REGISTRY, agent, model, mode, args) {
+        LaunchOutcome::Launched => {}
+        LaunchOutcome::NotFound(msg) => eprintln!("error: {msg}"),
+        LaunchOutcome::UnknownAgent(msg) => eprintln!("error: unknown agent: {msg}"),
+        LaunchOutcome::Extension(msg) => eprintln!("error: {msg}"),
     }
 }
 
