@@ -1,8 +1,9 @@
 name: npm-publish
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: [release]
+    types: [completed]
   workflow_dispatch:
     inputs:
       version:
@@ -15,24 +16,16 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: npm-publish-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
-
-env:
-  DRY_RUN: ${{ github.event_name == 'release' && '0' || (inputs.dry_run && '1' || '0') }}
-
 jobs:
   publish:
     if: |
-      (github.event_name == 'release' &&
-       startsWith(github.event.release.tag_name, 'v') &&
-       !github.event.release.prerelease) ||
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
+      id-token: [REDACTED:API key param:write]
     steps:
       - name: Checkout repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -41,8 +34,10 @@ jobs:
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          DRY_RUN="${DRY_RUN_INPUT:-0}"
           if [[ -n "$INPUT_VERSION" ]]; then
             if ! [[ "$INPUT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::Invalid version: $INPUT_VERSION (expected vX.Y.Z)"
@@ -53,6 +48,7 @@ jobs:
             VERSION="$(gh release view --json tagName --jq .tagName)"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           fi
+          echo "dry=${DRY_RUN}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
@@ -65,6 +61,7 @@ jobs:
         env:
           AGENTFLARE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_DIR: ${{ runner.temp }}/release
+          DRY_RUN: ${{ steps.version.outputs.dry }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
