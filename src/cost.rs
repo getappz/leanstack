@@ -257,6 +257,11 @@ pub fn run(days: Option<u32>, by_project: bool) {
     let mut rows: Vec<_> = totals.iter().collect();
     rows.sort_by(|a, b| a.0.cmp(b.0));
 
+    // Model names always fit in 32 chars, so this floor keeps the no-flags/
+    // by-model output byte-identical; project directory names can be much
+    // longer, so the column widens to fit them instead of going ragged.
+    let key_width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(32).max(32);
+
     let mut total_cost = 0.0;
     let mut total_tokens = TokenUsage::default();
     let mut any_unpriced = false;
@@ -267,7 +272,7 @@ pub fn run(days: Option<u32>, by_project: bool) {
         any_unpriced |= group.has_unpriced_usage;
 
         println!(
-            "  {:<32} in {:>9}  out {:>8}  cache-r {:>9}  cache-w {:>8}   ${:.4}",
+            "  {:<key_width$} in {:>9}  out {:>8}  cache-r {:>9}  cache-w {:>8}   ${:.4}",
             key,
             group.tokens.input_tokens,
             group.tokens.output_tokens,
