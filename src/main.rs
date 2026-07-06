@@ -3,6 +3,7 @@ mod agent_detect;
 mod agent_install;
 mod agent_launch;
 mod agents;
+mod alias;
 mod components;
 mod coaching;
 mod cost;
@@ -14,6 +15,7 @@ mod optimize;
 mod paths;
 mod pricing;
 mod rule_text;
+mod shell;
 mod state;
 
 use agent_registry::Agent;
@@ -63,6 +65,31 @@ enum Commands {
     Agents {
         #[command(subcommand)]
         action: AgentsAction,
+    },
+    /// Set up a shell alias (e.g. af) for agentflare with collision detection
+    /// and managed-block persistence. First free alias from the fallback chain
+    /// af → agf → afl → agentf → agentflare wins; --force bypasses.
+    Alias {
+        /// Desired alias name (default: af)
+        preferred: Option<String>,
+        /// Use exact alias even if occupied
+        #[arg(long)]
+        force: bool,
+        /// Print shell snippet without editing files
+        #[arg(long)]
+        print: bool,
+        /// Skip prompts (installer usage)
+        #[arg(long)]
+        yes: bool,
+        /// Override auto-detected shell (bash, zsh, fish, powershell)
+        #[arg(long)]
+        shell: Option<String>,
+        /// Override target profile file path
+        #[arg(long)]
+        profile: Option<String>,
+        /// Machine-readable output for scripting
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -177,5 +204,8 @@ fn main() {
                 agents::cli_launch(&agent, model.as_deref(), mode.as_deref(), &args)
             }
         },
+        Commands::Alias { preferred, force, print, yes, shell, profile, json } => {
+            alias::run(preferred, force, print, yes, shell, profile, json)
+        }
     }
 }
