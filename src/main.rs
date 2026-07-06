@@ -2,6 +2,7 @@ mod components;
 mod engram_install;
 mod hook;
 mod init;
+mod optimize;
 mod paths;
 mod rule_text;
 mod state;
