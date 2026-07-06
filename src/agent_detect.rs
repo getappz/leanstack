@@ -15,7 +15,7 @@ use std::time::Duration;
 // real_process_output`) must serialize against this single shared lock.
 // Two separate `Mutex` instances would not actually serialize anything.
 #[cfg(test)]
-static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Search PATH for the first name in `names` that resolves to a file.
 /// Manual walk (not the `which` crate) to avoid a new dependency — mirrors

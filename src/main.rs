@@ -1,5 +1,6 @@
 mod agent_registry;
 mod agent_detect;
+mod agents;
 mod components;
 mod coaching;
 mod cost;
@@ -56,6 +57,11 @@ enum Commands {
     /// Start an MCP (Model Context Protocol) server on stdio,
     /// exposing agentflare optimization state as resources and tools.
     Mcp,
+    /// Detect installed AI coding agents and show their versions.
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -72,6 +78,20 @@ enum CoachingAction {
     },
     /// Remove a coaching rule.
     Remove { id: String },
+}
+
+#[derive(Subcommand)]
+enum AgentsAction {
+    /// List installed AI coding agents with version and status.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Health check across all installed agents with error details.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -115,5 +135,9 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Agents { action } => match action {
+            AgentsAction::List { json } => agents::cli_list(json),
+            AgentsAction::Doctor { json } => agents::cli_doctor(json),
+        },
     }
 }
