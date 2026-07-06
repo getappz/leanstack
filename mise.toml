@@ -1,0 +1,7 @@
+[tasks.release]
+description = "Trigger release-plz to create version-bump PR, then tag + publish"
+run = "gh workflow run release-plz.yml"
+
+[tasks."release:watch"]
+description = "Trigger release-plz and watch the run"
+run = "gh workflow run release-plz.yml && gh run watch"
