@@ -161,6 +161,22 @@ fn project_name_for(path: &Path) -> String {
         .to_string()
 }
 
+/// Aggregates cost per JSONL line (i.e. per API call), using that line's own
+/// parsed model and token counts, and sums the resulting `cost_usd` into each
+/// output bucket (model or project). This is deliberate, not an oversight: it
+/// must NOT be "refactored" into summing a bucket's tokens first and pricing
+/// the aggregate once.
+///
+/// Anthropic's long-context pricing tier (see `long_context_pricing` in
+/// `data/anthropic-pricing.json`, applied via `tiered_cost()` in
+/// `src/pricing.rs`) is a per-request property: the 200k-token threshold
+/// describes a single call's context size, not a cumulative total across many
+/// separate calls in a day. Pricing each line individually — as done here —
+/// correctly mirrors that semantics. A bucket-level "sum tokens first, then
+/// price" approach would instead incorrectly apply the long-context surcharge
+/// to a model with many modest-sized calls whose tokens merely happen to sum
+/// past 200k over the course of a day, even though none of those calls
+/// individually crossed the threshold.
 fn aggregate(
     files: &[PathBuf],
     date_range: (NaiveDate, NaiveDate),
@@ -453,6 +469,52 @@ mod tests {
             "project-grouped cost ({project_cost}) must equal the sum of correctly-priced per-model costs ({expected_total}), not a single blended/unpriced rate"
         );
         assert!(project_cost > 0.0, "opus and haiku are both known, priced models — cost must be nonzero");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn aggregate_prices_each_call_by_its_own_context_size_not_the_daily_sum() {
+        // claude-sonnet-4-5-20250929 has long_context_pricing active: a 200,000
+        // input-token threshold, $3/mtok below it, $6/mtok above. Two calls of
+        // 150,000 input tokens each stay under the threshold individually, but
+        // their sum (300,000) crosses it. If aggregate() summed tokens first
+        // and priced the bucket once, the surcharge would apply to the top
+        // 100,000 tokens; pricing each line by its own call correctly avoids
+        // that, since neither call ever saw more than 150,000 tokens of context.
+        const MODEL: &str = "claude-sonnet-4-5-20250929";
+        let dir = std::env::temp_dir().join("agentflare-test-cost-aggregate-tiered-per-line");
+        let _ = std::fs::remove_dir_all(&dir);
+        let project_dir = dir.join("proj-tiered");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let line_1 = format!(
+            r#"{{"type":"assistant","timestamp":"2026-07-06T10:00:00Z","message":{{"id":"m1","model":"{MODEL}","usage":{{"input_tokens":150000,"output_tokens":0}}}},"requestId":"r1"}}"#
+        );
+        let line_2 = format!(
+            r#"{{"type":"assistant","timestamp":"2026-07-06T10:00:00Z","message":{{"id":"m2","model":"{MODEL}","usage":{{"input_tokens":150000,"output_tokens":0}}}},"requestId":"r2"}}"#
+        );
+        std::fs::write(project_dir.join("session1.jsonl"), format!("{line_1}\n{line_2}\n")).unwrap();
+
+        let files = find_session_files_under(&dir);
+        let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+        let pricing = load_pricing();
+
+        let by_model = aggregate(&files, (today, today), GroupBy::Model, &pricing);
+        let actual_cost = by_model.get(MODEL).expect("expected model entry").cost_usd;
+
+        // Hypothetical: what the cost WOULD be if both lines' tokens were
+        // summed first and priced once as a single 300,000-token call.
+        let combined_tokens = crate::pricing::TokenUsage { input_tokens: 300_000, ..Default::default() };
+        let combined_cost =
+            crate::pricing::calculate_cost(&combined_tokens, Some(MODEL), &pricing).total_usd;
+
+        assert!(
+            actual_cost < combined_cost,
+            "per-line pricing ({actual_cost}) must be cheaper than pricing the summed \
+             daily total once ({combined_cost}) — otherwise the long-context surcharge is \
+             being applied to a cumulative total instead of each call's own context size"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
