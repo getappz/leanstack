@@ -3,10 +3,16 @@
 // a minimal re-implementation of what claude-view's much larger accumulator
 // does; the pricing math it calls into (src/pricing.rs) is ported directly.
 // See /NOTICE.
-use crate::pricing::{calculate_cost, load_pricing, TokenUsage};
+use crate::pricing::TokenUsage;
 use chrono::{DateTime, Local, NaiveDate};
-use std::collections::{HashMap, HashSet};
+
+#[cfg(test)]
+use crate::pricing::{calculate_cost, load_pricing};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::collections::HashMap;
 
 fn claude_projects_dir() -> PathBuf {
     crate::paths::home().join(".claude").join("projects")
@@ -181,6 +187,7 @@ pub(crate) fn project_name_for(path: &Path) -> String {
 /// Kept `pub(crate)` after the rollup migration so `rollup`'s tests can use
 /// it as an independent, already-tested reference implementation to check
 /// query() results against — not because `run()` still calls it.
+#[cfg(test)]
 pub(crate) fn aggregate(
     files: &[PathBuf],
     date_range: (NaiveDate, NaiveDate),
