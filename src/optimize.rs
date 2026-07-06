@@ -50,6 +50,23 @@ pub fn prune_stale_sessions(state: &mut RuntimeState, now: u64) {
         .retain(|_, record| now.saturating_sub(record.start_ts) < STALE_SESSION_SECS);
 }
 
+pub const SESSION_HYGIENE_TURN_THRESHOLD: u32 = 80;
+pub const SESSION_HYGIENE_TIME_THRESHOLD_SECS: u64 = 2 * 60 * 60;
+
+pub fn session_hygiene_nudge(record: &SessionRecord, now: u64) -> Option<String> {
+    let elapsed = now.saturating_sub(record.start_ts);
+    if record.turn_count < SESSION_HYGIENE_TURN_THRESHOLD
+        && elapsed < SESSION_HYGIENE_TIME_THRESHOLD_SECS
+    {
+        return None;
+    }
+    Some(format!(
+        "This session has run {} turns over {}h — consider closing it (handoff + fresh session) before context re-reads get expensive.",
+        record.turn_count,
+        elapsed / 3600
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +118,23 @@ mod tests {
         prune_stale_sessions(&mut state, now);
         assert!(!state.sessions.contains_key("old"));
         assert!(state.sessions.contains_key("recent"));
+    }
+
+    #[test]
+    fn session_hygiene_no_nudge_below_thresholds() {
+        let record = SessionRecord { start_ts: 0, turn_count: 5, recent_tool_calls: vec![] };
+        assert!(session_hygiene_nudge(&record, 100).is_none());
+    }
+
+    #[test]
+    fn session_hygiene_nudges_past_turn_threshold() {
+        let record = SessionRecord { start_ts: 0, turn_count: 81, recent_tool_calls: vec![] };
+        assert!(session_hygiene_nudge(&record, 100).is_some());
+    }
+
+    #[test]
+    fn session_hygiene_nudges_past_time_threshold() {
+        let record = SessionRecord { start_ts: 0, turn_count: 1, recent_tool_calls: vec![] };
+        assert!(session_hygiene_nudge(&record, 2 * 60 * 60 + 1).is_some());
     }
 }
