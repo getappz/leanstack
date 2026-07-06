@@ -313,6 +313,8 @@ fn write_managed_block(
 mod tests {
     use super::*;
 
+    static ALIAS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn temp_profile(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("agentflare-test-alias-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -358,6 +360,7 @@ mod tests {
 
     #[test]
     fn write_managed_block_inserts_new_block() {
+        let _guard = ALIAS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let profile = temp_profile("test_insert.sh");
         write_managed_block(&profile, "alias af='agentflare'", None).unwrap();
         let content = std::fs::read_to_string(&profile).unwrap();
@@ -368,6 +371,7 @@ mod tests {
 
     #[test]
     fn write_managed_block_replaces_existing_block() {
+        let _guard = ALIAS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let profile = temp_profile("test_replace.sh");
         std::fs::write(
             &profile,
@@ -391,6 +395,7 @@ mod tests {
 
     #[test]
     fn write_managed_block_idempotent() {
+        let _guard = ALIAS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let profile = temp_profile("test_idempotent.sh");
         let original = "# >>> agentflare alias >>>\nalias af='agentflare'\n# <<< agentflare alias <<<\n";
         std::fs::write(&profile, original).unwrap();
@@ -409,6 +414,7 @@ mod tests {
 
     #[test]
     fn write_managed_block_preserves_content_after_block() {
+        let _guard = ALIAS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let profile = temp_profile("test_after.sh");
         std::fs::write(
             &profile,
@@ -431,6 +437,7 @@ mod tests {
 
     #[test]
     fn write_managed_block_preserves_content_before_block() {
+        let _guard = ALIAS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let profile = temp_profile("test_before.sh");
         let original = "export PATH=...\n# >>> agentflare alias >>>\nalias af='agentflare'\n# <<< agentflare alias <<<\n";
         std::fs::write(&profile, original).unwrap();
