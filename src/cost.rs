@@ -12,12 +12,12 @@ fn claude_projects_dir() -> PathBuf {
     crate::paths::home().join(".claude").join("projects")
 }
 
-struct LineUsage {
-    model: Option<String>,
-    tokens: TokenUsage,
-    message_id: Option<String>,
-    request_id: Option<String>,
-    date: Option<NaiveDate>,
+pub(crate) struct LineUsage {
+    pub(crate) model: Option<String>,
+    pub(crate) tokens: TokenUsage,
+    pub(crate) message_id: Option<String>,
+    pub(crate) request_id: Option<String>,
+    pub(crate) date: Option<NaiveDate>,
 }
 
 /// Parse one JSONL line's cost-relevant fields. Matches the shape Claude Code
@@ -25,7 +25,7 @@ struct LineUsage {
 /// top-level fallback, `requestId` + `message.id` for dedup (Claude Code
 /// writes one line per content block — thinking/text/tool_use — each
 /// carrying the full response's usage), and an RFC3339 `timestamp`.
-fn parse_line(raw: &str) -> Option<LineUsage> {
+pub(crate) fn parse_line(raw: &str) -> Option<LineUsage> {
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
     let msg = parsed.get("message");
 
@@ -87,7 +87,7 @@ fn parse_line(raw: &str) -> Option<LineUsage> {
     })
 }
 
-fn find_session_files_under(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn find_session_files_under(dir: &Path) -> Vec<PathBuf> {
     let mut files = vec![];
     let Ok(project_entries) = std::fs::read_dir(dir) else {
         return files;
@@ -114,7 +114,7 @@ fn find_session_files_under(dir: &Path) -> Vec<PathBuf> {
 /// content-block dedup Claude Code's own JSONL format needs: one API
 /// response can appear as multiple lines (one per content block), each
 /// carrying the full usage — count it once via `message.id:requestId`.
-fn should_count_line(line: &LineUsage, seen: &mut HashSet<String>) -> bool {
+pub(crate) fn should_count_line(line: &LineUsage, seen: &mut HashSet<String>) -> bool {
     let has_measurement = line.tokens.input_tokens > 0
         || line.tokens.output_tokens > 0
         || line.tokens.cache_read_tokens > 0
@@ -132,7 +132,7 @@ fn should_count_line(line: &LineUsage, seen: &mut HashSet<String>) -> bool {
     }
 }
 
-fn add_tokens(entry: &mut TokenUsage, tokens: &TokenUsage) {
+pub(crate) fn add_tokens(entry: &mut TokenUsage, tokens: &TokenUsage) {
     entry.input_tokens += tokens.input_tokens;
     entry.output_tokens += tokens.output_tokens;
     entry.cache_read_tokens += tokens.cache_read_tokens;
@@ -141,19 +141,19 @@ fn add_tokens(entry: &mut TokenUsage, tokens: &TokenUsage) {
     entry.cache_creation_1hr_tokens += tokens.cache_creation_1hr_tokens;
 }
 
-enum GroupBy {
+pub(crate) enum GroupBy {
     Model,
     Project,
 }
 
 #[derive(Default)]
-struct GroupTotals {
-    tokens: TokenUsage,
-    cost_usd: f64,
-    has_unpriced_usage: bool,
+pub(crate) struct GroupTotals {
+    pub(crate) tokens: TokenUsage,
+    pub(crate) cost_usd: f64,
+    pub(crate) has_unpriced_usage: bool,
 }
 
-fn project_name_for(path: &Path) -> String {
+pub(crate) fn project_name_for(path: &Path) -> String {
     path.parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
@@ -177,7 +177,11 @@ fn project_name_for(path: &Path) -> String {
 /// to a model with many modest-sized calls whose tokens merely happen to sum
 /// past 200k over the course of a day, even though none of those calls
 /// individually crossed the threshold.
-fn aggregate(
+///
+/// Kept `pub(crate)` after the rollup migration so `rollup`'s tests can use
+/// it as an independent, already-tested reference implementation to check
+/// query() results against — not because `run()` still calls it.
+pub(crate) fn aggregate(
     files: &[PathBuf],
     date_range: (NaiveDate, NaiveDate),
     group_by: GroupBy,
