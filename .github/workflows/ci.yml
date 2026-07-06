@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  no-stale-brand:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check for leftover 'leanstack' references
+        run: |
+          if git grep -il leanstack -- . ':!docs' ':!.github/workflows/ci.yml' | grep -q .; then
+            echo "Found stale 'leanstack' references (docs/ is exempt as historical record):"
+            git grep -il leanstack -- . ':!docs' ':!.github/workflows/ci.yml'
+            exit 1
+          fi
+
   build:
     strategy:
       matrix:
