@@ -90,23 +90,11 @@ impl AgentflareMcp {
     }
 }
 
-#[tool_handler]
-impl ServerHandler for AgentflareMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .build(),
-            ..Default::default()
-        }
-    }
-
-    async fn list_resources(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, ErrorData> {
+impl AgentflareMcp {
+    /// Pure logic backing [`ServerHandler::list_resources`]; kept as a plain
+    /// sync method so it can be unit-tested without constructing a
+    /// `RequestContext<RoleServer>`.
+    fn list_resources_sync(&self) -> ListResourcesResult {
         let runtime = optimize::load_runtime();
         let sessions_resource = RawResource {
             description: Some(format!("{} tracked sessions", runtime.sessions.len())),
@@ -118,18 +106,16 @@ impl ServerHandler for AgentflareMcp {
             mime_type: Some("application/json".to_string()),
             ..RawResource::new("agentflare://nudges", "Optimization nudges")
         };
-        Ok(ListResourcesResult::with_all_items(vec![
+        ListResourcesResult::with_all_items(vec![
             sessions_resource.no_annotation(),
             nudges_resource.no_annotation(),
-        ]))
+        ])
     }
 
-    async fn read_resource(
-        &self,
-        request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
-        let uri = request.uri.as_str();
+    /// Pure logic backing [`ServerHandler::read_resource`]; kept as a plain
+    /// sync method so it can be unit-tested without constructing a
+    /// `RequestContext<RoleServer>`.
+    fn read_resource_sync(&self, uri: &str) -> Result<ReadResourceResult, ErrorData> {
         let text = match uri {
             "agentflare://sessions" => {
                 let runtime = optimize::load_runtime();
@@ -196,6 +182,35 @@ impl ServerHandler for AgentflareMcp {
     }
 }
 
+#[tool_handler]
+impl ServerHandler for AgentflareMcp {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+            ..Default::default()
+        }
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(self.list_resources_sync())
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        self.read_resource_sync(request.uri.as_str())
+    }
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let service = AgentflareMcp::new().serve(stdio()).await?;
     service.waiting().await?;
@@ -244,5 +259,48 @@ mod tests {
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    // NOTE: `list_resources`/`read_resource` on `ServerHandler` take a
+    // `RequestContext<RoleServer>`, which embeds a `Peer<RoleServer>` whose
+    // constructor is `pub(crate)` inside rmcp (and requires the `client`
+    // feature this crate doesn't enable) — there is no supported way to
+    // build one from outside the rmcp crate. The URI-dispatch logic is
+    // therefore extracted into `list_resources_sync`/`read_resource_sync`
+    // (plain sync methods with identical bodies to the trait methods) so it
+    // can be unit-tested directly; the trait methods are thin async shells
+    // over them.
+    //
+    // `agentflare://sessions` is deliberately NOT covered here: it reads
+    // mutable on-disk runtime state via `optimize::load_runtime()`, whose
+    // path (`crate::state::state_dir()/runtime-state.json`) is not
+    // injectable, so exercising it deterministically would mean reading (or
+    // mutating) the real shared user state file.
+
+    #[test]
+    fn list_resources_returns_sessions_and_nudges() {
+        let s = AgentflareMcp::new();
+        let result = s.list_resources_sync();
+        let uris: Vec<&str> = result.resources.iter().map(|r| r.uri.as_str()).collect();
+        assert_eq!(uris, vec!["agentflare://sessions", "agentflare://nudges"]);
+    }
+
+    #[test]
+    fn read_resource_nudges_returns_nudges_json() {
+        let s = AgentflareMcp::new();
+        let result = s.read_resource_sync("agentflare://nudges").unwrap();
+        assert_eq!(result.contents.len(), 1);
+        let ResourceContents::TextResourceContents { text, uri, .. } = &result.contents[0] else {
+            panic!("expected text resource contents");
+        };
+        assert_eq!(uri, "agentflare://nudges");
+        assert!(text.contains("session_hygiene"));
+    }
+
+    #[test]
+    fn read_resource_unknown_uri_returns_resource_not_found() {
+        let s = AgentflareMcp::new();
+        let err = s.read_resource_sync("agentflare://bogus").unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
     }
 }
