@@ -248,7 +248,11 @@ pub fn run(days: Option<u32>, by_project: bool) {
         return;
     }
 
-    println!("agentflare cost — {range_label}, by {group_label}\n");
+    if window == 1 && !by_project {
+        println!("agentflare cost — {today}\n");
+    } else {
+        println!("agentflare cost — {range_label}, by {group_label}\n");
+    }
 
     let mut rows: Vec<_> = totals.iter().collect();
     rows.sort_by(|a, b| a.0.cmp(b.0));
