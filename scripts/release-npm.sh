@@ -10,6 +10,7 @@ error() {
 : "${AGENTFLARE_VERSION:?AGENTFLARE_VERSION must be set}"
 NPM_PREFIX="${NPM_PREFIX:-agentflare}"
 NPM_SCOPE="${NPM_SCOPE:-@getappz}"
+NPM_MAIN="${NPM_MAIN:-${NPM_SCOPE}/${NPM_PREFIX}}"
 
 mkdir -p "$RELEASE_DIR/npm"
 
@@ -211,7 +212,7 @@ JSEOF
 
 cat <<EOF >"$RELEASE_DIR/npm/package.json"
 {
-  "name": "${NPM_PREFIX}",
+  "name": "${NPM_MAIN}",
   "description": "Optimize AI CLI agents for cost and performance",
   "version": "$AGENTFLARE_NPM_VERSION",
   "repository": {
@@ -238,10 +239,10 @@ EOF
 
 pushd "$RELEASE_DIR/npm"
 if [ "${DRY_RUN:-0}" == 1 ]; then
-	echo "DRY RUN: would publish ${NPM_PREFIX}@$AGENTFLARE_NPM_VERSION"
+	echo "DRY RUN: would publish ${NPM_MAIN}@$AGENTFLARE_NPM_VERSION"
 else
 	npm publish --access public --tag "$dist_tag" --provenance || {
-		if npm view "${NPM_PREFIX}@$AGENTFLARE_NPM_VERSION" version &>/dev/null; then
+		if npm view "${NPM_MAIN}@$AGENTFLARE_NPM_VERSION" version &>/dev/null; then
 			echo "Version $AGENTFLARE_NPM_VERSION already published, skipping"
 		else
 			echo "Failed to publish main package"
