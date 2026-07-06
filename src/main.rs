@@ -8,6 +8,7 @@ mod mcp_server;
 mod optimize;
 mod paths;
 mod pricing;
+mod rollup;
 mod rule_text;
 mod state;
 
