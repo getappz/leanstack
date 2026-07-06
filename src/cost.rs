@@ -141,14 +141,42 @@ fn add_tokens(entry: &mut TokenUsage, tokens: &TokenUsage) {
     entry.cache_creation_1hr_tokens += tokens.cache_creation_1hr_tokens;
 }
 
-fn aggregate_today(files: &[PathBuf], today: NaiveDate) -> HashMap<String, TokenUsage> {
-    let mut by_model: HashMap<String, TokenUsage> = HashMap::new();
+enum GroupBy {
+    Model,
+    Project,
+}
+
+#[derive(Default)]
+struct GroupTotals {
+    tokens: TokenUsage,
+    cost_usd: f64,
+    has_unpriced_usage: bool,
+}
+
+fn project_name_for(path: &Path) -> String {
+    path.parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn aggregate(
+    files: &[PathBuf],
+    date_range: (NaiveDate, NaiveDate),
+    group_by: GroupBy,
+    pricing: &HashMap<String, crate::pricing::ModelPricing>,
+) -> HashMap<String, GroupTotals> {
+    let mut totals: HashMap<String, GroupTotals> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let (start, end) = date_range;
 
     for path in files {
         let Ok(content) = std::fs::read_to_string(path) else {
             continue;
         };
+        let project = project_name_for(path);
+
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -156,54 +184,65 @@ fn aggregate_today(files: &[PathBuf], today: NaiveDate) -> HashMap<String, Token
             let Some(parsed) = parse_line(line) else {
                 continue;
             };
-            if parsed.date != Some(today) {
+            let Some(date) = parsed.date else {
+                continue;
+            };
+            if date < start || date > end {
                 continue;
             }
             if !should_count_line(&parsed, &mut seen) {
                 continue;
             }
-            let model = parsed.model.unwrap_or_else(|| "unknown".to_string());
-            add_tokens(by_model.entry(model).or_default(), &parsed.tokens);
+
+            let key = match group_by {
+                GroupBy::Model => parsed.model.clone().unwrap_or_else(|| "unknown".to_string()),
+                GroupBy::Project => project.clone(),
+            };
+            let cost = calculate_cost(&parsed.tokens, parsed.model.as_deref(), pricing);
+
+            let entry = totals.entry(key).or_default();
+            add_tokens(&mut entry.tokens, &parsed.tokens);
+            entry.cost_usd += cost.total_usd;
+            entry.has_unpriced_usage |= cost.has_unpriced_usage;
         }
     }
 
-    by_model
+    totals
 }
 
 pub fn run() {
     let today = Local::now().date_naive();
     let files = find_session_files_under(&claude_projects_dir());
-    let by_model = aggregate_today(&files, today);
     let pricing = load_pricing();
+    let totals = aggregate(&files, (today, today), GroupBy::Model, &pricing);
 
-    if by_model.is_empty() {
+    if totals.is_empty() {
         println!("No Claude Code sessions found for today ({today}).");
         return;
     }
 
     println!("agentflare cost — {today}\n");
 
-    let mut models: Vec<_> = by_model.iter().collect();
-    models.sort_by(|a, b| a.0.cmp(b.0));
+    let mut rows: Vec<_> = totals.iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0));
 
     let mut total_cost = 0.0;
     let mut total_tokens = TokenUsage::default();
     let mut any_unpriced = false;
 
-    for (model, tokens) in &models {
-        let cost = calculate_cost(tokens, Some(model), &pricing);
-        total_cost += cost.total_usd;
-        add_tokens(&mut total_tokens, tokens);
-        any_unpriced |= cost.has_unpriced_usage;
+    for (key, group) in &rows {
+        total_cost += group.cost_usd;
+        add_tokens(&mut total_tokens, &group.tokens);
+        any_unpriced |= group.has_unpriced_usage;
 
         println!(
             "  {:<32} in {:>9}  out {:>8}  cache-r {:>9}  cache-w {:>8}   ${:.4}",
-            model,
-            tokens.input_tokens,
-            tokens.output_tokens,
-            tokens.cache_read_tokens,
-            tokens.cache_creation_tokens,
-            cost.total_usd,
+            key,
+            group.tokens.input_tokens,
+            group.tokens.output_tokens,
+            group.tokens.cache_read_tokens,
+            group.tokens.cache_creation_tokens,
+            group.cost_usd,
         );
     }
 
@@ -293,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_today_filters_by_calendar_date_and_sums_per_model() {
+    fn aggregate_filters_by_calendar_date_and_sums_per_model() {
         let dir = std::env::temp_dir().join("agentflare-test-cost-aggregate");
         let _ = std::fs::remove_dir_all(&dir);
         let project_dir = dir.join("proj1");
@@ -320,10 +359,100 @@ mod tests {
         let files = find_session_files_under(&dir);
         assert_eq!(files.len(), 1);
 
-        let by_model = aggregate_today(&files, today);
-        let opus = by_model.get("claude-opus-4-8").expect("expected opus entry");
-        assert_eq!(opus.input_tokens, 120, "yesterday's tokens must be excluded");
-        assert_eq!(opus.output_tokens, 60);
+        let pricing = load_pricing();
+        let totals = aggregate(&files, (today, today), GroupBy::Model, &pricing);
+        let opus = totals.get("claude-opus-4-8").expect("expected opus entry");
+        assert_eq!(opus.tokens.input_tokens, 120, "yesterday's tokens must be excluded when range is today-only");
+        assert_eq!(opus.tokens.output_tokens, 60);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn aggregate_with_wider_date_range_includes_prior_days_but_not_older() {
+        let dir = std::env::temp_dir().join("agentflare-test-cost-aggregate-range");
+        let _ = std::fs::remove_dir_all(&dir);
+        let project_dir = dir.join("proj1");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+
+        let content = format!(
+            "{}\n{}\n",
+            r#"{"type":"assistant","timestamp":"2026-07-04T10:00:00Z","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":50}},"requestId":"r1"}"#,
+            r#"{"type":"assistant","timestamp":"2026-07-03T10:00:00Z","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":999,"output_tokens":999}},"requestId":"r2"}"#,
+        );
+        std::fs::write(project_dir.join("session1.jsonl"), content).unwrap();
+
+        let files = find_session_files_under(&dir);
+
+        // 3-day window ending today: 2026-07-04, 2026-07-05, 2026-07-06.
+        // Includes the 07-04 line, excludes the 07-03 line.
+        let range = (today - chrono::Duration::days(2), today);
+
+        let pricing = load_pricing();
+        let totals = aggregate(&files, range, GroupBy::Model, &pricing);
+        let opus = totals.get("claude-opus-4-8").expect("expected opus entry from within range");
+        assert_eq!(opus.tokens.input_tokens, 100, "the 2026-07-03 line is outside the 3-day window and must be excluded");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn aggregate_by_project_groups_by_parent_directory_name() {
+        let dir = std::env::temp_dir().join("agentflare-test-cost-aggregate-project");
+        let _ = std::fs::remove_dir_all(&dir);
+        let project_a = dir.join("proj-a");
+        let project_b = dir.join("proj-b");
+        std::fs::create_dir_all(&project_a).unwrap();
+        std::fs::create_dir_all(&project_b).unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+        let line_a = r#"{"type":"assistant","timestamp":"2026-07-06T10:00:00Z","message":{"id":"ma","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":50}},"requestId":"ra"}"#;
+        let line_b = r#"{"type":"assistant","timestamp":"2026-07-06T10:00:00Z","message":{"id":"mb","model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":5}},"requestId":"rb"}"#;
+        std::fs::write(project_a.join("session1.jsonl"), format!("{line_a}\n")).unwrap();
+        std::fs::write(project_b.join("session1.jsonl"), format!("{line_b}\n")).unwrap();
+
+        let files = find_session_files_under(&dir);
+        assert_eq!(files.len(), 2);
+
+        let pricing = load_pricing();
+        let totals = aggregate(&files, (today, today), GroupBy::Project, &pricing);
+        assert_eq!(totals.get("proj-a").expect("expected proj-a entry").tokens.input_tokens, 100);
+        assert_eq!(totals.get("proj-b").expect("expected proj-b entry").tokens.input_tokens, 10);
+        assert!(totals.get("claude-opus-4-8").is_none(), "grouping by project must not key by model name");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn aggregate_by_project_prices_each_line_by_its_own_model() {
+        // A project bucket mixing two models at different rates must sum
+        // per-line cost, not price the whole bucket once with one model.
+        let dir = std::env::temp_dir().join("agentflare-test-cost-aggregate-project-pricing");
+        let _ = std::fs::remove_dir_all(&dir);
+        let project_dir = dir.join("proj-mixed");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let opus_line = r#"{"type":"assistant","timestamp":"2026-07-06T10:00:00Z","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":0}},"requestId":"r1"}"#;
+        let haiku_line = r#"{"type":"assistant","timestamp":"2026-07-06T10:00:00Z","message":{"id":"m2","model":"claude-haiku-4-5","usage":{"input_tokens":1000,"output_tokens":0}},"requestId":"r2"}"#;
+        std::fs::write(project_dir.join("session1.jsonl"), format!("{opus_line}\n{haiku_line}\n")).unwrap();
+
+        let files = find_session_files_under(&dir);
+        let today = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+        let pricing = load_pricing();
+
+        let by_project = aggregate(&files, (today, today), GroupBy::Project, &pricing);
+        let project_cost = by_project.get("proj-mixed").expect("expected proj-mixed entry").cost_usd;
+
+        let by_model = aggregate(&files, (today, today), GroupBy::Model, &pricing);
+        let expected_total: f64 = by_model.values().map(|g| g.cost_usd).sum();
+
+        assert!(
+            (project_cost - expected_total).abs() < 0.000_001,
+            "project-grouped cost ({project_cost}) must equal the sum of correctly-priced per-model costs ({expected_total}), not a single blended/unpriced rate"
+        );
+        assert!(project_cost > 0.0, "opus and haiku are both known, priced models — cost must be nonzero");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
