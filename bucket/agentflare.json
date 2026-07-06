@@ -1,10 +1,10 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Optimize AI CLI agents for cost and performance",
   "homepage": "https://github.com/getappz/agentflare",
   "license": "MIT",
-  "url": "https://github.com/getappz/agentflare/releases/download/v1.0.1/agentflare-x86_64-pc-windows-msvc.zip",
-  "hash": "sha256:aaf700d96aab1de31159a975a3c051f433acc865fb91bc7fdd2317877a7ac81f",
+  "url": "https://github.com/getappz/agentflare/releases/download/v1.0.2/agentflare-x86_64-pc-windows-msvc.zip",
+  "hash": "sha256:11a8662e422da109ba6ae482106ab0551b260212f8358b251a5a7401e3df4eac",
   "bin": "agentflare.exe",
   "checkver": "github",
   "autoupdate": {
