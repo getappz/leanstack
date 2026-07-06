@@ -122,11 +122,7 @@ pub fn pre_tool_use(_agent: &str) {
 
     if !nudges.is_empty() {
         let out = json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "permissionDecisionReason": nudges.join(" "),
-            }
+            "systemMessage": nudges.join(" ")
         });
         println!("{out}");
     }
