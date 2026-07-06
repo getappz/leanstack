@@ -88,6 +88,44 @@ fn merge_json(path: &PathBuf, key: &str, value: Value) -> bool {
     fs::write(path, serde_json::to_string_pretty(&existing).unwrap_or_default() + "\n").is_ok()
 }
 
+fn merge_opencode_mcp(path: &PathBuf, key: &str, entry: Value) -> bool {
+    let mut existing: Value = fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !existing.is_object() {
+        existing = serde_json::json!({});
+    }
+    let obj = existing.as_object_mut().unwrap();
+    let mcp = obj
+        .entry("mcp")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(m) = mcp.as_object_mut() {
+        if !m.contains_key(key) {
+            let command = entry.get("command").and_then(|c| c.as_str()).map(|s| s.to_string());
+            let args: Vec<String> = entry
+                .get("args")
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let mut cmd = vec![command.unwrap_or_else(|| "engram".to_string())];
+            cmd.extend(args);
+            m.insert(
+                key.to_string(),
+                serde_json::json!({
+                    "command": cmd,
+                    "enabled": true,
+                    "type": "local",
+                }),
+            );
+        }
+    }
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(path, serde_json::to_string_pretty(&existing).unwrap_or_default() + "\n").is_ok()
+}
+
 fn write_if_absent(path: &PathBuf, content: &str) -> bool {
     if path.exists() {
         return false;
@@ -131,6 +169,15 @@ fn rule_targets(host: &str) -> Vec<(PathBuf, String)> {
         }
         "cline" => {
             vec![(cwd().join(".clinerules").join("agentflare.md"), joined() + "\n")]
+        }
+        "opencode" => {
+            let dir = home().join(".config").join("opencode").join("rules");
+            vec![
+                (dir.join("exa.md"), rule_text::EXA.to_string()),
+                (dir.join("git.md"), rule_text::GIT.to_string()),
+                (dir.join("lean-ctx.md"), rule_text::LEANCTX.to_string()),
+                (dir.join("engram.md"), rule_text::ENGRAM.to_string()),
+            ]
         }
         _ => vec![], // "continue" — no dedicated rules convention found
     }
@@ -270,9 +317,10 @@ pub fn get_components(host: &str) -> Vec<Component> {
                         };
                     }
 
-                    // cline/continue: no native `engram setup` — register
-                    // the MCP command directly, same shape engram's docs
-                    // use for "any other MCP client".
+                    // cline/continue/opencode: no native `engram setup` —
+                    // register the MCP command directly in the host's
+                    // config, same shape engram's docs use for "any
+                    // other MCP client".
                     let entry = serde_json::json!({ "command": "engram", "args": ENGRAM_MCP_ARGS });
                     let result = match host.as_str() {
                         "cline" => {
@@ -289,6 +337,14 @@ pub fn get_components(host: &str) -> Vec<Component> {
                                 format!("{} written", path.display())
                             } else {
                                 format!("{} exists, skipped", path.display())
+                            }
+                        }
+                        "opencode" => {
+                            let path = home().join(".config").join("opencode").join("opencode.jsonc");
+                            if merge_opencode_mcp(&path, "engram", entry) {
+                                format!("{} (engram registered)", path.display())
+                            } else {
+                                format!("failed to write {}", path.display())
                             }
                         }
                         _ => format!("no engram integration defined for host '{host}'"),
@@ -391,6 +447,7 @@ mod tests {
         "vscode-copilot",
         "cline",
         "continue",
+        "opencode",
     ];
 
     #[test]
@@ -412,12 +469,19 @@ mod tests {
     }
 
     #[test]
-    fn rule_targets_are_project_local_except_claude_code() {
+    fn rule_targets_are_project_local_except_claude_code_and_opencode() {
         // claude-code writes to the global rules dir under ~/.claude/rules.
         let cc_targets = rule_targets("claude-code");
         assert!(!cc_targets.is_empty());
         for (path, _) in &cc_targets {
             assert!(path.to_string_lossy().contains(".claude"));
+        }
+
+        // opencode writes to the global rules dir under ~/.config/opencode/rules.
+        let oc_targets = rule_targets("opencode");
+        assert!(!oc_targets.is_empty());
+        for (path, _) in &oc_targets {
+            assert!(path.to_string_lossy().contains("opencode"));
         }
 
         // Every other defined host writes a project-local path — check for
@@ -451,7 +515,7 @@ mod tests {
         // testing: these two components must report "satisfied" (no
         // pending nag, no attempted install) on every host except
         // claude-code, since Ponytail/Caveman have no equivalent elsewhere.
-        for host in ["codex", "cursor", "windsurf", "vscode-copilot", "cline", "continue"] {
+        for host in ["codex", "cursor", "windsurf", "vscode-copilot", "cline", "continue", "opencode"] {
             let components = get_components(host);
             let ponytail_plugin = components.iter().find(|c| c.id == "ponytail-plugin").unwrap();
             let caveman_mode = components.iter().find(|c| c.id == "caveman-mode").unwrap();
