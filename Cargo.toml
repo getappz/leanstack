@@ -18,6 +18,7 @@ dirs = "6"
 chrono = "0.4"
 rmcp = { version = "1.8.0", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt", "macros", "io-util", "io-std"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [profile.release]
 opt-level = 3
