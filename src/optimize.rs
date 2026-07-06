@@ -67,6 +67,18 @@ pub fn session_hygiene_nudge(record: &SessionRecord, now: u64) -> Option<String>
     ))
 }
 
+const LOCATE_KEYWORDS: &[&str] = &["find ", "where is", "where's", "search for", "locate "];
+
+pub fn model_routing_nudge(prompt: &str) -> Option<&'static str> {
+    let lower = prompt.to_lowercase();
+    if LOCATE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        return Some(
+            "This looks like a locate/investigate task — consider a cheap-model subagent (e.g. haiku) instead of running it inline.",
+        );
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +148,20 @@ mod tests {
     fn session_hygiene_nudges_past_time_threshold() {
         let record = SessionRecord { start_ts: 0, turn_count: 1, recent_tool_calls: vec![] };
         assert!(session_hygiene_nudge(&record, 2 * 60 * 60 + 1).is_some());
+    }
+
+    #[test]
+    fn model_routing_flags_find_prompts() {
+        assert!(model_routing_nudge("find the auth handler").is_some());
+    }
+
+    #[test]
+    fn model_routing_flags_where_is_prompts() {
+        assert!(model_routing_nudge("where is the config loaded?").is_some());
+    }
+
+    #[test]
+    fn model_routing_ignores_unrelated_prompts() {
+        assert!(model_routing_nudge("refactor the payment module for clarity").is_none());
     }
 }
