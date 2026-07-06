@@ -274,13 +274,13 @@ mod tests {
         with_temp_home(|| {
             crate::coaching::apply_rule("hygiene", "Close sessions promptly", "Wrap up each phase before starting the next.").unwrap();
 
-            // session_start prints via println!, not a return value — capture
-            // isn't practical here, so assert on the underlying data source
-            // instead: active_rule_bodies() is exactly what session_start
-            // appends, and that path is exercised directly in Task 1's tests.
-            // This test instead confirms the plumbing: calling session_start
-            // does not panic when a rule exists, and the rule is visible via
-            // the same function session_start calls.
+            // session_start prints via println!, not a return value — this
+            // confirms the actual integration point doesn't panic when a
+            // coaching rule is active. The underlying data source's
+            // correctness (ordering, content) is covered by Task 1's
+            // active_rule_bodies tests in coaching.rs.
+            session_start("claude-code");
+
             let bodies = crate::coaching::active_rule_bodies();
             assert_eq!(bodies, vec!["Wrap up each phase before starting the next.".to_string()]);
         });
