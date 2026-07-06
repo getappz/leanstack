@@ -61,8 +61,15 @@ enum Commands {
         #[command(subcommand)]
         event: HookEvent,
     },
-    /// Print today's Claude Code token usage and estimated cost, by model.
-    Cost,
+    /// Print Claude Code token usage and estimated cost, by model or by project.
+    Cost {
+        /// Widen the window from today to the last N days (inclusive of today). Omit for today only.
+        #[arg(long)]
+        days: Option<u32>,
+        /// Group totals by project instead of by model.
+        #[arg(long)]
+        by_project: bool,
+    },
     /// Manage local coaching rules surfaced alongside built-in nudges.
     Coaching {
         #[command(subcommand)]
@@ -111,7 +118,7 @@ fn main() {
             HookEvent::PromptSubmit { agent } => hook::prompt_submit(agent.as_str()),
             HookEvent::PreToolUse { agent } => hook::pre_tool_use(agent.as_str()),
         },
-        Commands::Cost => cost::run(),
+        Commands::Cost { days, by_project } => cost::run(days, by_project),
         Commands::Coaching { action } => match action {
             CoachingAction::List => coaching::print_list(),
             CoachingAction::Apply { id, title, body } => coaching::cli_apply(&id, &title, &body),
