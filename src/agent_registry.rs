@@ -42,12 +42,18 @@ impl Agent {
 /// PATH-based detection (this ticket) and, later, install/launch.
 /// `Extension`-tier agents are editor-embedded (VS Code extensions) with no
 /// independent binary to detect or launch — see issue #22's design doc.
+/// Not yet consumed outside tests — wired up by the upcoming agent detection
+/// engine and CLI commands.
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Tier {
     Cli,
     Extension,
 }
 
+/// Not yet consumed outside tests — wired up by the upcoming agent detection
+/// engine and CLI commands.
+#[allow(dead_code)]
 pub struct AgentSpec {
     pub id: Agent,
     pub display_name: &'static str,
@@ -59,6 +65,9 @@ pub struct AgentSpec {
     pub version_args: &'static [&'static str],
 }
 
+/// Not yet consumed outside tests — wired up by the upcoming agent detection
+/// engine and CLI commands.
+#[allow(dead_code)]
 pub static REGISTRY: &[AgentSpec] = &[
     AgentSpec {
         id: Agent::ClaudeCode,
@@ -139,6 +148,9 @@ pub static REGISTRY: &[AgentSpec] = &[
     },
 ];
 
+/// Not yet consumed outside tests — wired up by the upcoming agent detection
+/// engine and CLI commands.
+#[allow(dead_code)]
 pub fn spec(agent: Agent) -> &'static AgentSpec {
     REGISTRY
         .iter()
