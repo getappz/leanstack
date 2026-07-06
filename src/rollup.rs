@@ -344,8 +344,13 @@ mod tests {
         with_temp_home(|| {
             let dir = std::env::temp_dir().join("agentflare-test-rollup-sync-midnight");
             let _ = std::fs::remove_dir_all(&dir);
-            let day1 = r#"{"type":"assistant","timestamp":"2026-07-05T23:00:00Z","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":0}},"requestId":"r1"}"#;
-            let day2 = r#"{"type":"assistant","timestamp":"2026-07-06T01:00:00Z","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":30,"output_tokens":0}},"requestId":"r2"}"#;
+            // The two timestamps are >24h apart in UTC (not just past a UTC
+            // midnight) so this reliably lands on two different LOCAL calendar
+            // dates regardless of the test runner's timezone: a gap of >=24h can
+            // never fit inside a single local calendar day, no matter what offset
+            // is applied to both instants alike.
+            let day1 = r#"{"type":"assistant","timestamp":"2026-07-05T12:00:00Z","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":0}},"requestId":"r1"}"#;
+            let day2 = r#"{"type":"assistant","timestamp":"2026-07-06T13:00:00Z","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":30,"output_tokens":0}},"requestId":"r2"}"#;
             write_session_file(&dir, "proj1", "session1.jsonl", &format!("{day1}\n{day2}\n"));
 
             let mut conn = open_or_rebuild();
