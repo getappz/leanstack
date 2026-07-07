@@ -36,6 +36,19 @@ pub struct PonytailArgs {
     pub action: PonytailAction,
 }
 
+fn emit_hook(event: &str, off_guard: bool) {
+    let mode = ponytail::active_mode().unwrap_or_else(ponytail::default_mode);
+    if off_guard && mode == "off" {
+        ponytail::clear_active();
+        println!("OK");
+        return;
+    }
+    let instructions = ponytail::build_instructions(&mode, None);
+    let platform = ponytail::detect_platform();
+    let output = ponytail::format_hook_output(event, &instructions.body, &platform);
+    println!("{output}");
+}
+
 impl PonytailArgs {
     pub fn run(self) {
         match self.action {
@@ -45,7 +58,10 @@ impl PonytailArgs {
             }
             PonytailAction::Set { mode } => {
                 let normalized = ponytail::normalize_config_mode(&mode)
-                    .unwrap_or("full");
+                    .unwrap_or_else(|| {
+                        eprintln!("error: invalid mode: {mode}");
+                        std::process::exit(1);
+                    });
                 ponytail::set_active(normalized).unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(1);
@@ -53,12 +69,17 @@ impl PonytailArgs {
                 println!("{normalized}");
             }
             PonytailAction::Default { mode } => {
-                ponytail::set_default_mode(&mode).unwrap_or_else(|e| {
+                let normalized = ponytail::normalize_config_mode(&mode)
+                    .unwrap_or_else(|| {
+                        eprintln!("error: invalid mode: {mode}");
+                        std::process::exit(1);
+                    });
+                ponytail::set_default_mode(normalized).unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
-                ponytail::set_active(&mode).ok();
-                println!("default: {mode}");
+                ponytail::set_active(normalized).ok();
+                println!("default: {normalized}");
             }
             PonytailAction::Off => {
                 ponytail::clear_active();
@@ -92,36 +113,13 @@ impl PonytailArgs {
                 PonytailHookEvent::SessionStart => {
                     let mode = ponytail::active_mode()
                         .unwrap_or_else(ponytail::default_mode);
-                    if mode == "off" {
-                        ponytail::state::clear_active();
-                        println!("OK");
-                        return;
+                    if mode != "off" {
+                        ponytail::set_active(&mode).ok();
                     }
-                    ponytail::set_active(&mode).ok();
-                    let instructions = ponytail::build_instructions(&mode, None);
-                    let platform = ponytail::detect_platform();
-                    let output = ponytail::format_hook_output(
-                        "SessionStart",
-                        &instructions.body,
-                        &platform,
-                    );
-                    println!("{output}");
+                    emit_hook("SessionStart", true);
                 }
                 PonytailHookEvent::SubagentStart => {
-                    let mode = ponytail::active_mode()
-                        .unwrap_or_else(ponytail::default_mode);
-                    if mode == "off" {
-                        println!("OK");
-                        return;
-                    }
-                    let instructions = ponytail::build_instructions(&mode, None);
-                    let platform = ponytail::detect_platform();
-                    let output = ponytail::format_hook_output(
-                        "SubagentStart",
-                        &instructions.body,
-                        &platform,
-                    );
-                    println!("{output}");
+                    emit_hook("SubagentStart", true);
                 }
                 PonytailHookEvent::PromptSubmit => {
                     let mut input = String::new();
