@@ -1,33 +1,75 @@
-# CLI Architecture Refactor — Implementation Plan
+# Multi-Crate Workspace + CLI Refactor — Implementation Plan
 
 > **For agentic workers:** Use superpowers:subagent-driven-development.
 
-**Goal:** Refactor agentflare's 500-line inline `main.rs` into mise-style modular CLI. One file per subcommand, typed Args structs, global flags on Cli, clean delegation.
+**Goal:** Refactor agentflare into mise-style multi-crate workspace. Independent modules become sub-crates under `crates/`. CLI split into `src/cli/` one file per subcommand with typed Args structs.
 
-**Architecture:** `src/cli/mod.rs` holds `Cli` struct (global flags) + `Commands` enum (delegates to subcommand structs). Each variant is `VariantName(cmd::Args)`, dispatches via `cmd.run()`. Global flags like `-y`/`--yes`, `-q`/`--quiet` sit on `Cli`.
+**Reference:** https://github.com/jdx/mise — `crates/` workspace + `src/cli/` modular CLI
 
 **Issue:** [#44](https://github.com/getappz/agentflare/issues/44)
 **Branch:** `feature/cli-refactor-mise`
 
-## File Structure
+---
 
-| File | From | To |
-|------|------|-----|
-| `src/main.rs` | 500 lines | ~30 lines (thin entrypoint) |
-| `src/cli/mod.rs` | — | Cli struct, Commands enum, dispatch |
-| `src/cli/init.rs` | main.rs inline | InitArgs struct + run() |
-| `src/cli/hook.rs` | main.rs inline | HookArgs struct + run() |
-| `src/cli/cost.rs` | main.rs inline | CostArgs struct + run() |
-| `src/cli/coaching.rs` | main.rs inline | CoachingArgs struct + run() |
-| `src/cli/agents.rs` | main.rs inline | AgentsArgs struct + run() |
-| `src/cli/alias.rs` | main.rs inline | AliasArgs struct + run() |
-| `src/cli/update.rs` | main.rs inline | UpdateArgs + run() |
-| `src/cli/uninstall.rs` | main.rs inline | UninstallArgs + run() |
-| `src/cli/auth.rs` | main.rs inline | AuthArgs + run() |
-| `src/cli/ponytail.rs` | main.rs inline | PonytailArgs + run() |
-| `src/cli/mcp.rs` | main.rs inline | McpArgs + run() |
+## Target workspace structure
 
-## Pattern (each subcommand file)
+```
+agentflare/                    (root crate — binary + CLI layer)
+  Cargo.toml                   [workspace] + [package] agentflare
+  src/
+    main.rs                    thin entrypoint (~30 lines)
+    cli/
+      mod.rs                   Cli struct, Commands enum, dispatch
+      init.rs                  InitArgs + run()
+      hook.rs                  HookArgs + run()
+      cost.rs                  CostArgs + run()
+      coaching.rs              CoachingArgs + run()
+      agents.rs                AgentsArgs + run()
+      alias.rs                 AliasArgs + run()
+      update.rs                UpdateArgs + run()
+      uninstall.rs             UninstallArgs + run()
+      auth.rs                  AuthArgs + run()
+      ponytail.rs              PonytailArgs + run()
+      mcp.rs                   McpArgs + run()
+    (remaining modules stay in root: auth*, coaching, cost, init, ...)
+
+crates/
+  ponytail/                    (sub-crate — standalone skill engine)
+    Cargo.toml                 [package] ponytail
+    src/
+      lib.rs                   pub mods, re-exports
+      config.rs                mode resolution
+      state.rs                 flag file r/w
+      instructions.rs          skill loading + filtering
+      switcher.rs              mode switch detection
+      platform.rs              agent + output formatting
+      sub_skills.rs            embedded sub-skill content
+      detect.rs                process-tree detection
+      skill*.md                embedded skill files
+
+  agent-registry/              (sub-crate — agent definitions)
+    Cargo.toml                 [package] agent-registry
+    src/
+      lib.rs                   pub mods
+      registry.rs              Agent enum, AgentSpec, Tier
+      detect.rs                find_binary, extract_version, version cache
+```
+
+---
+
+## Phase 1: CLI modularization (file-level)
+
+### Task 1: Foundation — `src/cli/mod.rs` + thin `main.rs`
+
+- Create `src/cli/` directory
+- Move `Cli` struct, `Commands` enum, `AGENTFLARE_VERSION` to `mod.rs`
+- Move all subcommand enums to their respective files
+- Thin `main.rs` to: `Cli::parse().command.run(cli.yes)`
+- Global `-y`/`--yes` and `-q`/`--quiet` flags on `Cli`
+
+### Tasks 2-12: Extract each subcommand
+
+One file per subcommand. Pattern:
 
 ```rust
 // src/cli/cost.rs
@@ -48,70 +90,24 @@ impl CostArgs {
 }
 ```
 
-## Global flags (on Cli in mod.rs)
-
-```rust
-#[derive(Parser)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Commands,
-    #[arg(short = 'y', long, global = true)]
-    pub yes: bool,
-    #[arg(short = 'q', long, global = true)]
-    pub quiet: bool,
-}
-```
+Each task extracts one subcommand. All 11 follow identical mechanical pattern.
 
 ---
 
-### Task 1: Create `src/cli/` skeleton + move `Cli` and `Commands`
+## Phase 2: Workspace extraction (crate-level)
 
-**Files:** Create `src/cli/mod.rs`, modify `src/main.rs`
+### Task 13: Extract `crates/ponytail/`
 
-Extract Cli struct and Commands enum from main.rs into mod.rs. main.rs becomes thin entrypoint calling `Cli::parse().command.run()`.
+- Move `src/ponytail/` → `crates/ponytail/src/`
+- Create `crates/ponytail/Cargo.toml` with deps (serde, serde_json, dirs, ureq, sysinfo-optional)
+- Root Cargo.toml: add `ponytail = { path = "crates/ponytail" }` to workspace + deps
+- Update imports: `crate::ponytail` → `ponytail` in root
 
-### Task 2: Extract Init subcommand
+### Task 14: Extract `crates/agent-registry/`
 
-**Files:** Create `src/cli/init.rs`, modify `src/cli/mod.rs`
+- Move `src/agent_registry.rs` + `src/agent_detect.rs` → `crates/agent-registry/src/`
+- Create `crates/agent-registry/Cargo.toml` (clap, serde, dirs deps)
+- Root: add to workspace + deps
+- Update imports
 
-Move Init variant to InitArgs struct. Wire `init::run(agent.as_str(), yes)` into `InitArgs::run()`.
-
-### Task 3: Extract Hook subcommand
-
-**Files:** Create `src/cli/hook.rs`, modify `src/cli/mod.rs`
-
-### Task 4: Extract Cost subcommand
-
-**Files:** Create `src/cli/cost.rs`, modify `src/cli/mod.rs`
-
-### Task 5: Extract Coaching subcommand
-
-**Files:** Create `src/cli/coaching.rs`, modify `src/cli/mod.rs`
-
-### Task 6: Extract Agents subcommand
-
-**Files:** Create `src/cli/agents.rs`, modify `src/cli/mod.rs`
-
-### Task 7: Extract Alias subcommand
-
-**Files:** Create `src/cli/alias.rs`, modify `src/cli/mod.rs`
-
-### Task 8: Extract Update subcommand
-
-**Files:** Create `src/cli/update.rs`, modify `src/cli/mod.rs`
-
-### Task 9: Extract Uninstall subcommand
-
-**Files:** Create `src/cli/uninstall.rs`, modify `src/cli/mod.rs`
-
-### Task 10: Extract Auth subcommand
-
-**Files:** Create `src/cli/auth.rs`, modify `src/cli/mod.rs`
-
-### Task 11: Extract Ponytail subcommand
-
-**Files:** Create `src/cli/ponytail.rs`, modify `src/cli/mod.rs`
-
-### Task 12: Build, test, cleanup
-
-Verify all tests pass, clippy clean, binary works.
+### Task 15: Build, test, clippy
