@@ -49,6 +49,12 @@ static CATALOG: &[AuthCatalog] = &[
             ".opencode/auth.json",
         ],
     },
+    AuthCatalog {
+        agent_key: "copilot",
+        files: &[
+            ".copilot/auth.json",
+        ],
+    },
 ];
 
 fn catalog_for(agent: &str) -> Option<&'static AuthCatalog> {
