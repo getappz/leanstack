@@ -1,3 +1,4 @@
+use crate::auth_crypt;
 use crate::auth_db::{self, CooldownRow, ProfileHealth};
 use crate::paths::home;
 use rusqlite::Connection;
@@ -90,11 +91,18 @@ pub fn backup(agent: &str, profile: &str, json: bool) {
 
     let mut backed = 0;
     let mut skipped = 0;
+    let passphrase = auth_crypt::get_passphrase();
     for &rel in cat.files {
         let src = home().join(rel);
         let dest = vault.join(rel.rsplit('/').next().unwrap_or(rel));
         if src.exists() {
-            fs::copy(&src, &dest).expect("copy");
+            let data = fs::read(&src).expect("read");
+            if let Some(ref pw) = passphrase {
+                let encrypted = auth_crypt::encrypt(&data, pw).expect("encrypt");
+                fs::write(&dest, encrypted).expect("write");
+            } else {
+                fs::write(&dest, data).expect("write");
+            }
             backed += 1;
         } else {
             skipped += 1;
@@ -161,6 +169,7 @@ pub fn activate(agent: &str, profile: &str, json: bool) {
     }
 
     let mut restored = 0;
+    let passphrase = auth_crypt::get_passphrase();
     for &rel in cat.files {
         let src = vault.join(
             rel.split('/').next_back().unwrap_or(rel)
@@ -170,7 +179,17 @@ pub fn activate(agent: &str, profile: &str, json: bool) {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).expect("create parent");
             }
-            fs::copy(&src, &dest).expect("copy");
+            let data = fs::read(&src).expect("read");
+            if let Some(ref pw) = passphrase {
+                if let Some(decrypted) = auth_crypt::decrypt(&data, pw) {
+                    fs::write(&dest, decrypted).expect("write");
+                } else {
+                    eprintln!("warning: cannot decrypt {} — wrong passphrase or corrupted", src.display());
+                    continue;
+                }
+            } else {
+                fs::write(&dest, data).expect("write");
+            }
             restored += 1;
         }
     }

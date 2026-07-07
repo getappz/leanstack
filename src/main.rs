@@ -5,6 +5,7 @@ mod agent_launch;
 mod agents;
 mod alias;
 mod auth;
+mod auth_crypt;
 mod auth_db;
 mod auth_runner;
 mod components;
