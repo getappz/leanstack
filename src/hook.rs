@@ -9,6 +9,8 @@ use serde_json::json;
 use std::io::Read;
 use std::time::Duration;
 
+const STDIN_TIMEOUT_MS: u64 = 1000;
+
 fn read_stdin_timeout(ms: u64) -> Option<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -17,6 +19,16 @@ fn read_stdin_timeout(ms: u64) -> Option<String> {
         let _ = tx.send(input);
     });
     rx.recv_timeout(Duration::from_millis(ms)).ok()
+}
+
+fn read_stdin_or_skip(label: &str) -> Option<String> {
+    match read_stdin_timeout(STDIN_TIMEOUT_MS) {
+        Some(s) if !s.is_empty() => Some(s),
+        _ => {
+            eprintln!("[agentflare] {label}: stdin timeout or empty — skipping");
+            None
+        }
+    }
 }
 
 pub fn session_start(agent: &str) {
@@ -94,13 +106,7 @@ fn parse_pre_tool_use(input: &str) -> Option<PreToolUseInput> {
 }
 
 pub fn pre_tool_use(_agent: &str) {
-    let input = match read_stdin_timeout(1000) {
-        Some(s) if !s.is_empty() => s,
-        _ => {
-            eprintln!("[agentflare] PreToolUse: stdin timeout or empty — skipping");
-            return;
-        }
-    };
+    let Some(input) = read_stdin_or_skip("PreToolUse") else { return };
     let Some(parsed) = parse_pre_tool_use(&input) else { return };
 
     let mut runtime = crate::optimize::load_runtime();
@@ -152,13 +158,7 @@ pub fn pre_tool_use(_agent: &str) {
 }
 
 pub fn prompt_submit(agent: &str) {
-    let input = match read_stdin_timeout(1000) {
-        Some(s) if !s.is_empty() => s,
-        _ => {
-            eprintln!("[agentflare] UserPromptSubmit: stdin timeout or empty — skipping");
-            return;
-        }
-    };
+    let Some(input) = read_stdin_or_skip("UserPromptSubmit") else { return };
     let prompt = extract_prompt(&input);
     let prompt = prompt.trim();
 
