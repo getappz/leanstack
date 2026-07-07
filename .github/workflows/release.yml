@@ -251,3 +251,28 @@ jobs:
           gh workflow run npm-publish.yml \
             --repo getappz/agentflare \
             -f version="${GITHUB_REF_NAME}"
+
+  trigger-ppa-publish:
+    name: Trigger PPA publish
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch ppa-publish workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ppa-publish.yml \
+            --repo getappz/agentflare \
+            -f distributions="noble"
+
+  trigger-docker-publish:
+    name: Trigger Docker publish
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch docker workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run docker.yml \
+            --repo getappz/agentflare

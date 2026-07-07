@@ -1,0 +1,243 @@
+name: ppa-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      distributions:
+        description: "Ubuntu distributions to target (space-separated)"
+        required: false
+        default: "noble"
+        type: string
+      build_revision:
+        description: "Build revision number (increment for packaging fixes of same version)"
+        required: false
+        default: "1"
+        type: string
+      version_suffix:
+        description: "Version suffix for orig tarball (e.g., +ppa1)"
+        required: false
+        default: ""
+        type: string
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  publish-ppa:
+    runs-on: ubuntu-latest
+    environment: ppa-publishing
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up environment variables
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_DISTRIBUTIONS: ${{ inputs.distributions }}
+          INPUT_BUILD_REVISION: ${{ inputs.build_revision || '1' }}
+          INPUT_VERSION_SUFFIX: ${{ inputs.version_suffix }}
+          PPA_MAINTAINER_NAME: ${{ vars.PPA_MAINTAINER_NAME || 'agentflare Release Bot' }}
+          PPA_MAINTAINER_EMAIL: ${{ vars.PPA_MAINTAINER_EMAIL || 'noreply@appz.dev' }}
+          PPA_NAME: ${{ vars.PPA_NAME || 'ppa:getappz/agentflare' }}
+        run: |
+          VERSION="$(git describe --tags --abbrev=0 | sed 's/^v//')"
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            DISTRIBUTIONS="noble"
+            BUILD_REVISION="1"
+            VERSION_SUFFIX=""
+          else
+            DISTRIBUTIONS="$INPUT_DISTRIBUTIONS"
+            BUILD_REVISION="$INPUT_BUILD_REVISION"
+            VERSION_SUFFIX="$INPUT_VERSION_SUFFIX"
+          fi
+
+          for dist in $DISTRIBUTIONS; do
+            if ! [[ "$dist" =~ ^[a-z][a-z0-9]*$ ]]; then
+              echo "::error::Invalid distribution: $dist" >&2
+              exit 1
+            fi
+          done
+          if ! [[ "$BUILD_REVISION" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid build revision: $BUILD_REVISION" >&2
+            exit 1
+          fi
+          if [ -n "$VERSION_SUFFIX" ] && ! [[ "$VERSION_SUFFIX" =~ ^[+~][A-Za-z0-9.+~-]*$ ]]; then
+            echo "::error::Invalid version suffix: $VERSION_SUFFIX" >&2
+            exit 1
+          fi
+
+          VERSION="${VERSION}${VERSION_SUFFIX}"
+
+          {
+            echo "VERSION=${VERSION}"
+            echo "DISTRIBUTIONS=${DISTRIBUTIONS}"
+            echo "BUILD_REVISION=${BUILD_REVISION}"
+            echo "PACKAGE_NAME=agentflare"
+            echo "MAINTAINER_NAME=${PPA_MAINTAINER_NAME}"
+            echo "MAINTAINER_EMAIL=${PPA_MAINTAINER_EMAIL}"
+            echo "PPA_NAME=${PPA_NAME}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            devscripts \
+            debhelper \
+            dh-make \
+            build-essential \
+            git-buildpackage \
+            dput \
+            lintian \
+            quilt \
+            fakeroot \
+            debian-keyring \
+            gpg \
+            libssl-dev \
+            pkg-config
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Vendor Rust dependencies
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [source.crates-io]
+          replace-with = "vendored-sources"
+
+          [source.vendored-sources]
+          directory = "vendor"
+          EOF
+          cargo vendor vendor/
+          for checksum in vendor/*/.cargo-checksum.json; do
+            jq '.files = {}' "$checksum" > "$checksum.tmp" && mv "$checksum.tmp" "$checksum"
+          done
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "${{ env.MAINTAINER_NAME }}"
+          git config --global user.email "${{ env.MAINTAINER_EMAIL }}"
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
+        with:
+          gpg_private_key: ${{ secrets.PPA_GPG_KEY }}
+          passphrase: ${{ secrets.PPA_GPG_PASSPHRASE }}
+
+      - name: Create debian packaging
+        run: |
+          mkdir -p debian
+
+          cat > debian/control << 'EOF'
+          Source: agentflare
+          Section: utils
+          Priority: optional
+          Maintainer: ${{ env.MAINTAINER_NAME }} <${{ env.MAINTAINER_EMAIL }}>
+          Build-Depends: debhelper-compat (= 13),
+            rustc (>= 1.91),
+            cargo,
+            libssl-dev,
+            pkg-config
+          Standards-Version: 4.7.0
+          Homepage: https://github.com/getappz/agentflare
+          Vcs-Git: https://github.com/getappz/agentflare.git
+          Rules-Requires-Root: no
+
+          Package: agentflare
+          Architecture: amd64 arm64
+          Depends: ${shlibs:Depends}, ${misc:Depends}
+          Description: Optimize AI CLI agents for cost and performance
+           agentflare connects to multiple AI CLI agents (Claude Code, Codex,
+           Cursor, etc.) and provides cost optimization, token usage tracking,
+           performance analytics, and MCP server integration.
+          EOF
+
+          cat > debian/rules << 'RULESEOF'
+          #!/usr/bin/make -f
+
+          export DH_VERBOSE = 1
+
+          %:
+          	dh $@
+
+          override_dh_auto_build:
+          	cargo build --profile release --frozen
+
+          override_dh_auto_install:
+          	dh_auto_install
+          	install -Dm755 target/release/agentflare debian/agentflare/usr/bin/agentflare
+
+          override_dh_auto_test:
+          RULESEOF
+          chmod +x debian/rules
+
+          cat > debian/compat << 'EOF'
+          13
+          EOF
+
+          cat > debian/source/format << 'EOF'
+          3.0 (native)
+          EOF
+
+          # copyright comes from LICENSE
+          cp LICENSE debian/copyright
+
+      - name: Build source packages
+        run: |
+          for DIST in ${DISTRIBUTIONS}; do
+            echo "Building source package for $DIST"
+
+            DIST_VERSION="${VERSION}~${DIST}${BUILD_REVISION}"
+
+            cat > debian/changelog << EOF
+          ${PACKAGE_NAME} (${DIST_VERSION}) ${DIST}; urgency=medium
+
+            * New upstream release ${VERSION}
+
+           -- ${MAINTAINER_NAME} <${MAINTAINER_EMAIL}>  $(date -R)
+          EOF
+
+            debuild -d -S
+
+            mkdir -p /tmp/packages
+            mv ../*"${DIST_VERSION}"*.dsc /tmp/packages/
+            mv ../*"${DIST_VERSION}"*.tar.* /tmp/packages/
+            mv ../*"${DIST_VERSION}"*.changes /tmp/packages/
+            mv ../*"${DIST_VERSION}"*.buildinfo /tmp/packages/ 2>/dev/null || true
+
+            rm -f ../agentflare_"${DIST_VERSION}"*
+          done
+
+      - name: Upload source packages to PPA
+        run: |
+          cd /tmp/packages
+
+          cat > ~/.dput.cf << EOF
+          [agentflare-ppa]
+          fqdn = ppa.launchpad.net
+          method = ftp
+          incoming = ~${PPA_NAME#ppa:}/ubuntu/
+          login = anonymous
+          allow_unsigned_uploads = 0
+          EOF
+
+          for changes_file in *.changes; do
+            echo "Uploading $changes_file to PPA..."
+            dput agentflare-ppa "$changes_file"
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c1a64a875d1fc6a0a # v7
+        with:
+          name: ppa-source-packages
+          path: /tmp/packages/
+          retention-days: 30
