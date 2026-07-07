@@ -41,7 +41,11 @@ fn confirm_ponytail_migration(agent: &str, yes: bool) -> bool {
     if !yes {
         print!("  Uninstall ponytail plugin? [Y/n] ");
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).ok();
+        let bytes_read = std::io::stdin().read_line(&mut input).ok();
+        if bytes_read == Some(0) {
+            println!("  Skipped. Re-run: agentflare init --agent {agent}");
+            return false;
+        }
         match input.trim().to_lowercase().as_str() {
             "y" | "yes" | "" => {}
             _ => {
@@ -350,6 +354,14 @@ fn wire_ponytail_claude_code() {
 fn wire_ponytail_cursor() {
     let path = cwd().join(".cursor").join("hooks.json");
     let bin = agentflare_binary();
+
+    if path.exists() {
+        let existing = fs::read_to_string(&path).unwrap_or_default();
+        if existing.contains("ponytail") {
+            println!("  skip  ponytail hooks already wired in .cursor/hooks.json");
+            return;
+        }
+    }
 
     let mut content: Value = fs::read_to_string(&path)
         .ok()
