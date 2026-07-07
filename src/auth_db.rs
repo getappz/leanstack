@@ -83,14 +83,15 @@ pub fn open_or_rebuild() -> Connection {
 }
 
 fn now_iso() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+    // Use space separator to match SQLite datetime('now') format
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn is_older_than_1h(timestamp: &str, now: &str) -> bool {
     use chrono::NaiveDateTime;
     if let (Ok(ts), Ok(n)) = (
-        NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S"),
-        NaiveDateTime::parse_from_str(now, "%Y-%m-%dT%H:%M:%S"),
+        NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S"),
+        NaiveDateTime::parse_from_str(now, "%Y-%m-%d %H:%M:%S"),
     ) {
         (n - ts).num_hours() >= 1
     } else {
@@ -124,8 +125,8 @@ fn decay_penalty(conn: &Connection, agent: &str, profile: &str) -> f64 {
             use chrono::NaiveDateTime;
             let now = now_iso();
             if let (Ok(ts), Ok(n)) = (
-                NaiveDateTime::parse_from_str(&last_time, "%Y-%m-%dT%H:%M:%S"),
-                NaiveDateTime::parse_from_str(&now, "%Y-%m-%dT%H:%M:%S"),
+                NaiveDateTime::parse_from_str(&last_time, "%Y-%m-%d %H:%M:%S"),
+                NaiveDateTime::parse_from_str(&now, "%Y-%m-%d %H:%M:%S"),
             ) {
                 let minutes = (n - ts).num_minutes().max(0) as f64;
                 let decay_intervals = (minutes / 5.0).floor();
@@ -190,7 +191,7 @@ pub fn set_cooldown(conn: &Connection, agent: &str, profile: &str, minutes: u32,
         params![
             agent,
             profile,
-            until.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            until.format("%Y-%m-%d %H:%M:%S").to_string(),
             reason
         ],
     )

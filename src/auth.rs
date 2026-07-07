@@ -113,9 +113,16 @@ pub fn backup(agent: &str, profile: &str, json: bool) {
 
 pub fn resolve_name(agent: &str, name: &str) -> String {
     let conn = auth_db::open_or_rebuild();
+    // Aliases always win (user explicitly mapped them)
     if let Some(real) = auth_db::resolve_alias(&conn, agent, name) {
         return real;
     }
+    // Explicit profile name that exists in vault — use as-is, don't remap via project
+    let vault_profiles = list_profiles(agent);
+    if vault_profiles.contains(&name.to_string()) {
+        return name.to_string();
+    }
+    // Project association: only applies when name doesn't match a vault profile
     let cwd = std::env::current_dir().unwrap_or_default();
     let path = cwd.to_string_lossy().to_string();
     if let Some(project_profile) = auth_db::get_project(&conn, &path, agent) {
@@ -381,7 +388,18 @@ fn fail(msg: &str, detail: &str, json: bool) {
     }
 }
 
+fn validate_algorithm(name: &str) -> Result<&str, String> {
+    match name {
+        "smart" | "round-robin" | "random" => Ok(name),
+        _ => Err(format!("unknown algorithm: '{name}' (valid: smart, round-robin, random)")),
+    }
+}
+
 pub fn rotate(agent: &str, algorithm: &str, json: bool) {
+    let algorithm = match validate_algorithm(algorithm) {
+        Ok(a) => a,
+        Err(e) => { fail(&e, "", json); return; }
+    };
     let conn = auth_db::open_or_rebuild();
     let cooldowns = auth_db::list_cooldowns(&conn, Some(agent));
     let health = auth_db::list_health(&conn, agent);
@@ -461,6 +479,10 @@ fn random_pick(profiles: &[String]) -> String {
 }
 
 pub fn next(agent: &str, algorithm: &str, json: bool) {
+    let algorithm = match validate_algorithm(algorithm) {
+        Ok(a) => a,
+        Err(e) => { fail(&e, "", json); return; }
+    };
     let conn = auth_db::open_or_rebuild();
     let cooldowns = auth_db::list_cooldowns(&conn, Some(agent));
     let health = auth_db::list_health(&conn, agent);
@@ -506,7 +528,11 @@ pub fn cooldown_set(target: &str, minutes: Option<u32>, json: bool) {
     let (agent, profile) = match parse_target(target) {
         Some(p) => p,
         None => {
-            eprintln!("error: expected <agent>/<profile>");
+            if json {
+                println!("{}", serde_json::json!({"error": "expected <agent>/<profile>"}));
+            } else {
+                eprintln!("error: expected <agent>/<profile>");
+            }
             return;
         }
     };
@@ -561,7 +587,11 @@ pub fn cooldown_clear(target: &str, json: bool) {
     let (agent, profile) = match parse_target(target) {
         Some(p) => p,
         None => {
-            eprintln!("error: expected <agent>/<profile>");
+            if json {
+                println!("{}", serde_json::json!({"error": "expected <agent>/<profile>"}));
+            } else {
+                eprintln!("error: expected <agent>/<profile>");
+            }
             return;
         }
     };
@@ -601,7 +631,18 @@ pub fn set_alias_cmd(agent: &str, profile: &str, alias: &str, json: bool) {
 }
 
 pub fn project_set(agent: &str, profile: &str, json: bool) {
-    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = format!("cannot determine current directory: {e}");
+            if json {
+                println!("{}", serde_json::json!({"error": msg}));
+            } else {
+                eprintln!("error: {msg}");
+            }
+            return;
+        }
+    };
     let path = cwd.to_string_lossy().to_string();
     let conn = auth_db::open_or_rebuild();
     auth_db::set_project(&conn, &path, agent, profile);
@@ -616,7 +657,18 @@ pub fn project_set(agent: &str, profile: &str, json: bool) {
 }
 
 pub fn project_unset(agent: &str, json: bool) {
-    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = format!("cannot determine current directory: {e}");
+            if json {
+                println!("{}", serde_json::json!({"error": msg}));
+            } else {
+                eprintln!("error: {msg}");
+            }
+            return;
+        }
+    };
     let path = cwd.to_string_lossy().to_string();
     let conn = auth_db::open_or_rebuild();
     auth_db::unset_project(&conn, &path, agent);
