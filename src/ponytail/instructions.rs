@@ -4,6 +4,7 @@ use std::path::Path;
 static EMBEDDED_SKILL: &str = include_str!("skill.md");
 
 pub struct Instructions {
+    #[allow(dead_code)]
     pub mode: String,
     pub body: String,
 }
@@ -35,20 +36,20 @@ pub fn filter_skill_body(body: &str, mode: &str) -> String {
     let effective = config::normalize_mode(mode).unwrap_or(config::DEFAULT_MODE);
     body.lines()
         .filter(|line| {
-            if let Some(cap) = line.trim().strip_prefix("| **") {
-                if let Some(end) = cap.find("** |") {
-                    let label_mode = config::normalize_mode(&cap[..end]);
-                    if label_mode.is_some() {
-                        return label_mode.unwrap() == effective;
-                    }
+            if let Some(cap) = line.trim().strip_prefix("| **")
+                && let Some(end) = cap.find("** |")
+            {
+                let label_mode = config::normalize_mode(&cap[..end]);
+                if let Some(lm) = label_mode {
+                    return lm == effective;
                 }
             }
-            if let Some(rest) = line.trim().strip_prefix("- ") {
-                if let Some(colon) = rest.find(':') {
-                    let label_mode = config::normalize_mode(rest[..colon].trim());
-                    if label_mode.is_some() {
-                        return label_mode.unwrap() == effective;
-                    }
+            if let Some(rest) = line.trim().strip_prefix("- ")
+                && let Some(colon) = rest.find(':')
+            {
+                let label_mode = config::normalize_mode(rest[..colon].trim());
+                if let Some(lm) = label_mode {
+                    return lm == effective;
                 }
             }
             true
@@ -57,6 +58,7 @@ pub fn filter_skill_body(body: &str, mode: &str) -> String {
         .join("\n")
 }
 
+#[allow(dead_code)]
 pub fn fallback_instructions(mode: &str) -> String {
     let m = config::normalize_mode(mode).unwrap_or(config::DEFAULT_MODE);
     format!(

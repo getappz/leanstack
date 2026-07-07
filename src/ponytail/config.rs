@@ -42,19 +42,17 @@ struct ConfigFile {
 }
 
 pub fn default_mode() -> String {
-    if let Ok(val) = std::env::var("PONYTAIL_DEFAULT_MODE") {
-        if let Some(m) = normalize_config_mode(&val) {
-            return m.to_string();
-        }
+    if let Ok(val) = std::env::var("PONYTAIL_DEFAULT_MODE")
+        && let Some(m) = normalize_config_mode(&val)
+    {
+        return m.to_string();
     }
-    if let Ok(data) = std::fs::read_to_string(config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<ConfigFile>(&data) {
-            if let Some(mode) = cfg.default_mode {
-                if let Some(m) = normalize_config_mode(&mode) {
-                    return m.to_string();
-                }
-            }
-        }
+    if let Ok(data) = std::fs::read_to_string(config_path())
+        && let Ok(cfg) = serde_json::from_str::<ConfigFile>(&data)
+        && let Some(mode) = cfg.default_mode
+        && let Some(m) = normalize_config_mode(&mode)
+    {
+        return m.to_string();
     }
     DEFAULT_MODE.to_string()
 }
@@ -74,6 +72,7 @@ pub fn set_default_mode(mode: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
 
