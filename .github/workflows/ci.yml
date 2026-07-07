@@ -35,6 +35,6 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: mozilla-actions/sccache-action@059ce6ad80c48b8ff7f2398a028ebc0d575ad6c5 # v0.0.9
+      - uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
       - run: cargo build --verbose
       - run: cargo test --verbose
