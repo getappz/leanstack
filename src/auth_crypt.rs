@@ -7,7 +7,6 @@ use sha2::Sha256;
 const MAGIC: &[u8] = b"AFVE";
 const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 12;
-const LEGACY_SALT: &[u8] = b"agentflare-vault-salt-v1";
 const ITERATIONS: u32 = 600_000;
 
 pub fn get_passphrase() -> Option<String> {
@@ -54,29 +53,20 @@ pub fn encrypt(plaintext: &[u8], passphrase: &str) -> Option<Vec<u8>> {
 }
 
 pub fn decrypt(data: &[u8], passphrase: &str) -> Option<Vec<u8>> {
-    if is_encrypted(data) {
-        // New format: MAGIC(4) || salt(16) || nonce(12) || ciphertext
-        let payload = &data[MAGIC.len()..];
-        if payload.len() < SALT_SIZE + NONCE_SIZE + 16 {
-            return None;
-        }
-        let salt = &payload[..SALT_SIZE];
-        let (nonce_bytes, ciphertext) = payload[SALT_SIZE..].split_at(NONCE_SIZE);
-        let key = derive_key(passphrase, salt);
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let nonce = Nonce::from_slice(nonce_bytes);
-        cipher.decrypt(nonce, ciphertext).ok()
-    } else {
-        // Legacy format: nonce(12) || ciphertext, fixed salt
-        if data.len() < NONCE_SIZE + 16 {
-            return None;
-        }
-        let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
-        let key = derive_key(passphrase, LEGACY_SALT);
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let nonce = Nonce::from_slice(nonce_bytes);
-        cipher.decrypt(nonce, ciphertext).ok()
+    if !is_encrypted(data) {
+        return None;
     }
+    // Format: MAGIC(4) || salt(16) || nonce(12) || ciphertext
+    let payload = &data[MAGIC.len()..];
+    if payload.len() < SALT_SIZE + NONCE_SIZE + 16 {
+        return None;
+    }
+    let salt = &payload[..SALT_SIZE];
+    let (nonce_bytes, ciphertext) = payload[SALT_SIZE..].split_at(NONCE_SIZE);
+    let key = derive_key(passphrase, salt);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher.decrypt(nonce, ciphertext).ok()
 }
 
 #[cfg(test)]
@@ -104,23 +94,6 @@ mod tests {
         let c1 = encrypt(b"data", "pw").unwrap();
         let c2 = encrypt(b"data", "pw").unwrap();
         assert_ne!(c1, c2);
-    }
-
-    #[test]
-    fn legacy_decrypt_still_works() {
-        // Simulate old format: nonce(12) || ciphertext, no MAGIC, no salt
-        let pw = "test-legacy";
-        let key = derive_key(pw, LEGACY_SALT);
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = cipher.encrypt(nonce, b"legacy data".as_ref()).unwrap();
-        let mut legacy = nonce_bytes.to_vec();
-        legacy.extend(ciphertext);
-        assert!(!is_encrypted(&legacy));
-        let decrypted = decrypt(&legacy, pw).unwrap();
-        assert_eq!(decrypted, b"legacy data");
     }
 
     #[test]
