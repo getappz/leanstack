@@ -14,3 +14,99 @@ pub fn get(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+pub struct Finding {
+    pub line: usize,
+    pub tag: String,
+    pub problem: String,
+    pub replacement: String,
+    pub snippet: String,
+}
+
+pub fn detect_over_engineering(text: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    ponytail_engineering_check_internal(text, &mut findings, 0);
+    findings.sort_by_key(|f| f.line);
+    findings
+}
+
+fn ponytail_engineering_check_internal(text: &str, findings: &mut Vec<Finding>, base_line: usize) {
+    let patterns: &[(&str, &str, &str, &[&str])] = &[
+        ("lodash", "stdlib", "Use native JS methods: Array.map, Array.filter, Object.keys.", &["from \"lodash\"", "from 'lodash'", "require(\"lodash\")", "require('lodash')"]),
+        ("moment", "native", "Use Intl.DateTimeFormat, Date.toLocaleDateString, or Temporal.", &["from \"moment\"", "from 'moment'", "require(\"moment\")", "require('moment')"]),
+        ("axios", "native", "Use native fetch() instead of axios.", &["from \"axios\"", "from 'axios'", "require(\"axios\")", "require('axios')"]),
+        ("JSON.parse(JSON.stringify(", "stdlib", "Use structuredClone() for deep copy.", &["JSON.parse(JSON.stringify("]),
+    ];
+
+    for (line_num, line) in text.lines().enumerate() {
+        let lower = line.to_lowercase();
+        for (_name, tag, replacement, needles) in patterns {
+            if needles.iter().any(|n| lower.contains(&n.to_lowercase())) {
+                let trimmed = line.trim().to_string();
+                if !findings.iter().any(|f| f.line == base_line + line_num + 1 && f.problem == trimmed) {
+                    findings.push(Finding {
+                        line: base_line + line_num + 1,
+                        tag: (*tag).to_string(),
+                        problem: trimmed,
+                        replacement: (*replacement).to_string(),
+                        snippet: line.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_lodash_import() {
+        let findings = detect_over_engineering("import _ from \"lodash\";\nconst x = 1;");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].tag, "stdlib");
+        assert!(findings[0].replacement.contains("Array.map"));
+    }
+
+    #[test]
+    fn detects_moment_import() {
+        let findings = detect_over_engineering("import moment from \"moment\";");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].tag, "native");
+    }
+
+    #[test]
+    fn detects_axios_import() {
+        let findings = detect_over_engineering("const axios = require(\"axios\");");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].tag, "native");
+    }
+
+    #[test]
+    fn detects_deep_clone_antipattern() {
+        let findings = detect_over_engineering("const copy = JSON.parse(JSON.stringify(obj));");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].tag, "stdlib");
+        assert!(findings[0].replacement.contains("structuredClone"));
+    }
+
+    #[test]
+    fn clean_code_returns_empty() {
+        let findings = detect_over_engineering("const x = 1;\nfn foo() { Ok(()) }");
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn detects_single_quoted_imports() {
+        let findings = detect_over_engineering("import lodash from 'lodash';");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].tag, "stdlib");
+    }
+
+    #[test]
+    fn ignores_non_lodash_underscore_import() {
+        let findings = detect_over_engineering("import _ from \"underscore\";");
+        assert!(findings.is_empty());
+    }
+}

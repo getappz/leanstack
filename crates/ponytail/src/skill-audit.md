@@ -30,7 +30,7 @@ thing, dead flags and config, hand-rolled stdlib.
 
 ## Output
 
-One line per finding, ranked: `<tag> <what to cut>. <replacement>. [path]`.
+Number each finding. One line per finding, ranked: `<N>. <tag> <what to cut>. <replacement>. [path]`.
 End with `net: -<N> lines, -<M> deps possible.` Nothing to cut: `Lean already. Ship.`
 
 ## Boundaries

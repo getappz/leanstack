@@ -10,13 +10,13 @@ description: >
   hunts complexity.
 ---
 
-Review diffs for unnecessary complexity. One line per finding: location, what
-to cut, what replaces it. The diff's best outcome is getting shorter.
+Review diffs for unnecessary complexity. Number each finding sequentially. 
+One line per finding: location, what to cut, what replaces it. 
+The diff's best outcome is getting shorter.
 
 ## Format
 
-`L<line>: <tag> <what>. <replacement>.`, or `<file>:L<line>: ...` for
-multi-file diffs.
+`<N>. <file>:L<line>: <tag> <what>. <replacement>.`
 
 Tags:
 
@@ -26,20 +26,31 @@ Tags:
 - `yagni:` abstraction with one implementation, config nobody sets, layer with one caller.
 - `shrink:` same logic, fewer lines. Show the shorter form.
 
+## Common patterns (pre-filter these before deeper analysis)
+
+| Pattern | Tag | Why |
+|---------|-----|-----|
+| moment.js import | native | Intl.DateTimeFormat or Temporal |
+| lodash import | stdlib | Array.map, Array.filter, Object.keys |
+| axios import | native | fetch() is built-in |
+| JSON.parse(JSON.stringify(...)) | stdlib | structuredClone() |
+| Trivial getter/setter class | yagni | Plain object, no class needed |
+| Pass-through wrapper | yagni | Direct call, skip wrapper |
+
 ## Examples
 
 ❌ "This EmailValidator class might be more complex than necessary, have you
 considered whether all these validation rules are needed at this stage?"
 
-✅ `L12-38: stdlib: 27-line validator class. "@" in email, 1 line, real validation is the confirmation mail.`
+✅ `1. <file>:L12-38: stdlib: 27-line validator class. "@" in email, 1 line, real validation is the confirmation mail.`
 
-✅ `L4: native: moment.js imported for one format call. Intl.DateTimeFormat, 0 deps.`
+✅ `2. <file>:L4: native: moment.js imported for one format call. Intl.DateTimeFormat, 0 deps.`
 
-✅ `repo.py:L88: yagni: AbstractRepository with one implementation. Inline it until a second one exists.`
+✅ `3. repo.py:L88: yagni: AbstractRepository with one implementation. Inline it until a second one exists.`
 
-✅ `L52-71: delete: retry wrapper around an idempotent local call. Nothing replaces it.`
+✅ `4. <file>:L52-71: delete: retry wrapper around an idempotent local call. Nothing replaces it.`
 
-✅ `L30-44: shrink: manual loop builds dict. dict(zip(keys, values)), 1 line.`
+✅ `5. <file>:L30-44: shrink: manual loop builds dict. dict(zip(keys, values)), 1 line.`
 
 ## Scoring
 
