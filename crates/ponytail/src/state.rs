@@ -17,17 +17,20 @@ pub fn session_path() -> PathBuf {
         .join("session-mode")
 }
 
-pub fn active_mode() -> Option<String> {
+fn read_session() -> Option<String> {
     std::fs::read_to_string(session_path())
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::fs::read_to_string(flag_path())
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
+}
+
+pub fn active_mode() -> Option<String> {
+    read_session().or_else(|| {
+        std::fs::read_to_string(flag_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    })
 }
 
 pub fn set_active(mode: &str) -> io::Result<()> {
@@ -56,7 +59,7 @@ pub fn clear_active() {
 }
 
 pub fn active_scope() -> &'static str {
-    if std::fs::read_to_string(session_path()).ok().map_or(false, |s| !s.trim().is_empty()) {
+    if read_session().is_some() {
         "session"
     } else {
         "global"
