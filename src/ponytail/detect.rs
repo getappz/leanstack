@@ -112,8 +112,14 @@ pub fn detect() -> Option<DetectResult> {
 fn find_in_parent_tree() -> Option<String> {
     use sysinfo::{Pid, ProcessesToUpdate, System};
 
+    use sysinfo::ProcessRefreshKind;
+
     let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::All, true);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing(),
+    );
 
     let current_pid = Pid::from_u32(std::process::id());
     let mut pid = system
