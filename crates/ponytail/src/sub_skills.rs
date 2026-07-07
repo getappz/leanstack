@@ -32,9 +32,9 @@ pub fn detect_over_engineering(text: &str) -> Vec<Finding> {
 
 fn ponytail_engineering_check_internal(text: &str, findings: &mut Vec<Finding>, base_line: usize) {
     let patterns: &[(&str, &str, &str, &[&str])] = &[
-        ("lodash", "stdlib", "Use native JS methods: Array.map, Array.filter, Object.keys.", &["from \"lodash\"", "require(\"lodash\")", "import _"]),
-        ("moment", "native", "Use Intl.DateTimeFormat, Date.toLocaleDateString, or Temporal.", &["from \"moment\"", "require(\"moment\")"]),
-        ("axios", "native", "Use native fetch() instead of axios.", &["from \"axios\"", "require(\"axios\")"]),
+        ("lodash", "stdlib", "Use native JS methods: Array.map, Array.filter, Object.keys.", &["from \"lodash\"", "from 'lodash'", "require(\"lodash\")", "require('lodash')"]),
+        ("moment", "native", "Use Intl.DateTimeFormat, Date.toLocaleDateString, or Temporal.", &["from \"moment\"", "from 'moment'", "require(\"moment\")", "require('moment')"]),
+        ("axios", "native", "Use native fetch() instead of axios.", &["from \"axios\"", "from 'axios'", "require(\"axios\")", "require('axios')"]),
         ("JSON.parse(JSON.stringify(", "stdlib", "Use structuredClone() for deep copy.", &["JSON.parse(JSON.stringify("]),
     ];
 
@@ -94,6 +94,19 @@ mod tests {
     #[test]
     fn clean_code_returns_empty() {
         let findings = detect_over_engineering("const x = 1;\nfn foo() { Ok(()) }");
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn detects_single_quoted_imports() {
+        let findings = detect_over_engineering("import lodash from 'lodash';");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].tag, "stdlib");
+    }
+
+    #[test]
+    fn ignores_non_lodash_underscore_import() {
+        let findings = detect_over_engineering("import _ from \"underscore\";");
         assert!(findings.is_empty());
     }
 }

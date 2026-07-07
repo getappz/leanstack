@@ -42,15 +42,15 @@ Tags:
 ❌ "This EmailValidator class might be more complex than necessary, have you
 considered whether all these validation rules are needed at this stage?"
 
-✅ `1. L12-38: stdlib: 27-line validator class. "@" in email, 1 line, real validation is the confirmation mail.`
+✅ `1. <file>:L12-38: stdlib: 27-line validator class. "@" in email, 1 line, real validation is the confirmation mail.`
 
-✅ `2. L4: native: moment.js imported for one format call. Intl.DateTimeFormat, 0 deps.`
+✅ `2. <file>:L4: native: moment.js imported for one format call. Intl.DateTimeFormat, 0 deps.`
 
 ✅ `3. repo.py:L88: yagni: AbstractRepository with one implementation. Inline it until a second one exists.`
 
-✅ `4. L52-71: delete: retry wrapper around an idempotent local call. Nothing replaces it.`
+✅ `4. <file>:L52-71: delete: retry wrapper around an idempotent local call. Nothing replaces it.`
 
-✅ `5. L30-44: shrink: manual loop builds dict. dict(zip(keys, values)), 1 line.`
+✅ `5. <file>:L30-44: shrink: manual loop builds dict. dict(zip(keys, values)), 1 line.`
 
 ## Scoring
 
