@@ -8,6 +8,7 @@ mod auth;
 mod auth_crypt;
 mod auth_db;
 mod auth_runner;
+mod build_time;
 mod components;
 mod coaching;
 mod cost;
@@ -27,9 +28,19 @@ mod update;
 
 use agent_registry::Agent;
 use clap::{Parser, Subcommand};
+use std::sync::LazyLock;
+
+static AGENTFLARE_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let build_time_str = build_time::BUILD_TIME.format("%Y-%m-%d");
+    format!(
+        "{} {} ({build_time_str})",
+        env!("CARGO_PKG_VERSION"),
+        build_time::TARGET,
+    )
+});
 
 #[derive(Parser)]
-#[command(name = "agentflare", version, about = "Optimize AI CLI agents for cost and performance")]
+#[command(name = "agentflare", version = AGENTFLARE_VERSION.as_str(), about = "Optimize AI CLI agents for cost and performance")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
