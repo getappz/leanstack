@@ -1,4 +1,6 @@
+use crate::auth_db::{self, CooldownRow, ProfileHealth};
 use crate::paths::home;
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
@@ -61,6 +63,14 @@ fn profile_dir(agent: &str, profile: &str) -> PathBuf {
     vault_dir().join(agent).join(profile)
 }
 
+fn validate_name(name: &str, kind: &str) -> Result<(), String> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') {
+        Err(format!("invalid {kind}: '{name}' (must not contain path separators)"))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn backup(agent: &str, profile: &str, json: bool) {
     let cat = match catalog_for(agent) {
         Some(c) => c,
@@ -101,7 +111,32 @@ pub fn backup(agent: &str, profile: &str, json: bool) {
     }
 }
 
+pub fn resolve_name(agent: &str, name: &str) -> String {
+    let conn = auth_db::open_or_rebuild();
+    // Aliases always win (user explicitly mapped them)
+    if let Some(real) = auth_db::resolve_alias(&conn, agent, name) {
+        return real;
+    }
+    // Explicit profile name that exists in vault — use as-is, don't remap via project
+    let vault_profiles = list_profiles(agent);
+    if vault_profiles.contains(&name.to_string()) {
+        return name.to_string();
+    }
+    // Project association: only applies when name doesn't match a vault profile
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let path = cwd.to_string_lossy().to_string();
+    if let Some(project_profile) = auth_db::get_project(&conn, &path, agent) {
+        return project_profile;
+    }
+    name.to_string()
+}
+
 pub fn activate(agent: &str, profile: &str, json: bool) {
+    let profile = resolve_name(agent, profile);
+    if let Err(e) = validate_name(agent, "agent").and_then(|_| validate_name(&profile, "profile")) {
+        fail(&e, "", json);
+        return;
+    }
     let cat = match catalog_for(agent) {
         Some(c) => c,
         None => {
@@ -109,7 +144,7 @@ pub fn activate(agent: &str, profile: &str, json: bool) {
             return;
         }
     };
-    let vault = profile_dir(agent, profile);
+    let vault = profile_dir(agent, &profile);
     if !vault.exists() {
         if json {
             println!("{}", serde_json::json!({"error": "profile not found", "profile": profile}));
@@ -353,6 +388,300 @@ fn fail(msg: &str, detail: &str, json: bool) {
     }
 }
 
+fn validate_algorithm(name: &str) -> Result<&str, String> {
+    match name {
+        "smart" | "round-robin" | "random" => Ok(name),
+        _ => Err(format!("unknown algorithm: '{name}' (valid: smart, round-robin, random)")),
+    }
+}
+
+pub fn rotate(agent: &str, algorithm: &str, json: bool) {
+    let algorithm = match validate_algorithm(algorithm) {
+        Ok(a) => a,
+        Err(e) => { fail(&e, "", json); return; }
+    };
+    let conn = auth_db::open_or_rebuild();
+    let cooldowns = auth_db::list_cooldowns(&conn, Some(agent));
+    let health = auth_db::list_health(&conn, agent);
+    let vault_profiles = list_profiles(agent);
+    let active = filter_active(&vault_profiles, &cooldowns);
+
+    if active.is_empty() {
+        if json {
+            println!("{}", serde_json::json!({"error": "no non-cooldown profiles available"}));
+        } else {
+            eprintln!("error: all profiles are in cooldown");
+        }
+        return;
+    }
+
+    let chosen = select_profile(&conn, agent, algorithm, &health, &active);
+    activate(agent, &chosen, json);
+    auth_db::set_rotation_last(&conn, agent, &chosen, algorithm);
+}
+
+fn filter_active(profiles: &[String], cooldowns: &[CooldownRow]) -> Vec<String> {
+    profiles
+        .iter()
+        .filter(|p| !cooldowns.iter().any(|c| c.profile == **p))
+        .cloned()
+        .collect()
+}
+
+fn select_profile(
+    conn: &Connection,
+    agent: &str,
+    algorithm: &str,
+    health: &[ProfileHealth],
+    profiles: &[String],
+) -> String {
+    match algorithm {
+        "round-robin" => round_robin(conn, agent, profiles),
+        "random" => random_pick(profiles),
+        _ => smart_pick(health, profiles),
+    }
+}
+
+fn smart_pick(health: &[ProfileHealth], profiles: &[String]) -> String {
+    let mut scored: Vec<(String, f64)> = profiles
+        .iter()
+        .map(|p| {
+            let h = health.iter().find(|h| h.profile == *p);
+            let base = match h.map(|h| h.status.as_str()) {
+                Some("healthy") => 100.0,
+                Some("warning") => 50.0,
+                Some("critical") => 0.0,
+                _ => 100.0,
+            };
+            let penalty = h.map(|h| h.penalty).unwrap_or(0.0);
+            let recency = if h.and_then(|h| h.last_used_at.as_ref()).is_some() { 0.0 } else { 10.0 };
+            let jitter = (rand::random::<f64>() * 10.0) - 5.0;
+            (p.clone(), base - penalty + recency + jitter)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored[0].0.clone()
+}
+
+fn round_robin(conn: &Connection, agent: &str, profiles: &[String]) -> String {
+    if let Some((last, _)) = auth_db::get_rotation_last(conn, agent) {
+        if let Some(pos) = profiles.iter().position(|p| *p == last) {
+            let next = (pos + 1) % profiles.len();
+            return profiles[next].clone();
+        }
+    }
+    profiles[0].clone()
+}
+
+fn random_pick(profiles: &[String]) -> String {
+    let idx = rand::random::<usize>() % profiles.len();
+    profiles[idx].clone()
+}
+
+pub fn next(agent: &str, algorithm: &str, json: bool) {
+    let algorithm = match validate_algorithm(algorithm) {
+        Ok(a) => a,
+        Err(e) => { fail(&e, "", json); return; }
+    };
+    let conn = auth_db::open_or_rebuild();
+    let cooldowns = auth_db::list_cooldowns(&conn, Some(agent));
+    let health = auth_db::list_health(&conn, agent);
+    let profiles = list_profiles(agent);
+    let active = filter_active(&profiles, &cooldowns);
+
+    let chosen = if active.is_empty() {
+        "(none — all cooldown'd)".to_string()
+    } else {
+        select_profile(&conn, agent, algorithm, &health, &active)
+    };
+    if json {
+        println!("{}", serde_json::json!({"agent": agent, "next": chosen, "algorithm": algorithm}));
+    } else {
+        println!("next rotation for {agent} [{algorithm}]: {chosen}");
+    }
+}
+
+pub fn pick(agent: &str) {
+    let profiles = list_profiles(agent);
+    if profiles.is_empty() {
+        println!("no profiles for {agent}");
+        return;
+    }
+    for (i, p) in profiles.iter().enumerate() {
+        println!("  [{}] {p}", i + 1);
+    }
+    print!("choose profile: ");
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+    if let Ok(idx) = input.trim().parse::<usize>() {
+        if idx > 0 && idx <= profiles.len() {
+            activate(agent, &profiles[idx - 1], false);
+            return;
+        }
+    }
+    eprintln!("invalid selection");
+}
+
+pub fn cooldown_set(target: &str, minutes: Option<u32>, json: bool) {
+    let (agent, profile) = match parse_target(target) {
+        Some(p) => p,
+        None => {
+            if json {
+                println!("{}", serde_json::json!({"error": "expected <agent>/<profile>"}));
+            } else {
+                eprintln!("error: expected <agent>/<profile>");
+            }
+            return;
+        }
+    };
+    let mins = minutes.unwrap_or(60);
+    let conn = auth_db::open_or_rebuild();
+    auth_db::set_cooldown(&conn, &agent, &profile, mins, "manual");
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"agent": agent, "profile": profile, "cooldown_minutes": mins})
+        );
+    } else {
+        println!("cooldown set: {agent}/{profile} for {mins} minutes");
+    }
+}
+
+pub fn cooldown_list(agent: Option<&str>, json: bool) {
+    let conn = auth_db::open_or_rebuild();
+    let list = auth_db::list_cooldowns(&conn, agent);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(
+                &list
+                    .iter()
+                    .map(|c| serde_json::json!({
+                        "agent": c.agent,
+                        "profile": c.profile,
+                        "until": c.until,
+                        "reason": c.reason,
+                    }))
+                    .collect::<Vec<_>>()
+            )
+            .unwrap()
+        );
+    } else if list.is_empty() {
+        println!("no active cooldowns");
+    } else {
+        for c in &list {
+            println!(
+                "  {}/{}  until {}  {}",
+                c.agent,
+                c.profile,
+                c.until,
+                c.reason.as_deref().unwrap_or("")
+            );
+        }
+    }
+}
+
+pub fn cooldown_clear(target: &str, json: bool) {
+    let (agent, profile) = match parse_target(target) {
+        Some(p) => p,
+        None => {
+            if json {
+                println!("{}", serde_json::json!({"error": "expected <agent>/<profile>"}));
+            } else {
+                eprintln!("error: expected <agent>/<profile>");
+            }
+            return;
+        }
+    };
+    let conn = auth_db::open_or_rebuild();
+    auth_db::clear_cooldown(&conn, &agent, &profile);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"cleared": true, "agent": agent, "profile": profile})
+        );
+    } else {
+        println!("cooldown cleared: {agent}/{profile}");
+    }
+}
+
+fn parse_target(target: &str) -> Option<(String, String)> {
+    if target.is_empty() { return None; }
+    let parts: Vec<&str> = target.splitn(2, '/').collect();
+    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
+    }
+}
+
+pub fn set_alias_cmd(agent: &str, profile: &str, alias: &str, json: bool) {
+    let conn = auth_db::open_or_rebuild();
+    auth_db::set_alias(&conn, agent, alias, profile);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"agent": agent, "alias": alias, "profile": profile})
+        );
+    } else {
+        println!("alias set: {agent}/{alias} -> {profile}");
+    }
+}
+
+pub fn project_set(agent: &str, profile: &str, json: bool) {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = format!("cannot determine current directory: {e}");
+            if json {
+                println!("{}", serde_json::json!({"error": msg}));
+            } else {
+                eprintln!("error: {msg}");
+            }
+            return;
+        }
+    };
+    let path = cwd.to_string_lossy().to_string();
+    let conn = auth_db::open_or_rebuild();
+    auth_db::set_project(&conn, &path, agent, profile);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"path": path, "agent": agent, "profile": profile})
+        );
+    } else {
+        println!("project set: {path} -> {agent}/{profile}");
+    }
+}
+
+pub fn project_unset(agent: &str, json: bool) {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = format!("cannot determine current directory: {e}");
+            if json {
+                println!("{}", serde_json::json!({"error": msg}));
+            } else {
+                eprintln!("error: {msg}");
+            }
+            return;
+        }
+    };
+    let path = cwd.to_string_lossy().to_string();
+    let conn = auth_db::open_or_rebuild();
+    auth_db::unset_project(&conn, &path, agent);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"path": path, "agent": agent, "unset": true})
+        );
+    } else {
+        println!("project unset: {path}/{agent}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +760,124 @@ mod tests {
             clear("claude-code", false);
 
             assert!(!creds.exists());
+        });
+    }
+
+    fn setup_vault_profile(agent: &str, profile: &str, content: &str) {
+        let dir = profile_dir(agent, profile);
+        fs::create_dir_all(&dir).unwrap();
+        // Use the catalog's first file name for the vault entry
+        let cat = CATALOG.iter().find(|c| c.agent_key == agent).unwrap();
+        let fname = cat.files[0].rsplit('/').next().unwrap_or(cat.files[0]);
+        fs::write(dir.join(fname), content).unwrap();
+    }
+
+    #[test]
+    fn cooldown_set_and_rotate_skips() {
+        with_temp_home(|| {
+            setup_vault_profile("claude-code", "alice", r#"{"token":"a"}"#);
+            setup_vault_profile("claude-code", "bob", r#"{"token":"b"}"#);
+
+            let conn = auth_db::open_or_rebuild();
+            auth_db::set_cooldown(&conn, "claude-code", "alice", 60, "test");
+
+            let profiles = list_profiles("claude-code");
+            let cooldowns = auth_db::list_cooldowns(&conn, Some("claude-code"));
+            let active = filter_active(&profiles, &cooldowns);
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0], "bob");
+        });
+    }
+
+    #[test]
+    fn alias_activates_profile() {
+        with_temp_home(|| {
+            setup_vault_profile("claude-code", "work@company.com", r#"{"token":"x"}"#);
+            let conn = auth_db::open_or_rebuild();
+            auth_db::set_alias(&conn, "claude-code", "w", "work@company.com");
+
+            let resolved = auth_db::resolve_alias(&conn, "claude-code", "w");
+            assert_eq!(resolved, Some("work@company.com".to_string()));
+
+            // activate via alias
+            activate("claude-code", "w", false);
+            let creds = home().join(".claude").join(".credentials.json");
+            assert!(creds.exists());
+            assert_eq!(fs::read_to_string(&creds).unwrap(), r#"{"token":"x"}"#);
+        });
+    }
+
+    #[test]
+    fn full_rotate_flow() {
+        with_temp_home(|| {
+            let conn = auth_db::open_or_rebuild();
+            setup_vault_profile("claude-code", "alice", r#"{"token":"a"}"#);
+            setup_vault_profile("claude-code", "bob", r#"{"token":"b"}"#);
+            setup_vault_profile("claude-code", "carol", r#"{"token":"c"}"#);
+
+            auth_db::set_cooldown(&conn, "claude-code", "alice", 60, "manual");
+            auth_db::record_error(&conn, "claude-code", "bob", "502 Bad Gateway");
+
+            // rotate() should pick carol — alice cooldown'd, bob penalized
+            rotate("claude-code", "smart", false);
+
+            // verify carol was activated (auth file restored)
+            let creds = home().join(".claude").join(".credentials.json");
+            assert!(creds.exists());
+            assert_eq!(fs::read_to_string(&creds).unwrap(), r#"{"token":"c"}"#);
+
+            // verify rotation last was set
+            let last = auth_db::get_rotation_last(&conn, "claude-code");
+            assert_eq!(last, Some(("carol".to_string(), "smart".to_string())));
+        });
+    }
+
+    #[test]
+    fn round_robin_cycles_profiles() {
+        with_temp_home(|| {
+            let conn = auth_db::open_or_rebuild();
+            let profiles = vec!["alice".to_string(), "bob".to_string(), "carol".to_string()];
+
+            let first = round_robin(&conn, "claude-code", &profiles);
+            assert_eq!(first, "alice"); // no last → first profile
+
+            auth_db::set_rotation_last(&conn, "claude-code", "alice", "round-robin");
+            let second = round_robin(&conn, "claude-code", &profiles);
+            assert_eq!(second, "bob"); // alice → bob
+
+            auth_db::set_rotation_last(&conn, "claude-code", "carol", "round-robin");
+            let third = round_robin(&conn, "claude-code", &profiles);
+            assert_eq!(third, "alice"); // carol wraps to alice
+        });
+    }
+
+    #[test]
+    fn parse_target_validates() {
+        assert_eq!(parse_target("claude-code/alice"), Some(("claude-code".to_string(), "alice".to_string())));
+        assert_eq!(parse_target(""), None);
+        assert_eq!(parse_target("/"), None);
+        assert_eq!(parse_target("a/"), None);
+        assert_eq!(parse_target("/b"), None);
+        assert_eq!(parse_target("no-slash"), None);
+        assert_eq!(parse_target("a/b/c"), Some(("a".to_string(), "b/c".to_string())));
+    }
+
+    #[test]
+    fn next_shows_preview() {
+        with_temp_home(|| {
+            let conn = auth_db::open_or_rebuild();
+            setup_vault_profile("claude-code", "alice", r#"{"token":"a"}"#);
+            setup_vault_profile("claude-code", "bob", r#"{"token":"b"}"#);
+
+            auth_db::set_cooldown(&conn, "claude-code", "bob", 60, "test");
+
+            // next should pick alice (bob cooldown'd)
+            let health = auth_db::list_health(&conn, "claude-code");
+            let profiles = list_profiles("claude-code");
+            let cooldowns = auth_db::list_cooldowns(&conn, Some("claude-code"));
+            let active = filter_active(&profiles, &cooldowns);
+            let picked = select_profile(&conn, "claude-code", "smart", &health, &active);
+            assert_eq!(picked, "alice");
         });
     }
 }
