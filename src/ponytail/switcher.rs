@@ -17,12 +17,12 @@ pub fn detect(input: &str) -> Option<SwitchAction> {
         let prefixed = format!("/ponytail-{skill}");
         let alt = format!("/ponytail:{skill}");
         if prompt == prefixed || prompt.starts_with(&format!("{prefixed} ")) {
-            config::normalize_config_mode(skill)?;
-            return Some(SwitchAction::SetMode(skill.to_string()));
+            let normalized = config::normalize_config_mode(skill)?;
+            return Some(SwitchAction::SetMode(normalized.to_string()));
         }
         if prompt == alt || prompt.starts_with(&format!("{alt} ")) {
-            config::normalize_config_mode(skill)?;
-            return Some(SwitchAction::SetMode(skill.to_string()));
+            let normalized = config::normalize_config_mode(skill)?;
+            return Some(SwitchAction::SetMode(normalized.to_string()));
         }
     }
 
@@ -37,23 +37,23 @@ pub fn detect(input: &str) -> Option<SwitchAction> {
 
     if sub.is_empty() || sub == "lite" || sub == "full" || sub == "ultra" {
         let mode = if sub.is_empty() { "full" } else { sub };
-        config::normalize_config_mode(mode)?;
-        return Some(SwitchAction::SetMode(mode.to_string()));
+        let normalized = config::normalize_config_mode(mode)?;
+        return Some(SwitchAction::SetMode(normalized.to_string()));
     }
 
     match sub {
         "off" => Some(SwitchAction::Off),
         "review" | "audit" | "debt" | "gain" | "help" => {
-            config::normalize_config_mode(sub)?;
-            Some(SwitchAction::SetMode(sub.to_string()))
+            let normalized = config::normalize_config_mode(sub)?;
+            Some(SwitchAction::SetMode(normalized.to_string()))
         }
         "default" => {
             let dmode = arg;
             if dmode.is_empty() {
                 return None;
             }
-            config::normalize_config_mode(dmode)?;
-            Some(SwitchAction::SetDefault(dmode.to_string()))
+            let normalized = config::normalize_config_mode(dmode)?;
+            Some(SwitchAction::SetDefault(normalized.to_string()))
         }
         _ => None,
     }

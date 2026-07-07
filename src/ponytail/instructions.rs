@@ -22,6 +22,7 @@ pub fn skill_cache_path() -> std::path::PathBuf {
 
 pub fn download_skill() -> Result<String, String> {
     let resp = ureq::get(SKILL_URL)
+        .timeout(std::time::Duration::from_secs(30))
         .call()
         .map_err(|e| format!("fetch failed: {e}"))?;
     if resp.status() != 200 {
@@ -52,12 +53,7 @@ pub fn build(mode: &str, skill_path: Option<&Path>) -> Instructions {
     let skill_body = if let Some(path) = skill_path {
         std::fs::read_to_string(path).unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
     } else {
-        let cache = dirs::cache_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("agentflare")
-            .join("ponytail")
-            .join("SKILL.md");
-        std::fs::read_to_string(&cache).unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
+        std::fs::read_to_string(skill_cache_path()).unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
     };
 
     let filtered = filter_skill_body(&skill_body, effective);
