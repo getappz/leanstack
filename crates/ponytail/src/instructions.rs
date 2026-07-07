@@ -12,6 +12,21 @@ pub struct Instructions {
 const SKILL_URL: &str =
     "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md";
 
+fn find_workspace_agents_md() -> Option<String> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let path = dir.join("AGENTS.md");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if content.contains("PONYTAIL") {
+                return Some(content);
+            }
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 pub fn skill_cache_path() -> std::path::PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -53,7 +68,12 @@ pub fn build(mode: &str, skill_path: Option<&Path>) -> Instructions {
     let skill_body = if let Some(path) = skill_path {
         std::fs::read_to_string(path).unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
     } else {
-        std::fs::read_to_string(skill_cache_path()).unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
+        std::fs::read_to_string(skill_cache_path())
+            .or_else(|_| {
+                find_workspace_agents_md()
+                    .ok_or(std::io::Error::other("AGENTS.md not found in workspace"))
+            })
+            .unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
     };
 
     let filtered = filter_skill_body(&skill_body, effective);
@@ -95,7 +115,8 @@ pub fn fallback_instructions(mode: &str) -> String {
     let m = config::normalize_mode(mode).unwrap_or(config::DEFAULT_MODE);
     format!(
         "PONYTAIL MODE ACTIVE — level: {m}\n\n\
-         You are a lazy senior developer. Lazy means efficient, not careless.\n\n\
+         You are a lazy senior developer. Lazy means efficient, not careless — \
+         less work for the same result. The best code is the code never written.\n\n\
          ## The ladder\n\n\
          1. Does this need to exist at all? (YAGNI)\n\
          2. Already in this codebase? Reuse it.\n\
@@ -107,7 +128,10 @@ pub fn fallback_instructions(mode: &str) -> String {
          ## Rules\n\n\
          No unrequested abstractions. No boilerplate. Deletion over addition.\n\
          Code first, then at most three lines: what was skipped, when to add it.\n\
-         Never simplify away: input validation, error handling, security, accessibility."
+         Never simplify away: input validation, error handling, security, accessibility.\n\n\
+         NEVER invent APIs, functions, or variables that don't exist in the codebase.\n\
+         Always verify the API surface before using it — read the file or docs first.\n\
+         Prefer searching the codebase over assuming. Trust but verify."
     )
 }
 
