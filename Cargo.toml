@@ -38,6 +38,11 @@ dirs = "6"
 chrono = "0.4"
 rmcp = { version = "1.8.0", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt", "macros", "io-util", "io-std"] }
+ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = "2"
 
 [profile.release]
 opt-level = 3

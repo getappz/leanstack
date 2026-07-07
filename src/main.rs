@@ -17,6 +17,8 @@ mod pricing;
 mod rule_text;
 mod shell;
 mod state;
+mod uninstall;
+mod update;
 
 use agent_registry::Agent;
 use clap::{Parser, Subcommand};
@@ -90,6 +92,33 @@ enum Commands {
         /// Machine-readable output for scripting
         #[arg(long)]
         json: bool,
+    },
+    /// Self-update agentflare from GitHub Releases. Downloads the latest
+    /// (or a specific version), verifies the SHA256 checksum, and replaces
+    /// the running binary.
+    Update {
+        /// Install a specific tagged release instead of latest.
+        version: Option<String>,
+        /// Check for a newer version without installing.
+        #[arg(long)]
+        check: bool,
+        /// Minimal output.
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Remove everything agentflare init wrote, plus the binary.
+    /// Surgical block removal from shared config files — never deletes
+    /// whole files that may contain user content.
+    Uninstall {
+        /// Print what would be removed without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Leave rules/hooks/MCP config in place, only remove ~/.agentflare/.
+        #[arg(long)]
+        keep_config: bool,
+        /// Don't remove the installed binary.
+        #[arg(long)]
+        keep_binary: bool,
     },
 }
 
@@ -206,6 +235,10 @@ fn main() {
         },
         Commands::Alias { preferred, force, print, yes, shell, profile, json } => {
             alias::run(preferred, force, print, yes, shell, profile, json)
+        }
+        Commands::Update { version, check, quiet } => update::run(version, check, quiet),
+        Commands::Uninstall { dry_run, keep_config, keep_binary } => {
+            uninstall::run(dry_run, keep_config, keep_binary)
         }
     }
 }
