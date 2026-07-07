@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ponytail", "crates/agent-registry"]
+members = ["crates/ponytail", "crates/agent-registry", "crates/skill-registry"]
 resolver = "2"
 
 [package]
