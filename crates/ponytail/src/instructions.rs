@@ -12,6 +12,21 @@ pub struct Instructions {
 const SKILL_URL: &str =
     "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md";
 
+fn find_workspace_agents_md() -> Option<String> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let path = dir.join("AGENTS.md");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if content.contains("PONYTAIL") {
+                return Some(content);
+            }
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 pub fn skill_cache_path() -> std::path::PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -55,10 +70,8 @@ pub fn build(mode: &str, skill_path: Option<&Path>) -> Instructions {
     } else {
         std::fs::read_to_string(skill_cache_path())
             .or_else(|_| {
-                std::fs::read_to_string("AGENTS.md")
-                    .ok()
-                    .filter(|s| s.contains("PONYTAIL"))
-                    .ok_or(std::io::Error::other("AGENTS.md missing or without PONYTAIL marker"))
+                find_workspace_agents_md()
+                    .ok_or(std::io::Error::other("AGENTS.md not found in workspace"))
             })
             .unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
     };
