@@ -1,4 +1,5 @@
 use crate::auth_db;
+use crate::errors::DaemonError;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::channel;
@@ -127,7 +128,7 @@ pub fn daemon_running(agent: &str) -> bool {
     false
 }
 
-pub fn reload_daemon(agent: &str) -> Result<(), String> {
+pub fn reload_daemon(agent: &str) -> Result<(), DaemonError> {
     if !daemon_running(agent) {
         return Ok(());
     }
@@ -141,16 +142,14 @@ pub fn reload_daemon(agent: &str) -> Result<(), String> {
         for name in names {
             std::process::Command::new("taskkill")
                 .args(["/IM", &format!("{name}.exe")])
-                .output()
-                .map_err(|e| format!("taskkill: {e}"))?;
+                .output()?;
         }
     }
     #[cfg(not(windows))]
     {
         std::process::Command::new("pkill")
             .args(names)
-            .output()
-            .map_err(|e| format!("pkill: {e}"))?;
+            .output()?;
     }
     Ok(())
 }
