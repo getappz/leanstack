@@ -1,0 +1,24 @@
+name: winget
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - name: Install komac
+        run: winget install --id russellbanks.Komac --accept-source-agreements --accept-package-agreements
+
+      - name: Update winget manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KOMAC_FORK_OWNER: getappz
+        run: |
+          $id = "getappz.agentflare"
+          $urls = gh release view --json assets --jq '.assets[] | select(.name | test("\\.(exe|msi)$")) | .url'
+          if (-not $urls) { throw "No winget installer assets found" }
+          komac update $id --version "${{ github.event.release.tag_name }}" --urls $urls
+          komac cleanup --only-merged
