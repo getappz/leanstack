@@ -43,6 +43,7 @@ sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
 zip = "2"
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [profile.release]
 opt-level = 3
