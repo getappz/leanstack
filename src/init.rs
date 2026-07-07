@@ -22,6 +22,72 @@ fn agentflare_binary() -> String {
         .unwrap_or_else(|| "agentflare".to_string())
 }
 
+fn confirm_ponytail_migration(agent: &str) -> bool {
+    let detected = match agent {
+        "claude-code" | "cowork" => has_existing_ponytail_claude(),
+        "cursor" | "cursor-cli" => has_existing_ponytail_cursor(),
+        "opencode" => has_existing_ponytail_opencode(),
+        _ => false,
+    };
+
+    if !detected {
+        return true;
+    }
+
+    println!();
+    println!("⚠ Existing ponytail plugin detected for {agent}.");
+    println!("  agentflare has ponytail built-in — the npm plugin would conflict.");
+    println!("  Disable it now?");
+    println!();
+    println!("  For OpenCode: run 'opencode plugin uninstall ponytail@ponytail'");
+    println!("  For Claude Code: run '/plugin uninstall ponytail@ponytail' in a session");
+    println!();
+    println!("  After disabling, re-run: agentflare init --agent {agent}");
+
+    false
+}
+
+fn has_existing_ponytail_claude() -> bool {
+    let path = home().join(".claude").join("settings.json");
+    if let Ok(content) = fs::read_to_string(&path) {
+        if let Ok(settings) = serde_json::from_str::<Value>(&content) {
+            let hooks = settings.get("hooks");
+            let has_ponytail = hooks
+                .and_then(|h| h.get("SessionStart"))
+                .map(|v| v.to_string().contains("ponytail"))
+                .unwrap_or(false);
+            let not_agentflare = hooks
+                .and_then(|h| h.get("SessionStart"))
+                .map(|v| !v.to_string().contains("agentflare"))
+                .unwrap_or(true);
+            return has_ponytail && not_agentflare;
+        }
+    }
+    false
+}
+
+fn has_existing_ponytail_cursor() -> bool {
+    let path = cwd().join(".cursor").join("hooks.json");
+    if let Ok(content) = fs::read_to_string(&path) {
+        has_ponytail_ref(&content) && !content.contains("agentflare")
+    } else {
+        false
+    }
+}
+
+fn has_existing_ponytail_opencode() -> bool {
+    let path = home().join(".config").join("opencode").join("opencode.jsonc");
+    if let Ok(content) = fs::read_to_string(&path) {
+        has_ponytail_ref(&content) && !content.contains("agentflare")
+    } else {
+        false
+    }
+}
+
+fn has_ponytail_ref(content: &str) -> bool {
+    content.to_lowercase().contains("ponytail")
+}
+
 pub fn run(agent: &str) {
     println!("agentflare init --agent {agent}\n");
 
@@ -34,9 +100,24 @@ pub fn run(agent: &str) {
     }
 
     match agent {
-        "claude-code" => { wire_claude_code(); wire_ponytail_hooks(agent); }
-        "cursor" => { wire_cursor(); wire_ponytail_hooks(agent); }
-        "opencode" => { wire_opencode(); wire_ponytail_hooks(agent); }
+        "claude-code" => {
+            wire_claude_code();
+            if confirm_ponytail_migration(agent) {
+                wire_ponytail_hooks(agent);
+            }
+        }
+        "cursor" => {
+            wire_cursor();
+            if confirm_ponytail_migration(agent) {
+                wire_ponytail_hooks(agent);
+            }
+        }
+        "opencode" => {
+            wire_opencode();
+            if confirm_ponytail_migration(agent) {
+                wire_ponytail_hooks(agent);
+            }
+        }
         _ => {}
     }
 
