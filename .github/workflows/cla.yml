@@ -3,6 +3,7 @@ name: CLA Assistant
 on:
   issue_comment:
     types: [created]
+  # zizmor: ignore[dangerous-triggers] — pull_request_target is required for CLA signing
   pull_request_target:
     types: [opened, closed, synchronize]
 
