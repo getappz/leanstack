@@ -31,7 +31,7 @@ pub enum AuthError {
     #[error("expected <agent>/<profile>")]
     InvalidTarget,
     #[error("cannot determine current directory: {0}")]
-    NoCwd(std::io::Error),
+    NoCwd(#[source] std::io::Error),
 }
 
 #[derive(Error, Debug)]
@@ -65,7 +65,7 @@ pub enum AgentInstallError {
     #[error("{0} — exit code {1}")]
     CommandFailed(String, i32),
     #[error("{0} — {1}")]
-    CommandIo(String, std::io::Error),
+    CommandIo(String, #[source] std::io::Error),
 }
 
 #[derive(Error, Debug)]

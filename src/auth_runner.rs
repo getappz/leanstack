@@ -142,16 +142,14 @@ pub fn reload_daemon(agent: &str) -> Result<(), DaemonError> {
         for name in names {
             std::process::Command::new("taskkill")
                 .args(["/IM", &format!("{name}.exe")])
-                .output()
-                .map_err(DaemonError::TaskKill)?;
+                .output()?;
         }
     }
     #[cfg(not(windows))]
     {
         std::process::Command::new("pkill")
             .args(names)
-            .output()
-            .map_err(|e| DaemonError::TaskKill(e))?;
+            .output()?;
     }
     Ok(())
 }
