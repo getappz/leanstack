@@ -213,11 +213,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let original = std::env::var_os("PATH");
-        std::env::set_var("PATH", &dir);
+        unsafe { std::env::set_var("PATH", &dir) };
         f(&dir);
         match original {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
+            Some(p) => unsafe { std::env::set_var("PATH", p) },
+            None => unsafe { std::env::remove_var("PATH") },
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
