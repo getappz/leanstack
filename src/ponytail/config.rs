@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const DEFAULT_MODE: &str = "full";
-pub const VALID_MODES: &[&str] = &["off", "lite", "full", "ultra", "review"];
+pub const VALID_MODES: &[&str] = &[
+    "off", "lite", "full", "ultra", "review", "audit", "debt", "gain", "help",
+];
 pub const RUNTIME_MODES: &[&str] = &["off", "lite", "full", "ultra"];
 
 pub fn normalize_mode(mode: &str) -> Option<&'static str> {

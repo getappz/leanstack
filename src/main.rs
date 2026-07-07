@@ -358,6 +358,16 @@ enum PonytailAction {
     Off,
     /// Re-download SKILL.md from ponytail repo to cache.
     Update,
+    /// Run ponytail-review over-engineering code review.
+    Review,
+    /// Whole-repo audit for over-engineering.
+    Audit,
+    /// Harvest ponytail: comments into a debt ledger.
+    Debt,
+    /// Show ponytail benchmark impact stats.
+    Gain,
+    /// Quick-reference card for all ponytail modes and commands.
+    Info,
     /// Hook entry point — called by agent hook systems. Not for manual use.
     Hook {
         #[command(subcommand)]
@@ -587,6 +597,21 @@ fn main() {
                         std::process::exit(1);
                     }
                 }
+            }
+            PonytailAction::Review => {
+                println!("{}", ponytail::sub_skills::SKILL_REVIEW);
+            }
+            PonytailAction::Audit => {
+                println!("{}", ponytail::sub_skills::SKILL_AUDIT);
+            }
+            PonytailAction::Debt => {
+                println!("{}", ponytail::sub_skills::SKILL_DEBT);
+            }
+            PonytailAction::Gain => {
+                println!("{}", ponytail::sub_skills::SKILL_GAIN);
+            }
+            PonytailAction::Info => {
+                println!("{}", ponytail::sub_skills::SKILL_HELP);
             }
             PonytailAction::Hook { event } => match event {
                 PonytailHookEvent::SessionStart => {

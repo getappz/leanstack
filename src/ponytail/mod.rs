@@ -2,6 +2,7 @@ pub mod config;
 pub mod instructions;
 pub mod platform;
 pub mod state;
+pub mod sub_skills;
 pub mod switcher;
 
 pub use config::{default_mode, normalize_config_mode, set_default_mode};

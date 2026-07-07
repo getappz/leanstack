@@ -13,6 +13,19 @@ pub fn detect(input: &str) -> Option<SwitchAction> {
         return Some(SwitchAction::Off);
     }
 
+    for skill in &["review", "audit", "debt", "gain", "help"] {
+        let prefixed = format!("/ponytail-{skill}");
+        let alt = format!("/ponytail:{skill}");
+        if prompt == prefixed || prompt.starts_with(&format!("{prefixed} ")) {
+            config::normalize_config_mode(skill)?;
+            return Some(SwitchAction::SetMode(skill.to_string()));
+        }
+        if prompt == alt || prompt.starts_with(&format!("{alt} ")) {
+            config::normalize_config_mode(skill)?;
+            return Some(SwitchAction::SetMode(skill.to_string()));
+        }
+    }
+
     let cmd = prompt
         .strip_prefix("/ponytail")
         .or_else(|| prompt.strip_prefix("@ponytail"))
@@ -30,6 +43,10 @@ pub fn detect(input: &str) -> Option<SwitchAction> {
 
     match sub {
         "off" => Some(SwitchAction::Off),
+        "review" | "audit" | "debt" | "gain" | "help" => {
+            config::normalize_config_mode(sub)?;
+            Some(SwitchAction::SetMode(sub.to_string()))
+        }
         "default" => {
             let dmode = arg;
             if dmode.is_empty() {
@@ -71,5 +88,20 @@ mod tests {
     fn ignores_false_positives() {
         assert!(detect("let's talk about ponytail").is_none());
         assert!(detect("").is_none());
+    }
+
+    #[test]
+    fn detects_sub_skill_review() {
+        assert!(matches!(detect("/ponytail-review"), Some(SwitchAction::SetMode(m)) if m == "review"));
+    }
+
+    #[test]
+    fn detects_sub_skill_audit() {
+        assert!(matches!(detect("/ponytail-audit"), Some(SwitchAction::SetMode(m)) if m == "audit"));
+    }
+
+    #[test]
+    fn detects_sub_skill_inline() {
+        assert!(matches!(detect("/ponytail review"), Some(SwitchAction::SetMode(m)) if m == "review"));
     }
 }
