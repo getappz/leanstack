@@ -82,12 +82,15 @@ fn read_entry(id: &str, path: &Path) -> Option<SkillEntry> {
     })
 }
 
+static SHADOW_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"compressed-from:\s+(.+?)\s+\d+B").unwrap()
+});
+
 /// `<!-- compressed-from: <path> <N>B → <M>B, <date> -->` in the first 2000 chars.
 fn shadow_origin(path: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(path).ok()?;
     let head: String = text.chars().take(2000).collect();
-    let re = regex::Regex::new(r"compressed-from:\s+(.+?)\s+\d+B").unwrap();
-    re.captures(&head).map(|c| PathBuf::from(c[1].to_string()))
+    SHADOW_RE.captures(&head).map(|c| PathBuf::from(c[1].to_string()))
 }
 
 pub fn scan_sources(sources: &[Source]) -> ScanOutput {

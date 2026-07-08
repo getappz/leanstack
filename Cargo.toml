@@ -71,6 +71,7 @@ built = { version = "0.8", features = ["chrono"] }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
+tempfile = "3"
 pretty_assertions = "1"
 
 [lints.rust]

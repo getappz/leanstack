@@ -59,6 +59,8 @@ pub struct AgentflareMcp {
     /// `Registry` owns a `rusqlite::Connection` (Send, not Sync); the mutex
     /// makes the server type `Sync` without requiring `Registry` to be.
     skills_registry: std::sync::Mutex<Option<skill_registry::Registry>>,
+    /// Tests inject a temp path here so they never touch the shared skills.db.
+    skills_db_override: Option<std::path::PathBuf>,
 }
 
 #[tool_router]
@@ -127,7 +129,11 @@ impl AgentflareMcp {
             .lock()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         if guard.is_none() {
-            let reg = skill_registry::Registry::open_default(&Self::skills_db_path())
+            let db_path = self
+                .skills_db_override
+                .clone()
+                .unwrap_or_else(Self::skills_db_path);
+            let reg = skill_registry::Registry::open_default(&db_path)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             *guard = Some(reg);
         }
@@ -421,7 +427,12 @@ mod tests {
 
     #[test]
     fn skill_load_unknown_name_reports_not_found_with_search_hint() {
-        let s = AgentflareMcp::default();
+        // Isolated DB path so the test never opens/refreshes the shared skills.db.
+        let tmp = tempfile::tempdir().unwrap();
+        let s = AgentflareMcp {
+            skills_db_override: Some(tmp.path().join("skills.db")),
+            ..Default::default()
+        };
         let out = s
             .skill_load(Parameters(SkillLoadRequest {
                 name: "definitely-not-a-skill-xyz".into(),

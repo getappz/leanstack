@@ -90,6 +90,7 @@ dependencies = [
  "skill-registry",
  "sysinfo",
  "tar",
+ "tempfile",
  "thiserror",
  "tokio",
  "ureq",
