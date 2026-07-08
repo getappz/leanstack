@@ -190,7 +190,19 @@ impl PonytailArgs {
                             ponytail::SwitchAction::Off => {
                                 ponytail::clear_active();
                             }
-                            ponytail::SwitchAction::Report => {}
+                            ponytail::SwitchAction::Report => {
+                                let mode = ponytail::active_mode()
+                                    .unwrap_or_else(ponytail::default_mode);
+                                let platform = ponytail::detect_platform();
+                                let ctx = format!("PONYTAIL MODE ACTIVE — level: {mode}");
+                                let output = ponytail::format_hook_output(
+                                    "UserPromptSubmit",
+                                    &ctx,
+                                    &platform,
+                                );
+                                println!("{output}");
+                                return;
+                            }
                         }
                     }
                     println!("OK");
