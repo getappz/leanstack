@@ -40,8 +40,35 @@ pub struct HttpToolConfig {
     pub path: String,
 }
 
-pub fn parse(toml_str: &str) -> Result<GatewayConfig, toml::de::Error> {
-    toml::from_str(toml_str)
+/// `parse`'s error type: either a TOML syntax/shape error, or a config that
+/// parses fine but fails a semantic check `serde` can't express on its own
+/// (currently just the `auth_ref`/`auth_env` pairing below).
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error(transparent)]
+    Toml(#[from] toml::de::Error),
+    #[error(
+        "server '{server}': auth_ref and auth_env must both be set or both omitted \
+         (got auth_ref={auth_ref:?}, auth_env={auth_env:?}) — a lone auth_ref silently \
+         injects no credentials at runtime, so this is rejected at parse time instead"
+    )]
+    IncompleteAuthConfig { server: String, auth_ref: Option<String>, auth_env: Option<String> },
+}
+
+pub fn parse(toml_str: &str) -> Result<GatewayConfig, ConfigError> {
+    let cfg: GatewayConfig = toml::from_str(toml_str)?;
+    for (name, server) in &cfg.servers {
+        if let ServerConfig::McpStdio { auth_ref, auth_env, .. } = server {
+            if auth_ref.is_some() != auth_env.is_some() {
+                return Err(ConfigError::IncompleteAuthConfig {
+                    server: name.clone(),
+                    auth_ref: auth_ref.clone(),
+                    auth_env: auth_env.clone(),
+                });
+            }
+        }
+    }
+    Ok(cfg)
 }
 
 #[cfg(test)]
@@ -102,6 +129,34 @@ mod tests {
     fn missing_servers_table_is_empty_not_an_error() {
         let cfg = parse("").unwrap();
         assert!(cfg.servers.is_empty());
+    }
+
+    #[test]
+    fn mcp_stdio_with_auth_ref_but_no_auth_env_is_rejected() {
+        let err = parse(
+            r#"
+            [servers.narsil]
+            kind = "mcp_stdio"
+            command = "narsil-mcp"
+            auth_ref = "narsil_token"
+            "#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::IncompleteAuthConfig { server, .. } if server == "narsil"));
+    }
+
+    #[test]
+    fn mcp_stdio_with_auth_env_but_no_auth_ref_is_rejected() {
+        let err = parse(
+            r#"
+            [servers.narsil]
+            kind = "mcp_stdio"
+            command = "narsil-mcp"
+            auth_env = "NARSIL_TOKEN"
+            "#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::IncompleteAuthConfig { server, .. } if server == "narsil"));
     }
 
     #[test]

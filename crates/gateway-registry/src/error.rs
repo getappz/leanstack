@@ -14,6 +14,8 @@ pub enum GatewayError {
     Connection(String),
     #[error("downstream call failed: {0}")]
     Upstream(String),
+    #[error("{0}")]
+    Timeout(String),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }

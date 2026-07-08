@@ -11,17 +11,39 @@ use rmcp::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// Bound on every downstream MCP round-trip (connect handshake, `discover`,
+/// `call`) so one hung/slow backend can only ever fail after this long,
+/// rather than wedging the whole `Registry` (which holds a single lock
+/// guarding all backends — see `mcp_server.rs::ensure_gateway_registry`)
+/// indefinitely. Not user-configurable in v1; 30s is long enough for a
+/// legitimate slow tool call and short enough to bound the blast radius.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct McpStdioBackend {
     running: tokio::sync::Mutex<Option<RunningService<RoleClient, ()>>>,
     command: String,
     args: Vec<String>,
     env: HashMap<String, String>,
+    timeout: Duration,
 }
 
 impl McpStdioBackend {
     pub fn new(command: String, args: Vec<String>, env: HashMap<String, String>) -> Self {
-        Self { running: tokio::sync::Mutex::new(None), command, args, env }
+        Self::with_timeout(command, args, env, DEFAULT_TIMEOUT)
+    }
+
+    /// Same as [`Self::new`] but with an explicit timeout for downstream I/O.
+    /// Exists mainly so tests can exercise the timeout path without waiting
+    /// out the real `DEFAULT_TIMEOUT`; production callers should use `new`.
+    pub fn with_timeout(
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+        timeout: Duration,
+    ) -> Self {
+        Self { running: tokio::sync::Mutex::new(None), command, args, env, timeout }
     }
 
     async fn ensure_connected(&self) -> Result<(), GatewayError> {
@@ -35,12 +57,28 @@ impl McpStdioBackend {
                 for (k, v) in &self.env {
                     cmd.env(k, v);
                 }
+                // Without this, tokio::process::Child does NOT kill the OS
+                // process when dropped (it just detaches). If a downstream
+                // server hangs before ever responding, our tokio::time::timeout
+                // cancels this future correctly, but the orphaned child process
+                // would otherwise run forever — kill_on_drop ensures the
+                // timeout actually terminates the hung child, not just our
+                // side of the connection.
+                cmd.kill_on_drop(true);
             },
         ))
         .map_err(|e| GatewayError::Connection(format!("spawn '{}' failed: {e}", self.command)))?;
-        let running = ().serve(transport).await.map_err(|e| {
-            GatewayError::Connection(format!("connect to '{}' failed: {e}", self.command))
-        })?;
+        let running = tokio::time::timeout(self.timeout, ().serve(transport))
+            .await
+            .map_err(|_| {
+                GatewayError::Timeout(format!(
+                    "connect to '{}' timed out after {:?}",
+                    self.command, self.timeout
+                ))
+            })?
+            .map_err(|e| {
+                GatewayError::Connection(format!("connect to '{}' failed: {e}", self.command))
+            })?;
         *guard = Some(running);
         Ok(())
     }
@@ -49,9 +87,14 @@ impl McpStdioBackend {
         self.ensure_connected().await?;
         let guard = self.running.lock().await;
         let running = guard.as_ref().expect("connected above");
-        let tools = running
-            .list_all_tools()
+        let tools = tokio::time::timeout(self.timeout, running.list_all_tools())
             .await
+            .map_err(|_| {
+                GatewayError::Timeout(format!(
+                    "discover on '{}' timed out after {:?}",
+                    self.command, self.timeout
+                ))
+            })?
             .map_err(|e| GatewayError::Upstream(e.to_string()))?;
         Ok(tools
             .into_iter()
@@ -78,9 +121,14 @@ impl McpStdioBackend {
         };
         let mut params = rmcp::model::CallToolRequestParams::new(tool.to_string());
         params.arguments = args_map;
-        let result = running
-            .call_tool(params)
+        let result = tokio::time::timeout(self.timeout, running.call_tool(params))
             .await
+            .map_err(|_| {
+                GatewayError::Timeout(format!(
+                    "call '{tool}' on '{}' timed out after {:?}",
+                    self.command, self.timeout
+                ))
+            })?
             .map_err(|e| GatewayError::Upstream(e.to_string()))?;
         if result.is_error.unwrap_or(false) {
             return Err(GatewayError::Upstream(

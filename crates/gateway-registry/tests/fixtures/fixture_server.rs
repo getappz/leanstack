@@ -43,6 +43,13 @@ impl ServerHandler for FixtureServer {
 // set instead of widening it crate-wide for a test fixture.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // GATEWAY_FIXTURE_HANG simulates a hung/unresponsive downstream MCP
+    // server for gateway-registry's timeout tests: never completes the
+    // `initialize` handshake (never even calls `serve`), so a client talking
+    // to this process sees exactly what it'd see from a wedged real backend.
+    if std::env::var("GATEWAY_FIXTURE_HANG").is_ok() {
+        std::future::pending::<()>().await;
+    }
     let service = FixtureServer.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

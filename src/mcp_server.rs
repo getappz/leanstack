@@ -243,8 +243,18 @@ impl AgentflareMcp {
         };
         names
             .into_iter()
-            .filter_map(|name| {
-                crate::gateway_secrets::get_secret(&conn, &name).ok().flatten().map(|v| (name, v))
+            .filter_map(|name| match crate::gateway_secrets::get_secret(&conn, &name) {
+                Ok(Some(v)) => Some((name, v)),
+                Ok(None) => None,
+                Err(e) => {
+                    // A wrong/missing vault passphrase used to look
+                    // identical to "no secret configured" — `.ok().flatten()`
+                    // discarded the `Err` entirely. Surface it so a wrong
+                    // passphrase is at least visible in stderr instead of
+                    // silently leaving downstream backends uncredentialed.
+                    eprintln!("agentflare: failed to resolve gateway secret '{name}': {e}");
+                    None
+                }
             })
             .collect()
     }

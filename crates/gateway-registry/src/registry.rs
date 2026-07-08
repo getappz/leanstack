@@ -130,8 +130,21 @@ fn build_backends(config: &GatewayConfig, secrets: &HashMap<String, String>) -> 
             ServerConfig::McpStdio { command, args, auth_ref, auth_env } => {
                 let mut env = HashMap::new();
                 if let (Some(auth_ref), Some(auth_env)) = (auth_ref, auth_env) {
-                    if let Some(secret) = secrets.get(auth_ref) {
-                        env.insert(auth_env.clone(), secret.clone());
+                    match secrets.get(auth_ref) {
+                        Some(secret) => {
+                            env.insert(auth_env.clone(), secret.clone());
+                        }
+                        // The secret was never `set` via the CLI (typo'd
+                        // auth_ref, or genuinely missing), or resolving it
+                        // failed upstream (see `resolve_gateway_secrets`,
+                        // which logs the underlying reason). Either way,
+                        // spawning silently with no credentials is exactly
+                        // the "looks fine, quietly fails downstream" failure
+                        // mode this log line exists to surface — mirrors
+                        // `ensure_fresh`'s per-backend discover-failure log.
+                        None => eprintln!(
+                            "gateway-registry: server '{name}' references auth_ref '{auth_ref}' which has no stored secret — spawning without credentials"
+                        ),
                     }
                 }
                 Backend::McpStdio(McpStdioBackend::new(command.clone(), args.clone(), env))
