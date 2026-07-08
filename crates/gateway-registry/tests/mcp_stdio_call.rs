@@ -29,3 +29,15 @@ async fn call_unknown_tool_surfaces_as_upstream_error() {
     let err = backend.call("does_not_exist", serde_json::json!({})).await.unwrap_err();
     assert!(matches!(err, GatewayError::Upstream(_)));
 }
+
+#[tokio::test]
+async fn call_with_non_object_args_is_invalid_argument_not_upstream() {
+    // Malformed `args` (not a JSON object or null) is rejected entirely
+    // locally, before any downstream I/O — a caller mistake, not a
+    // downstream/infrastructure failure, so it must be `InvalidArgument`
+    // (which `gateway_execute` maps to `invalid_params`), not `Upstream`
+    // (which maps to `internal_error`).
+    let backend = McpStdioBackend::new(fixture_path(), vec![], HashMap::new());
+    let err = backend.call("echo", serde_json::json!("not an object")).await.unwrap_err();
+    assert!(matches!(err, GatewayError::InvalidArgument(_)), "expected InvalidArgument, got {err:?}");
+}

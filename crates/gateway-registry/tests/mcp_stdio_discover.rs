@@ -18,9 +18,12 @@ fn fixture_path() -> String {
 async fn discover_lists_the_fixture_servers_echo_tool() {
     let backend = McpStdioBackend::new(fixture_path(), vec![], HashMap::new());
     let tools = backend.discover().await.unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "echo");
-    assert!(tools[0].description.contains("Echoes"));
+    // The fixture also exposes a `hang` tool (used by
+    // `tests/mcp_stdio_timeout.rs` to test Fix 1's reconnect-after-timeout
+    // behavior), so assert the `echo` tool specifically rather than the
+    // exact total count.
+    let echo = tools.iter().find(|t| t.name == "echo").expect("echo tool present");
+    assert!(echo.description.contains("Echoes"));
 }
 
 #[tokio::test]

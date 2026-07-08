@@ -79,6 +79,26 @@ pub fn tool_names(conn: &Connection, server: &str) -> rusqlite::Result<Vec<Strin
     rows.collect()
 }
 
+/// Full previously-indexed tool entries (name, description, input_schema)
+/// for one server, as of the last successful `rebuild`. Used by
+/// `Registry::ensure_fresh` to fall back to a server's last-known-good tool
+/// list when that server's live `discover()` fails on a given refresh —
+/// `rebuild` is a full-replace, so anything not re-contributed on a given
+/// refresh would otherwise vanish from the index even on a purely
+/// transient failure.
+pub fn server_tools(conn: &Connection, server: &str) -> rusqlite::Result<Vec<ToolEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, description, input_schema FROM tools WHERE server = ?1 ORDER BY name",
+    )?;
+    let rows = stmt.query_map(params![server], |r| {
+        let schema_json: String = r.get(2)?;
+        let input_schema: serde_json::Value =
+            serde_json::from_str(&schema_json).unwrap_or(serde_json::Value::Null);
+        Ok(ToolEntry { name: r.get(0)?, description: r.get(1)?, input_schema })
+    })?;
+    rows.collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +164,28 @@ mod tests {
         assert_eq!(tool_names(&conn, "a").unwrap(), vec!["x".to_string()]);
         assert_eq!(tool_names(&conn, "b").unwrap(), vec!["y".to_string()]);
         assert!(tool_names(&conn, "missing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn server_tools_returns_full_entries_scoped_to_server() {
+        let mut conn = open_in_memory().unwrap();
+        rebuild(
+            &mut conn,
+            &[
+                ServerTools {
+                    server: "a".into(),
+                    tools: vec![entry("x", "desc-x")],
+                },
+                ServerTools { server: "b".into(), tools: vec![entry("y", "desc-y")] },
+            ],
+        )
+        .unwrap();
+        let a_tools = server_tools(&conn, "a").unwrap();
+        assert_eq!(a_tools.len(), 1);
+        assert_eq!(a_tools[0].name, "x");
+        assert_eq!(a_tools[0].description, "desc-x");
+        assert_eq!(a_tools[0].input_schema, serde_json::json!({"type": "object"}));
+        assert!(server_tools(&conn, "missing").unwrap().is_empty());
     }
 
     #[test]

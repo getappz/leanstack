@@ -26,6 +26,18 @@ impl FixtureServer {
     fn echo(&self, Parameters(EchoRequest { text }): Parameters<EchoRequest>) -> String {
         format!("echo: {text}")
     }
+
+    /// Never returns — simulates one specific downstream tool call wedging
+    /// forever (as opposed to `GATEWAY_FIXTURE_HANG`, which wedges the
+    /// whole connection before `initialize`). Used by
+    /// `tests/mcp_stdio_timeout.rs` to prove a timed-out `call()`/`discover()`
+    /// clears the cached connection instead of letting the next call reuse
+    /// it (Fix 1).
+    #[tool(description = "Never returns; simulates a wedged downstream tool call.")]
+    async fn hang(&self) -> String {
+        std::future::pending::<()>().await;
+        unreachable!("pending future never resolves")
+    }
 }
 
 #[tool_handler]
@@ -43,6 +55,16 @@ impl ServerHandler for FixtureServer {
 // set instead of widening it crate-wide for a test fixture.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // GATEWAY_FIXTURE_MARKER_FILE: if set, append one line to this file on
+    // every process start. Lets `tests/mcp_stdio_timeout.rs` prove that a
+    // *new* child process was actually spawned after a timeout (Fix 1),
+    // rather than just that some later call happened to succeed.
+    if let Ok(marker_path) = std::env::var("GATEWAY_FIXTURE_MARKER_FILE") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(marker_path) {
+            let _ = writeln!(f, "{}", std::process::id());
+        }
+    }
     // GATEWAY_FIXTURE_HANG simulates a hung/unresponsive downstream MCP
     // server for gateway-registry's timeout tests: never completes the
     // `initialize` handshake (never even calls `serve`), so a client talking

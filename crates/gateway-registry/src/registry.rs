@@ -80,7 +80,23 @@ impl Registry {
             // per-entry failures rather than aborting the whole scan).
             match backend.discover().await {
                 Ok(tools) => entries.push(ServerTools { server: name.clone(), tools }),
-                Err(e) => eprintln!("gateway-registry: discover failed for backend '{name}': {e}"),
+                Err(e) => {
+                    eprintln!("gateway-registry: discover failed for backend '{name}': {e}");
+                    // A transient failure (e.g. a one-off RPC timeout) must
+                    // not wipe this server's tools from the index — `rebuild`
+                    // below is a full-replace, so anything we don't
+                    // re-contribute here disappears until the next
+                    // successful refresh. Fall back to whatever was indexed
+                    // for this server as of the previous successful refresh,
+                    // if any, rather than contributing nothing.
+                    let previous = {
+                        let conn = self.conn.lock().expect("gateway registry db mutex poisoned");
+                        db::server_tools(&conn, name).unwrap_or_default()
+                    };
+                    if !previous.is_empty() {
+                        entries.push(ServerTools { server: name.clone(), tools: previous });
+                    }
+                }
             }
         }
         {
@@ -165,3 +181,60 @@ fn build_backends(config: &GatewayConfig, secrets: &HashMap<String, String>) -> 
 // and 7): `env!("CARGO_BIN_EXE_gateway-fixture-server")` is only populated by
 // Cargo for integration-test/bench targets, not for the lib's own unit-test
 // binary. See `tests/registry.rs`.
+//
+// The test below doesn't need the fixture binary at all — `HttpApiBackend`
+// always fails `discover()` on its own (see `backend.rs`), so it can live
+// here as a normal `#[cfg(test)]` unit test with direct (same-module) access
+// to `Registry`'s private fields, which lets it seed the DB with a "previous
+// refresh" state without going through a live discover() first.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ToolEntry;
+
+    #[tokio::test]
+    async fn ensure_fresh_preserves_previous_tools_when_discover_fails() {
+        let mut conn = db::open_in_memory().unwrap();
+        // Seed the DB as if a PRIOR successful refresh had indexed one tool
+        // for server "flaky", before constructing the Registry below.
+        db::rebuild(
+            &mut conn,
+            &[ServerTools {
+                server: "flaky".to_string(),
+                tools: vec![ToolEntry {
+                    name: "old_tool".to_string(),
+                    description: "indexed on a previous successful refresh".to_string(),
+                    input_schema: serde_json::json!({}),
+                }],
+            }],
+        )
+        .unwrap();
+
+        let mut backends = HashMap::new();
+        // HttpApiBackend::discover() always returns
+        // GatewayError::NotImplemented — a stand-in for any backend whose
+        // discover() fails on this particular refresh.
+        backends.insert(
+            "flaky".to_string(),
+            Backend::HttpApi(HttpApiBackend { base_url: "https://x.invalid".to_string(), tools: vec![] }),
+        );
+        // `last_refresh: None` so `ensure_fresh` doesn't skip via the
+        // debounce and actually runs the discover-fails-then-fallback path.
+        let mut reg = Registry { conn: std::sync::Mutex::new(conn), backends, last_refresh: None };
+
+        reg.ensure_fresh().await.unwrap();
+
+        // The failed refresh must NOT have wiped "flaky"'s previously
+        // indexed tool — it should still be searchable/known.
+        let hits = reg.search("old_tool", 5, MatchMode::All).unwrap();
+        assert_eq!(hits.len(), 1, "expected previously-indexed tool to survive a failed discover(), got {hits:?}");
+        assert_eq!(hits[0].server, "flaky");
+        assert_eq!(hits[0].tool, "old_tool");
+
+        let known = {
+            let c = reg.conn.lock().unwrap();
+            db::tool_names(&c, "flaky").unwrap()
+        };
+        assert_eq!(known, vec!["old_tool".to_string()]);
+    }
+}

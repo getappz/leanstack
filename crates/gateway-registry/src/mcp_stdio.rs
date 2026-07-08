@@ -85,17 +85,25 @@ impl McpStdioBackend {
 
     pub async fn discover(&self) -> Result<Vec<ToolEntry>, GatewayError> {
         self.ensure_connected().await?;
-        let guard = self.running.lock().await;
+        let mut guard = self.running.lock().await;
         let running = guard.as_ref().expect("connected above");
-        let tools = tokio::time::timeout(self.timeout, running.list_all_tools())
-            .await
-            .map_err(|_| {
-                GatewayError::Timeout(format!(
+        let tools = match tokio::time::timeout(self.timeout, running.list_all_tools()).await {
+            Ok(Ok(tools)) => tools,
+            Ok(Err(e)) => return Err(GatewayError::Upstream(e.to_string())),
+            Err(_) => {
+                // Timing out here means the cached connection produced no
+                // response in time — it may be permanently wedged (e.g. the
+                // child process hung mid-request). Drop it so the NEXT
+                // `discover()`/`call()` respawns a fresh connection instead
+                // of `ensure_connected` seeing `guard.is_some()` and quietly
+                // reusing the broken one.
+                *guard = None;
+                return Err(GatewayError::Timeout(format!(
                     "discover on '{}' timed out after {:?}",
                     self.command, self.timeout
-                ))
-            })?
-            .map_err(|e| GatewayError::Upstream(e.to_string()))?;
+                )));
+            }
+        };
         Ok(tools
             .into_iter()
             .map(|t| ToolEntry {
@@ -108,28 +116,37 @@ impl McpStdioBackend {
 
     pub async fn call(&self, tool: &str, args: Value) -> Result<Value, GatewayError> {
         self.ensure_connected().await?;
-        let guard = self.running.lock().await;
+        let mut guard = self.running.lock().await;
         let running = guard.as_ref().expect("connected above");
         let args_map = match args {
             Value::Object(map) => Some(map),
             Value::Null => None,
             other => {
-                return Err(GatewayError::Upstream(format!(
+                // Local, pre-flight validation — happens before any
+                // downstream I/O, so this is the caller's mistake, not the
+                // downstream server's. `InvalidArgument`, not `Upstream`,
+                // so `gateway_execute` maps it to `invalid_params`.
+                return Err(GatewayError::InvalidArgument(format!(
                     "args must be a JSON object, got {other}"
                 )))
             }
         };
         let mut params = rmcp::model::CallToolRequestParams::new(tool.to_string());
         params.arguments = args_map;
-        let result = tokio::time::timeout(self.timeout, running.call_tool(params))
-            .await
-            .map_err(|_| {
-                GatewayError::Timeout(format!(
+        let result = match tokio::time::timeout(self.timeout, running.call_tool(params)).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => return Err(GatewayError::Upstream(e.to_string())),
+            Err(_) => {
+                // See the matching comment in `discover()`: a timed-out
+                // cached connection may be permanently wedged, so drop it
+                // rather than let the next call reuse it.
+                *guard = None;
+                return Err(GatewayError::Timeout(format!(
                     "call '{tool}' on '{}' timed out after {:?}",
                     self.command, self.timeout
-                ))
-            })?
-            .map_err(|e| GatewayError::Upstream(e.to_string()))?;
+                )));
+            }
+        };
         if result.is_error.unwrap_or(false) {
             return Err(GatewayError::Upstream(
                 serde_json::to_string(&result.content).unwrap_or_default(),

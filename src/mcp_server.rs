@@ -221,18 +221,48 @@ impl AgentflareMcp {
     fn load_gateway_config() -> gateway_registry::GatewayConfig {
         let path = crate::paths::home().join(".agentflare").join("gateway.toml");
         match std::fs::read_to_string(&path) {
-            Ok(s) => gateway_registry::parse_config(&s).unwrap_or_default(),
+            Ok(s) => match gateway_registry::parse_config(&s) {
+                Ok(config) => config,
+                Err(e) => {
+                    // Malformed TOML, or a config that fails the
+                    // auth_ref/auth_env pairing check, used to look
+                    // identical to "no gateway.toml yet" — both silently
+                    // produced an empty config with zero configured
+                    // servers. Surface the parse error so a user who
+                    // typo'd their gateway.toml gets visible signal instead
+                    // of a silent "no servers configured".
+                    eprintln!(
+                        "agentflare: failed to parse gateway config at {}: {e} — using no configured servers",
+                        path.display()
+                    );
+                    gateway_registry::GatewayConfig::default()
+                }
+            },
+            // The file genuinely doesn't exist yet (or isn't readable) —
+            // the normal, expected case for a user who hasn't set up
+            // gateway.toml. No log needed here.
             Err(_) => gateway_registry::GatewayConfig::default(),
         }
     }
 
     fn resolve_gateway_secrets() -> std::collections::HashMap<String, String> {
         let db_path = Self::gateway_secrets_db_path();
-        let Ok(conn) = crate::gateway_secrets::open_db(&db_path) else {
-            return std::collections::HashMap::new();
+        let conn = match crate::gateway_secrets::open_db(&db_path) {
+            Ok(conn) => conn,
+            Err(e) => {
+                eprintln!(
+                    "agentflare: failed to open gateway secrets db at {}: {e}",
+                    db_path.display()
+                );
+                return std::collections::HashMap::new();
+            }
         };
-        let Ok(names) = crate::gateway_secrets::list_secrets(&conn) else {
-            return std::collections::HashMap::new();
+        let names = match crate::gateway_secrets::list_secrets(&conn) {
+            Ok(names) => names,
+            Err(e) => {
+                eprintln!("agentflare: failed to list gateway secrets: {e}");
+                return std::collections::HashMap::new();
+            }
         };
         names
             .into_iter()
@@ -324,7 +354,8 @@ impl AgentflareMcp {
                 Ok(serde_json::to_string_pretty(&capped).unwrap_or_default())
             }
             Err(e @ gateway_registry::GatewayError::ServerNotFound(_))
-            | Err(e @ gateway_registry::GatewayError::ToolNotFound(_)) => {
+            | Err(e @ gateway_registry::GatewayError::ToolNotFound(_))
+            | Err(e @ gateway_registry::GatewayError::InvalidArgument(_)) => {
                 Err(ErrorData::invalid_params(e.to_string(), None))
             }
             Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),

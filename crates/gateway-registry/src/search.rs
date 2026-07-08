@@ -23,6 +23,22 @@ pub struct ToolHit {
     pub score: f64,
 }
 
+/// Ceiling applied to a caller-supplied `limit` before it's used in
+/// SQLite's `LIMIT` clause. Two reasons: (1) casting a huge `usize` (e.g.
+/// `usize::MAX`, reachable via `gateway_search`'s MCP request) straight to
+/// `i64` can wrap around to a negative number in two's-complement, and
+/// SQLite treats a negative `LIMIT` as "no limit" — silently defeating the
+/// cap; (2) even ignoring the cast, tool search results are meant to be a
+/// short top-K list in this crate's v1 usage, not an unbounded dump.
+pub const MAX_LIMIT: usize = 1000;
+
+/// Clamps `limit` to [`MAX_LIMIT`] and converts to `i64` for the SQLite
+/// `LIMIT` clause, so the `usize -> i64` cast can never produce a negative
+/// number regardless of what a caller supplies.
+fn clamped_limit(limit: usize) -> i64 {
+    limit.min(MAX_LIMIT) as i64
+}
+
 fn fts_query(query: &str, mode: MatchMode) -> Option<String> {
     let tokens: Vec<String> = query
         .split_whitespace()
@@ -58,7 +74,7 @@ pub fn search(
          ORDER BY score
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(rusqlite::params![fts, limit as i64], |r| {
+    let rows = stmt.query_map(rusqlite::params![fts, clamped_limit(limit)], |r| {
         let schema_json: String = r.get(3)?;
         let input_schema: Value = serde_json::from_str(&schema_json).unwrap_or(Value::Null);
         Ok(ToolHit {
@@ -142,5 +158,26 @@ mod tests {
     fn empty_query_returns_empty() {
         let conn = seed();
         assert!(search(&conn, "  ", 5, MatchMode::All).unwrap().is_empty());
+    }
+
+    #[test]
+    fn clamped_limit_never_goes_negative_for_a_huge_input() {
+        // usize::MAX cast straight to i64 would be -1 — SQLite treats a
+        // negative LIMIT as "no limit", silently defeating the cap.
+        let clamped = clamped_limit(usize::MAX);
+        assert!(clamped > 0, "clamped limit went non-positive: {clamped}");
+        assert_eq!(clamped, MAX_LIMIT as i64);
+    }
+
+    #[test]
+    fn clamped_limit_leaves_small_values_untouched() {
+        assert_eq!(clamped_limit(5), 5);
+    }
+
+    #[test]
+    fn search_with_a_huge_limit_does_not_panic_and_still_returns_results() {
+        let conn = seed();
+        let hits = search(&conn, "symbol references", usize::MAX, MatchMode::All).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 }
