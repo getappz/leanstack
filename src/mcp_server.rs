@@ -730,4 +730,14 @@ mod tests {
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(err.to_string().contains("not found"));
     }
+
+    #[test]
+    fn gateway_execute_args_schema_is_object_or_null() {
+        let schema = schemars::schema_for!(GatewayExecuteRequest);
+        let schema_json = serde_json::to_value(&schema).unwrap();
+        let args_schema = schema_json.get("properties").and_then(|p| p.get("args")).expect("args schema present");
+        let rendered = args_schema.to_string();
+        assert!(rendered.contains("\"object\""), "{rendered}");
+        assert!(rendered.contains("\"null\""), "{rendered}");
+    }
 }
