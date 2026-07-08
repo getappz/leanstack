@@ -117,7 +117,7 @@ impl Registry {
         // Detected agents: agent-registry's detect_all needs a version cache;
         // skill discovery only needs agent IDs, so pass an empty cache.
         let mut cache = std::collections::HashMap::new();
-        let detected: Vec<String> = agent_registry::detect_all(&agent_registry::REGISTRY, &mut cache)
+        let detected: Vec<String> = agent_registry::detect_all(agent_registry::REGISTRY, &mut cache)
             .into_iter()
             .map(|d| d.id.to_lowercase())
             .collect();

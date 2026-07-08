@@ -155,11 +155,10 @@ pub fn scan_sources(sources: &[Source]) -> ScanOutput {
     // annotate their original and are dropped as standalone entries.
     let mut shadows: Vec<(usize, PathBuf)> = Vec::new(); // (entry idx of shadow, origin path)
     for (i, e) in out.entries.iter().enumerate() {
-        if e.source.starts_with("claude-user") {
-            if let Some(origin) = shadow_origin(&e.path) {
+        if e.source.starts_with("claude-user")
+            && let Some(origin) = shadow_origin(&e.path) {
                 shadows.push((i, origin));
             }
-        }
     }
     let mut drop_idx: Vec<usize> = Vec::new();
     for (shadow_i, origin) in &shadows {
