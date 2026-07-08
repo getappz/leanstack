@@ -63,8 +63,35 @@ impl McpStdioBackend {
             .collect())
     }
 
-    pub async fn call(&self, _tool: &str, _args: Value) -> Result<Value, GatewayError> {
-        todo!("implemented in Task 7")
+    pub async fn call(&self, tool: &str, args: Value) -> Result<Value, GatewayError> {
+        self.ensure_connected().await?;
+        let guard = self.running.lock().await;
+        let running = guard.as_ref().expect("connected above");
+        let args_map = match args {
+            Value::Object(map) => Some(map),
+            Value::Null => None,
+            other => {
+                return Err(GatewayError::Upstream(format!(
+                    "args must be a JSON object, got {other}"
+                )))
+            }
+        };
+        let mut params = rmcp::model::CallToolRequestParams::new(tool.to_string());
+        params.arguments = args_map;
+        let result = running
+            .call_tool(params)
+            .await
+            .map_err(|e| GatewayError::Upstream(e.to_string()))?;
+        if result.is_error.unwrap_or(false) {
+            return Err(GatewayError::Upstream(
+                serde_json::to_string(&result.content).unwrap_or_default(),
+            ));
+        }
+        if let Some(structured) = result.structured_content {
+            return Ok(structured);
+        }
+        serde_json::to_value(&result.content)
+            .map_err(|e| GatewayError::Upstream(format!("result serialization failed: {e}")))
     }
 }
 
