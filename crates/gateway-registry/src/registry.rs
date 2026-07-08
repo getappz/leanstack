@@ -69,8 +69,19 @@ impl Registry {
                 return Ok(());
             }
         }
+        // Backends are independent (each owns its own child-process
+        // connection), so discover() runs concurrently across all of them
+        // instead of one-at-a-time — with N configured servers, a single
+        // slow/hanging backend no longer serializes the others' startup
+        // behind it (each still bounded by its own DEFAULT_TIMEOUT).
+        let discovered = futures_util::future::join_all(self.backends.iter().map(|(name, backend)| {
+            let name = name.clone();
+            async move { (name, backend.discover().await) }
+        }))
+        .await;
+
         let mut entries = Vec::new();
-        for (name, backend) in &self.backends {
+        for (name, result) in discovered {
             // A single backend's `discover()` failure (crashed child process,
             // bad command, or an intentionally-unimplemented kind like
             // `http_api` — see `HttpApiBackend::discover`) must not poison
@@ -78,8 +89,8 @@ impl Registry {
             // index from whichever backends succeeded (mirrors
             // `skill-registry`'s `scan_sources`, which counts and skips
             // per-entry failures rather than aborting the whole scan).
-            match backend.discover().await {
-                Ok(tools) => entries.push(ServerTools { server: name.clone(), tools }),
+            match result {
+                Ok(tools) => entries.push(ServerTools { server: name, tools }),
                 Err(e) => {
                     eprintln!("gateway-registry: discover failed for backend '{name}': {e}");
                     // A transient failure (e.g. a one-off RPC timeout) must
@@ -91,10 +102,10 @@ impl Registry {
                     // if any, rather than contributing nothing.
                     let previous = {
                         let conn = self.conn.lock().expect("gateway registry db mutex poisoned");
-                        db::server_tools(&conn, name).unwrap_or_default()
+                        db::server_tools(&conn, &name).unwrap_or_default()
                     };
                     if !previous.is_empty() {
-                        entries.push(ServerTools { server: name.clone(), tools: previous });
+                        entries.push(ServerTools { server: name, tools: previous });
                     }
                 }
             }

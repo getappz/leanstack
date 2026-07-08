@@ -89,7 +89,19 @@ impl McpStdioBackend {
         let running = guard.as_ref().expect("connected above");
         let tools = match tokio::time::timeout(self.timeout, running.list_all_tools()).await {
             Ok(Ok(tools)) => tools,
-            Ok(Err(e)) => return Err(GatewayError::Upstream(e.to_string())),
+            Ok(Err(e)) => {
+                // A service-level error here (as opposed to a timeout) can
+                // still mean the transport itself died underneath us (broken
+                // pipe, child process crashed) rather than the downstream
+                // server returning a clean protocol error — rmcp doesn't
+                // distinguish the two at this call site. Drop the cached
+                // connection so the next discover()/call() respawns rather
+                // than repeatedly hitting a dead pipe until something else
+                // notices; a healthy connection just pays one extra
+                // handshake next time, which is cheap.
+                *guard = None;
+                return Err(GatewayError::Upstream(e.to_string()));
+            }
             Err(_) => {
                 // Timing out here means the cached connection produced no
                 // response in time — it may be permanently wedged (e.g. the
@@ -135,7 +147,15 @@ impl McpStdioBackend {
         params.arguments = args_map;
         let result = match tokio::time::timeout(self.timeout, running.call_tool(params)).await {
             Ok(Ok(result)) => result,
-            Ok(Err(e)) => return Err(GatewayError::Upstream(e.to_string())),
+            Ok(Err(e)) => {
+                // See the matching comment in `discover()`: a service-level
+                // error here may mean the transport itself died rather than
+                // a clean protocol-level failure — drop the cached
+                // connection so the next call respawns instead of reusing a
+                // possibly-dead pipe.
+                *guard = None;
+                return Err(GatewayError::Upstream(e.to_string()));
+            }
             Err(_) => {
                 // See the matching comment in `discover()`: a timed-out
                 // cached connection may be permanently wedged, so drop it

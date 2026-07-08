@@ -14,6 +14,7 @@ toml = "0.8"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "process", "sync", "macros", "io-util", "time"] }
 rmcp = { version = "1.8.0", features = ["client", "transport-child-process", "server", "transport-io", "macros"] }
 schemars = "1.0"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tempfile = "3"
