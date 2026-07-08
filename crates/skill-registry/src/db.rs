@@ -1,0 +1,113 @@
+//! SQLite persistence: skills table + FTS5 index. Both are derived data;
+//! the filesystem is the source of truth, so rebuild is always full-replace
+//! inside one transaction.
+
+use crate::sources::SkillEntry;
+use rusqlite::{params, Connection};
+use std::path::Path;
+
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS skills (
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  path TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '',
+  est_tokens INTEGER NOT NULL DEFAULT 0,
+  mtime INTEGER NOT NULL DEFAULT 0,
+  shadow_path TEXT,
+  PRIMARY KEY (name, source)
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(name, description, tags);
+";
+
+pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let conn = Connection::open(path)?;
+    conn.execute_batch(SCHEMA)?;
+    Ok(conn)
+}
+
+pub fn open_in_memory() -> rusqlite::Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(SCHEMA)?;
+    Ok(conn)
+}
+
+pub fn rebuild(conn: &mut Connection, entries: &[SkillEntry]) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM skills", [])?;
+    tx.execute("DELETE FROM skills_fts", [])?;
+    {
+        let mut ins = tx.prepare(
+            "INSERT INTO skills (name, source, path, description, tags, est_tokens, mtime, shadow_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        let mut fts = tx.prepare(
+            "INSERT INTO skills_fts (rowid, name, description, tags) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for e in entries {
+            ins.execute(params![
+                e.name,
+                e.source,
+                e.path.to_string_lossy(),
+                e.description,
+                e.tags,
+                e.est_tokens,
+                e.mtime,
+                e.shadow_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            ])?;
+            let rowid = tx.last_insert_rowid();
+            fts.execute(params![rowid, e.name, e.description, e.tags])?;
+        }
+    }
+    tx.commit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn entry(name: &str, source: &str, desc: &str) -> SkillEntry {
+        SkillEntry {
+            name: name.into(),
+            source: source.into(),
+            path: PathBuf::from(format!("/x/{name}/SKILL.md")),
+            description: desc.into(),
+            tags: String::new(),
+            est_tokens: 100,
+            mtime: 1,
+            shadow_path: None,
+        }
+    }
+
+    #[test]
+    fn rebuild_replaces_rows_and_fts_stays_in_sync() {
+        let mut conn = open_in_memory().unwrap();
+        rebuild(&mut conn, &[entry("a", "s", "alpha desc"), entry("b", "s", "beta desc")]).unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM skills", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        rebuild(&mut conn, &[entry("c", "s", "gamma desc")]).unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM skills", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        let f: i64 = conn.query_row("SELECT count(*) FROM skills_fts", [], |r| r.get(0)).unwrap();
+        assert_eq!(f, 1);
+    }
+
+    #[test]
+    fn fts_rowids_match_skills_rowids() {
+        let mut conn = open_in_memory().unwrap();
+        rebuild(&mut conn, &[entry("a", "s", "alpha")]).unwrap();
+        let pair: (i64, i64) = conn
+            .query_row(
+                "SELECT s.rowid, f.rowid FROM skills s, skills_fts f WHERE f.name = s.name",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pair.0, pair.1);
+    }
+}
