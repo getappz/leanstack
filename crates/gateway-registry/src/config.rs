@@ -31,7 +31,7 @@ pub enum ServerConfig {
     },
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct HttpToolConfig {
     pub name: String,
     #[serde(default)]
