@@ -1,8 +1,10 @@
+mod config;
 mod db;
 mod error;
 mod search;
 mod types;
 
+pub use config::{parse as parse_config, GatewayConfig, HttpToolConfig, ServerConfig};
 pub use error::{suggest, GatewayError};
 pub use search::{search as search_tools, MatchMode, ToolHit};
 pub use types::ToolEntry;
