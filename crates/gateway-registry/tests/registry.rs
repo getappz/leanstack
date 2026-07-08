@@ -61,3 +61,34 @@ async fn execute_unknown_tool_suggests_the_closest_name() {
         other => panic!("expected ToolNotFound, got {other:?}"),
     }
 }
+
+/// One healthy `mcp_stdio` backend alongside one deliberately-failing
+/// `http_api` backend (its `discover()` always returns
+/// `GatewayError::NotImplemented`, per `HttpApiBackend`'s doc comment). The
+/// healthy backend's tools must still be indexed, searchable, and
+/// executable — a single backend's discovery failure must not poison the
+/// whole registry's refresh.
+#[tokio::test]
+async fn one_failing_backend_does_not_block_the_others() {
+    let mut servers = HashMap::new();
+    servers.insert(
+        "fixture".to_string(),
+        ServerConfig::McpStdio { command: fixture_path(), args: vec![], auth_ref: None, auth_env: None },
+    );
+    servers.insert(
+        "broken_http".to_string(),
+        ServerConfig::HttpApi { base_url: "https://example.invalid".to_string(), auth_ref: None, tools: vec![] },
+    );
+    let config = GatewayConfig { servers };
+
+    let reg = Registry::open_in_memory(&config, &HashMap::new()).await.unwrap();
+
+    let hits = reg.search("echo", 5, MatchMode::All).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].tool, "echo");
+    assert_eq!(hits[0].server, "fixture");
+
+    let result = reg.execute("fixture", "echo", serde_json::json!({"text": "hi"})).await.unwrap();
+    let text = result.get(0).and_then(|c| c.get("text")).and_then(|t| t.as_str());
+    assert_eq!(text, Some("echo: hi"));
+}

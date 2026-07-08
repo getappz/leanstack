@@ -61,8 +61,17 @@ impl Registry {
         }
         let mut entries = Vec::new();
         for (name, backend) in &self.backends {
-            let tools = backend.discover().await?;
-            entries.push(ServerTools { server: name.clone(), tools });
+            // A single backend's `discover()` failure (crashed child process,
+            // bad command, or an intentionally-unimplemented kind like
+            // `http_api` — see `HttpApiBackend::discover`) must not poison
+            // every other backend's tools. Log and skip; still rebuild the
+            // index from whichever backends succeeded (mirrors
+            // `skill-registry`'s `scan_sources`, which counts and skips
+            // per-entry failures rather than aborting the whole scan).
+            match backend.discover().await {
+                Ok(tools) => entries.push(ServerTools { server: name.clone(), tools }),
+                Err(e) => eprintln!("gateway-registry: discover failed for backend '{name}': {e}"),
+            }
         }
         db::rebuild(&mut self.conn, &entries)?;
         self.last_refresh = Some(Instant::now());
