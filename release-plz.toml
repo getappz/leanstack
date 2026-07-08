@@ -1,3 +1,10 @@
 [workspace]
 git_release_enable = false
 release_always = false
+# TEMPORARY: crates.io publish disabled workspace-wide. `ponytail` was
+# published then deleted on 2026-07-08 and crates.io blocks reusing the
+# name until 2026-07-09T08:42:28Z; agentflare depends on ponytail via
+# path so it can't publish either until then. Remove this line (or flip
+# to `publish = true`) once that cooldown clears to resume normal
+# release-plz publishing.
+publish = false

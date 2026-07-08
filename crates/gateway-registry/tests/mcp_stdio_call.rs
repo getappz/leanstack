@@ -8,7 +8,7 @@
 //! for integration test / benchmark targets, not for the lib's own
 //! unit-test binary — see the note in `src/mcp_stdio.rs`.
 
-use gateway_registry::{GatewayError, McpStdioBackend};
+use agentflare_gateway_registry::{GatewayError, McpStdioBackend};
 use std::collections::HashMap;
 
 fn fixture_path() -> String {

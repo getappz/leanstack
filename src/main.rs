@@ -16,6 +16,7 @@ mod engram_install;
 mod errors;
 mod hook;
 mod init;
+mod mcp_prompts;
 mod mcp_server;
 mod optimize;
 mod paths;

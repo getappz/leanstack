@@ -7,7 +7,7 @@
 //! is only populated by Cargo for integration test / benchmark targets, not
 //! for the lib's own unit-test binary — see the note in `src/mcp_stdio.rs`.
 
-use gateway_registry::McpStdioBackend;
+use agentflare_gateway_registry::McpStdioBackend;
 use std::collections::HashMap;
 
 fn fixture_path() -> String {

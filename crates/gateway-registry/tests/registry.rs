@@ -9,7 +9,7 @@
 //! for the lib's own unit-test binary — see the note at the bottom of
 //! `src/registry.rs`.
 
-use gateway_registry::{GatewayConfig, GatewayError, MatchMode, Registry, ServerConfig};
+use agentflare_gateway_registry::{GatewayConfig, GatewayError, MatchMode, Registry, ServerConfig};
 use std::collections::HashMap;
 
 fn fixture_path() -> String {

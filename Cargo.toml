@@ -56,10 +56,10 @@ rpassword = "7"
 thiserror = "2"
 eyre = "0.6"
 color-eyre = "0.6"
-ponytail = { path = "crates/ponytail" }
-agent-registry = { path = "crates/agent-registry" }
-skill-registry = { path = "crates/skill-registry" }
-gateway-registry = { path = "crates/gateway-registry" }
+ponytail = { path = "crates/ponytail", version = "0.1.0" }
+agent-registry = { package = "agentflare-agent-registry", path = "crates/agent-registry", version = "0.1.0" }
+skill-registry = { package = "agentflare-skill-registry", path = "crates/skill-registry", version = "0.1.1" }
+gateway-registry = { package = "agentflare-gateway-registry", path = "crates/gateway-registry", version = "0.1.0" }
 regex = "1"
 sysinfo = { version = "0.34", optional = true, default-features = false, features = ["system"] }
 

@@ -11,7 +11,7 @@
 //! short test-only timeout fires — proving the mechanism without waiting out
 //! the crate's real 30s `DEFAULT_TIMEOUT`.
 
-use gateway_registry::{GatewayError, McpStdioBackend};
+use agentflare_gateway_registry::{GatewayError, McpStdioBackend};
 use std::collections::HashMap;
 use std::time::Duration;
 

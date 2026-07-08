@@ -1,5 +1,5 @@
 [package]
-name = "gateway-registry"
+name = "agentflare-gateway-registry"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
