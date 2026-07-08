@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ponytail", "crates/agent-registry"]
+members = ["crates/ponytail", "crates/agent-registry", "crates/skill-registry"]
 resolver = "2"
 
 [package]
@@ -58,6 +58,7 @@ eyre = "0.6"
 color-eyre = "0.6"
 ponytail = { path = "crates/ponytail" }
 agent-registry = { path = "crates/agent-registry" }
+skill-registry = { path = "crates/skill-registry" }
 regex = "1"
 sysinfo = { version = "0.34", optional = true, default-features = false, features = ["system"] }
 
@@ -70,6 +71,7 @@ built = { version = "0.8", features = ["chrono"] }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
+tempfile = "3"
 pretty_assertions = "1"
 
 [lints.rust]
