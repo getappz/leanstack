@@ -32,6 +32,10 @@ fn read_stdin_or_skip(label: &str) -> Option<String> {
 }
 
 pub fn session_start(agent: &str) {
+    println!("{}", session_start_message(agent));
+}
+
+fn session_start_message(agent: &str) -> String {
     let components = get_components(agent);
     let mut lines = vec![];
     let mut pending = vec![];
@@ -71,8 +75,12 @@ pub fn session_start(agent: &str) {
         "AGENTFLARE ACTIVE — lean-ctx/engram tools, Exa search, clean git commits. Off: /agentflare off."
             .to_string(),
     );
+    lines.push(
+        "Skills load on demand: before assuming a relevant skill doesn't exist, call skill_search(query) then skill_load(name) via the agentflare MCP tools."
+            .to_string(),
+    );
 
-    println!("{}", lines.join("\n"));
+    lines.join("\n")
 }
 
 fn extract_prompt(input: &str) -> String {
@@ -328,15 +336,26 @@ mod tests {
         with_temp_home(|| {
             crate::coaching::apply_rule("hygiene", "Close sessions promptly", "Wrap up each phase before starting the next.").unwrap();
 
-            // session_start prints via println!, not a return value — this
-            // confirms the actual integration point doesn't panic when a
-            // coaching rule is active. The underlying data source's
-            // correctness (ordering, content) is covered by Task 1's
-            // active_rule_bodies tests in coaching.rs.
+            // session_start prints via println!; session_start_message
+            // (below) covers the actual message content, this just confirms
+            // the printing entry point doesn't panic when a coaching rule is
+            // active. The underlying data source's correctness (ordering,
+            // content) is covered by Task 1's active_rule_bodies tests in
+            // coaching.rs.
             session_start("claude-code");
 
             let bodies = crate::coaching::active_rule_bodies();
             assert_eq!(bodies, vec!["Wrap up each phase before starting the next.".to_string()]);
+        });
+    }
+
+    #[test]
+    fn session_start_message_nudges_skill_search_before_load() {
+        use crate::paths::test_support::with_temp_home;
+        with_temp_home(|| {
+            let msg = session_start_message("claude-code");
+            assert!(msg.contains("skill_search(query)"));
+            assert!(msg.contains("skill_load(name)"));
         });
     }
 }
