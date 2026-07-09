@@ -136,8 +136,12 @@ impl McpHttpBackend {
     }
 
     async fn call_inner(&self, tool: &str, args: Value) -> Result<Value, GatewayError> {
-        let mut guard = self.ensure_connected().await?;
-        let running = guard.as_ref().expect("connected above");
+        // Validated before `ensure_connected()`, not after: this is a local,
+        // pre-flight check with no downstream I/O involved, so a malformed
+        // call fails instantly instead of first paying for (and holding the
+        // process-wide gateway lock across) a connect attempt that was
+        // never going to succeed regardless of the args. Mirrors
+        // `mcp_stdio.rs::call_inner`'s identical ordering.
         let args_map = match args {
             Value::Object(map) => Some(map),
             Value::Null => None,
@@ -147,6 +151,8 @@ impl McpHttpBackend {
                 )))
             }
         };
+        let mut guard = self.ensure_connected().await?;
+        let running = guard.as_ref().expect("connected above");
         let mut params = rmcp::model::CallToolRequestParams::new(tool.to_string());
         params.arguments = args_map;
         let result = match tokio::time::timeout(self.timeout, running.call_tool(params)).await {
