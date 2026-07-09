@@ -1,7 +1,10 @@
 name: cache-cleanup
 
+# zizmor: ignore[dangerous-triggers] — pull_request_target is required so forked
+# PRs get a write-scoped token to delete their own caches; no PR code is
+# checked out or executed, only the trusted workflow from the base branch runs.
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
 
 permissions:
@@ -17,5 +20,5 @@ jobs:
           REPO: ${{ github.repository }}
           PR_REF: refs/pull/${{ github.event.pull_request.number }}/merge
         run: |
-          gh cache list --repo "$REPO" --ref "$PR_REF" --json id -q '.[].id' \
+          gh cache list --repo "$REPO" --ref "$PR_REF" --limit 1000 --json id -q '.[].id' \
             | xargs -r -I{} gh cache delete {} --repo "$REPO"
