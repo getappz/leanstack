@@ -159,4 +159,11 @@ mod tests {
         let findings = detect_over_engineering("import _ from \"underscore\";");
         assert!(findings.is_empty());
     }
+
+    #[test]
+    fn review_skill_includes_noise_pre_filter() {
+        assert!(SKILL_REVIEW.contains("Pre-filter (skip before deeper analysis)"));
+        assert!(SKILL_REVIEW.contains("Copyright"));
+        assert!(SKILL_REVIEW.contains("DO NOT EDIT"));
+    }
 }
