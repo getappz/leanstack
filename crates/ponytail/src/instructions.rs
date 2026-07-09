@@ -168,6 +168,30 @@ mod tests {
     }
 
     #[test]
+    fn embedded_skill_includes_anti_hallucination_guardrails() {
+        assert!(EMBEDDED_SKILL.contains("Verify before you write"));
+        assert!(EMBEDDED_SKILL.contains("bug with extra confidence"));
+    }
+
+    #[test]
+    fn embedded_skill_includes_commit_and_comment_rules() {
+        assert!(EMBEDDED_SKILL.contains("Co-Authored-By"));
+        assert!(EMBEDDED_SKILL.contains("Conventional Commits"));
+    }
+
+    #[test]
+    fn filter_skill_body_keeps_core_persona_content_in_every_mode() {
+        // filter_skill_body only strips per-mode-labeled table/bullet rows —
+        // plain-prose sections like these must survive filtering regardless
+        // of active mode, since they're core persona, not an add-on.
+        for mode in ["lite", "full", "ultra"] {
+            let filtered = filter_skill_body(EMBEDDED_SKILL, mode);
+            assert!(filtered.contains("Verify before you write"), "mode={mode}");
+            assert!(filtered.contains("Co-Authored-By"), "mode={mode}");
+        }
+    }
+
+    #[test]
     fn filter_keeps_non_mode_lines() {
         let input = "some rule\n| **lite** | lite only |\n| **full** | full only |\nother rule";
         let filtered = filter_skill_body(input, "full");
