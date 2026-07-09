@@ -1,6 +1,7 @@
 mod agents;
 mod alias;
 mod auth;
+mod caveman;
 mod coaching;
 mod cost;
 mod gateway;
@@ -44,6 +45,7 @@ pub enum Commands {
     Uninstall(uninstall::UninstallArgs),
     Auth(auth::AuthArgs),
     Ponytail(ponytail::PonytailArgs),
+    Caveman(caveman::CavemanArgs),
 }
 
 impl Commands {
@@ -61,6 +63,7 @@ impl Commands {
             Self::Uninstall(cmd) => cmd.run(),
             Self::Auth(cmd) => cmd.run(),
             Self::Ponytail(cmd) => cmd.run(),
+            Self::Caveman(cmd) => cmd.run(),
         }
     }
 }
