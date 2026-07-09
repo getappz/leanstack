@@ -94,6 +94,17 @@ pub fn config_dir() -> PathBuf {
 /// parallel test runner (see the `defaults_to_full` vs `roundtrip_default_mode`
 /// flake this was added to fix).
 #[cfg(test)]
+struct ConfigDirOverrideGuard;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+impl Drop for ConfigDirOverrideGuard {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("PONYTAIL_CONFIG_DIR_OVERRIDE") };
+    }
+}
+
+#[cfg(test)]
 #[allow(unsafe_code)]
 fn with_temp_config_dir<T>(f: impl FnOnce() -> T) -> T {
     let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -101,9 +112,11 @@ fn with_temp_config_dir<T>(f: impl FnOnce() -> T) -> T {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     unsafe { std::env::set_var("PONYTAIL_CONFIG_DIR_OVERRIDE", &dir) };
-    let result = f();
-    unsafe { std::env::remove_var("PONYTAIL_CONFIG_DIR_OVERRIDE") };
-    result
+    // Dropped (restoring the env var) even if `f()` panics — a bare
+    // remove_var() call after f() would be skipped on panic, leaking the
+    // override process-wide for the rest of the test binary.
+    let _override_guard = ConfigDirOverrideGuard;
+    f()
 }
 
 pub fn config_path() -> PathBuf {
