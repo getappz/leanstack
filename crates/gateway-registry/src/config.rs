@@ -22,22 +22,6 @@ pub enum ServerConfig {
         #[serde(default)]
         auth_env: Option<String>,
     },
-    HttpApi {
-        base_url: String,
-        #[serde(default)]
-        auth_ref: Option<String>,
-        #[serde(default)]
-        tools: Vec<HttpToolConfig>,
-    },
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct HttpToolConfig {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    pub method: String,
-    pub path: String,
 }
 
 /// `parse`'s error type: either a TOML syntax/shape error, or a config that
@@ -97,32 +81,6 @@ mod tests {
         assert_eq!(args, &vec!["--repos".to_string(), ".".to_string()]);
         assert_eq!(auth_ref.as_deref(), Some("narsil_token"));
         assert_eq!(auth_env.as_deref(), Some("NARSIL_TOKEN"));
-    }
-
-    #[test]
-    fn parses_http_api_server_with_tools() {
-        let cfg = parse(
-            r#"
-            [servers.weather]
-            kind = "http_api"
-            base_url = "https://api.weather.com"
-            auth_ref = "weather_api_key"
-            [[servers.weather.tools]]
-            name = "get_forecast"
-            description = "Get weather forecast for a city"
-            method = "GET"
-            path = "/v1/forecast"
-            "#,
-        )
-        .unwrap();
-        let ServerConfig::HttpApi { base_url, tools, .. } = cfg.servers.get("weather").unwrap()
-        else {
-            panic!("expected HttpApi");
-        };
-        assert_eq!(base_url, "https://api.weather.com");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "get_forecast");
-        assert_eq!(tools[0].method, "GET");
     }
 
     #[test]

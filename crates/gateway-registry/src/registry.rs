@@ -1,7 +1,7 @@
 //! Ties the SQLite manifest, BM25 search, config-driven backends, and
 //! debounced refresh together — the one type `src/mcp_server.rs` talks to.
 
-use crate::backend::{Backend, HttpApiBackend};
+use crate::backend::Backend;
 use crate::config::{GatewayConfig, ServerConfig};
 use crate::db::{self, ServerTools};
 use crate::error::{suggest, GatewayError};
@@ -90,8 +90,7 @@ impl Registry {
         let mut entries = Vec::new();
         for (name, result) in discovered {
             // A single backend's `discover()` failure (crashed child process,
-            // bad command, or an intentionally-unimplemented kind like
-            // `http_api` — see `HttpApiBackend::discover`) must not poison
+            // bad command, or any other failure) must not poison
             // every other backend's tools. Log and skip; still rebuild the
             // index from whichever backends succeeded (mirrors
             // `skill-registry`'s `scan_sources`, which counts and skips
@@ -214,9 +213,6 @@ fn build_backends(config: &GatewayConfig, secrets: &HashMap<String, String>) -> 
                 }
                 Backend::McpStdio(McpStdioBackend::new(command.clone(), args.clone(), env))
             }
-            ServerConfig::HttpApi { base_url, tools, .. } => {
-                Backend::HttpApi(HttpApiBackend { base_url: base_url.clone(), tools: tools.clone() })
-            }
         };
         out.insert(name.clone(), backend);
     }
@@ -231,8 +227,7 @@ fn build_backends(config: &GatewayConfig, secrets: &HashMap<String, String>) -> 
 // Cargo for integration-test/bench targets, not for the lib's own unit-test
 // binary. See `tests/registry.rs`.
 //
-// The test below doesn't need the fixture binary at all — `HttpApiBackend`
-// always fails `discover()` on its own (see `backend.rs`), so it can live
+// The test below doesn't need the fixture binary at all — it can live
 // here as a normal `#[cfg(test)]` unit test with direct (same-module) access
 // to `Registry`'s private fields, which lets it seed the DB with a "previous
 // refresh" state without going through a live discover() first.
@@ -260,12 +255,15 @@ mod tests {
         .unwrap();
 
         let mut backends = HashMap::new();
-        // HttpApiBackend::discover() always returns
-        // GatewayError::NotImplemented — a stand-in for any backend whose
+        // A nonexistent binary fails to spawn immediately and synchronously — a stand-in for any backend whose
         // discover() fails on this particular refresh.
         backends.insert(
             "flaky".to_string(),
-            Backend::HttpApi(HttpApiBackend { base_url: "https://x.invalid".to_string(), tools: vec![] }),
+            Backend::McpStdio(McpStdioBackend::new(
+                "definitely-not-a-real-binary-xyz".to_string(),
+                vec![],
+                HashMap::new(),
+            )),
         );
         // `last_refresh: None` so `ensure_fresh` doesn't skip via the
         // debounce and actually runs the discover-fails-then-fallback path.

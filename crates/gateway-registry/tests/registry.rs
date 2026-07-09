@@ -62,12 +62,11 @@ async fn execute_unknown_tool_suggests_the_closest_name() {
     }
 }
 
-/// One healthy `mcp_stdio` backend alongside one deliberately-failing
-/// `http_api` backend (its `discover()` always returns
-/// `GatewayError::NotImplemented`, per `HttpApiBackend`'s doc comment). The
-/// healthy backend's tools must still be indexed, searchable, and
-/// executable — a single backend's discovery failure must not poison the
-/// whole registry's refresh.
+/// One healthy `mcp_stdio` backend alongside one deliberately-broken
+/// `mcp_stdio` backend pointed at a nonexistent binary (its `discover()`
+/// fails immediately on spawn). The healthy backend's tools must still be
+/// indexed, searchable, and executable — a single backend's discovery
+/// failure must not poison the whole registry's refresh.
 #[tokio::test]
 async fn one_failing_backend_does_not_block_the_others() {
     let mut servers = HashMap::new();
@@ -76,8 +75,13 @@ async fn one_failing_backend_does_not_block_the_others() {
         ServerConfig::McpStdio { command: fixture_path(), args: vec![], auth_ref: None, auth_env: None },
     );
     servers.insert(
-        "broken_http".to_string(),
-        ServerConfig::HttpApi { base_url: "https://example.invalid".to_string(), auth_ref: None, tools: vec![] },
+        "broken".to_string(),
+        ServerConfig::McpStdio {
+            command: "definitely-not-a-real-binary-xyz".to_string(),
+            args: vec![],
+            auth_ref: None,
+            auth_env: None,
+        },
     );
     let config = GatewayConfig { servers };
 

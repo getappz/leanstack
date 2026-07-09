@@ -12,8 +12,8 @@ mod search;
 mod truncate;
 mod types;
 
-pub use backend::{Backend, HttpApiBackend};
-pub use config::{parse as parse_config, ConfigError, GatewayConfig, HttpToolConfig, ServerConfig};
+pub use backend::Backend;
+pub use config::{parse as parse_config, ConfigError, GatewayConfig, ServerConfig};
 pub use error::{suggest, GatewayError};
 pub use mcp_stdio::{McpStdioBackend, DEFAULT_TIMEOUT};
 pub use redact::redact_error_for_llm;
