@@ -213,6 +213,9 @@ fn build_backends(config: &GatewayConfig, secrets: &HashMap<String, String>) -> 
                 }
                 Backend::McpStdio(McpStdioBackend::new(command.clone(), args.clone(), env))
             }
+            ServerConfig::McpHttp { .. } => {
+                unimplemented!("McpHttp backend will be implemented in Tasks 6/7")
+            }
         };
         out.insert(name.clone(), backend);
     }
