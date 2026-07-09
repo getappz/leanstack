@@ -1,0 +1,21 @@
+name: cache-cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete caches for this PR's branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          gh cache list --repo "$REPO" --ref "$PR_REF" --json id -q '.[].id' \
+            | xargs -r -I{} gh cache delete {} --repo "$REPO"
