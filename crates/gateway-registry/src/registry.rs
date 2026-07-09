@@ -5,6 +5,7 @@ use crate::backend::Backend;
 use crate::config::{GatewayConfig, ServerConfig};
 use crate::db::{self, ServerTools};
 use crate::error::{suggest, GatewayError};
+use crate::mcp_http::McpHttpBackend;
 use crate::mcp_stdio::McpStdioBackend;
 use crate::sanitize::sanitize_tool_entry;
 use crate::search::{search, MatchMode, ToolHit};
@@ -213,22 +214,50 @@ fn build_backends(config: &GatewayConfig, secrets: &HashMap<String, String>) -> 
                 }
                 Backend::McpStdio(McpStdioBackend::new(command.clone(), args.clone(), env))
             }
-            ServerConfig::McpHttp { url, .. } => {
-                // McpHttpBackend doesn't exist yet (lands in a later task in
-                // this same plan) — skip rather than panic, so one
-                // not-yet-supported server config doesn't crash every other
-                // server's backend construction. Mirrors this function's
-                // own missing-secret-credential handling above (log + keep
-                // going), rather than aborting.
-                eprintln!(
-                    "gateway-registry: server '{name}' uses kind = \"mcp_http\" ({url}), which is not implemented yet — skipping"
-                );
-                continue;
+            ServerConfig::McpHttp { url, auth_ref, auth_env, auth_header } => {
+                let resolved = resolve_mcp_http_auth_header(name, auth_ref, auth_env, auth_header, secrets);
+                Backend::McpHttp(McpHttpBackend::new(url.clone(), resolved))
             }
         };
         out.insert(name.clone(), backend);
     }
     out
+}
+
+/// Resolves an `mcp_http` server's `auth_ref`/`auth_env` pair (if present)
+/// against the stored secrets into the `(header name, header value)` tuple
+/// `McpHttpBackend::new` expects, defaulting the header name to
+/// `"Authorization"` when `auth_header` wasn't set. Split out of
+/// `build_backends` to keep that function's per-arm branching flat.
+///
+/// `auth_env` isn't actually used for HTTP the way it is for stdio — stdio
+/// uses it as the literal env-var name to inject; HTTP's `auth_header` field
+/// already plays that role. It's still required at config-parse time by the
+/// `IncompleteAuthConfig` pairing check purely for consistency with stdio's
+/// config shape, per the spec — hence the unused `_auth_env` binding below,
+/// which only participates in the presence check.
+fn resolve_mcp_http_auth_header(
+    name: &str,
+    auth_ref: &Option<String>,
+    auth_env: &Option<String>,
+    auth_header: &Option<String>,
+    secrets: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    let (Some(auth_ref), Some(_auth_env)) = (auth_ref, auth_env) else {
+        return None;
+    };
+    match secrets.get(auth_ref) {
+        Some(secret) => {
+            let header_name = auth_header.clone().unwrap_or_else(|| "Authorization".to_string());
+            Some((header_name, secret.clone()))
+        }
+        None => {
+            eprintln!(
+                "gateway-registry: server '{name}' references auth_ref '{auth_ref}' which has no stored secret — connecting without credentials"
+            );
+            None
+        }
+    }
 }
 
 // NOTE: the four Registry integration tests (search/execute against the real

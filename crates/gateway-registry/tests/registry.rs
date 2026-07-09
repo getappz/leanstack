@@ -9,6 +9,8 @@
 //! for the lib's own unit-test binary — see the note at the bottom of
 //! `src/registry.rs`.
 
+mod support;
+
 use agentflare_gateway_registry::{GatewayConfig, GatewayError, MatchMode, Registry, ServerConfig};
 use std::collections::HashMap;
 
@@ -38,6 +40,35 @@ async fn search_finds_the_fixture_tool_after_open() {
 async fn execute_dispatches_to_the_right_backend() {
     let reg = Registry::open_in_memory(&config_with_fixture(), &HashMap::new()).await.unwrap();
     let result = reg.execute("fixture", "echo", serde_json::json!({"text": "hi"})).await.unwrap();
+    let text = result.get(0).and_then(|c| c.get("text")).and_then(|t| t.as_str());
+    assert_eq!(text, Some("echo: hi"));
+}
+
+/// End-to-end: a `kind = "mcp_http"` server config, resolved through
+/// `build_backends` into a real `Backend::McpHttp`, searchable and
+/// executable through `Registry` exactly like an `mcp_stdio` backend above.
+#[tokio::test]
+async fn execute_dispatches_to_an_mcp_http_backend() {
+    let fixture = support::start().await;
+    let mut servers = HashMap::new();
+    servers.insert(
+        "http_fixture".to_string(),
+        ServerConfig::McpHttp {
+            url: fixture.url.clone(),
+            auth_ref: None,
+            auth_env: None,
+            auth_header: None,
+        },
+    );
+    let config = GatewayConfig { servers };
+
+    let reg = Registry::open_in_memory(&config, &HashMap::new()).await.unwrap();
+
+    let hits = reg.search("echo", 5, MatchMode::All).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].server, "http_fixture");
+
+    let result = reg.execute("http_fixture", "echo", serde_json::json!({"text": "hi"})).await.unwrap();
     let text = result.get(0).and_then(|c| c.get("text")).and_then(|t| t.as_str());
     assert_eq!(text, Some("echo: hi"));
 }
