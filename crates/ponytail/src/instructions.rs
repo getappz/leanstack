@@ -9,9 +9,6 @@ pub struct Instructions {
     pub body: String,
 }
 
-const SKILL_URL: &str =
-    "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md";
-
 fn find_workspace_agents_md() -> Option<String> {
     let mut dir = std::env::current_dir().ok()?;
     loop {
@@ -25,31 +22,6 @@ fn find_workspace_agents_md() -> Option<String> {
             return None;
         }
     }
-}
-
-pub fn skill_cache_path() -> std::path::PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("agentflare")
-        .join("ponytail")
-        .join("SKILL.md")
-}
-
-pub fn download_skill() -> Result<String, String> {
-    let resp = ureq::get(SKILL_URL)
-        .timeout(std::time::Duration::from_secs(30))
-        .call()
-        .map_err(|e| format!("fetch failed: {e}"))?;
-    if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    let body = resp.into_string().map_err(|e| format!("read failed: {e}"))?;
-    let path = skill_cache_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
-    }
-    std::fs::write(&path, &body).map_err(|e| format!("write: {e}"))?;
-    Ok(path.display().to_string())
 }
 
 pub fn build(mode: &str, skill_path: Option<&Path>) -> Instructions {
@@ -78,10 +50,7 @@ pub fn build(mode: &str, skill_path: Option<&Path>) -> Instructions {
     let skill_body = if let Some(path) = skill_path {
         std::fs::read_to_string(path).unwrap_or_else(|_| EMBEDDED_SKILL.to_string())
     } else {
-        std::fs::read_to_string(skill_cache_path())
-            .ok()
-            .or_else(find_workspace_agents_md)
-            .unwrap_or_else(|| EMBEDDED_SKILL.to_string())
+        find_workspace_agents_md().unwrap_or_else(|| EMBEDDED_SKILL.to_string())
     };
 
     let mut filtered = filter_skill_body(&skill_body, &effective);

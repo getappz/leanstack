@@ -1581,7 +1581,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sysinfo",
- "ureq",
 ]
 
 [[package]]
