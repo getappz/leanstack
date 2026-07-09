@@ -69,7 +69,6 @@ pub enum PonytailAction {
         mode: String,
     },
     Off,
-    Update,
     Review,
     Audit,
     Debt,
@@ -153,15 +152,6 @@ impl PonytailArgs {
             PonytailAction::Off => {
                 ponytail::clear_active();
                 println!("off");
-            }
-            PonytailAction::Update => {
-                match ponytail::download_skill() {
-                    Ok(path) => println!("SKILL.md updated at {path}"),
-                    Err(e) => {
-                        eprintln!("update failed: {e}");
-                        std::process::exit(1);
-                    }
-                }
             }
             PonytailAction::Review => {
                 println!("{}", ponytail::sub_skills::SKILL_REVIEW);

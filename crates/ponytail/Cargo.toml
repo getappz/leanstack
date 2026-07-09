@@ -10,7 +10,6 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
-ureq = { version = "2", features = ["json"] }
 sysinfo = { version = "0.34", optional = true, default-features = false, features = ["system"] }
 
 [features]
