@@ -1,13 +1,17 @@
 use agentflare_artifacts::{ArtifactServer, ArtifactStore};
 use std::sync::Arc;
 
-pub fn serve(port: u16, dir: Option<std::path::PathBuf>) {
+pub fn serve(host: &str, port: u16, dir: Option<std::path::PathBuf>) {
     let dir = dir.unwrap_or_else(|| crate::paths::home().join(".agentflare").join("artifacts"));
     let store = Arc::new(ArtifactStore::new(dir.clone()));
-    let server = ArtifactServer::start(store, port).expect("failed to start artifact server");
+    let server =
+        ArtifactServer::start_on(store, host, port).expect("failed to start artifact server");
     let url = server.base_url();
     eprintln!("agentflare artifacts server listening on {url}");
     eprintln!("  store: {}", dir.display());
+    if host != "127.0.0.1" && host != "localhost" {
+        eprintln!("  warning: bound to {host} — anyone on your network can view these artifacts");
+    }
     loop {
         std::thread::park();
     }

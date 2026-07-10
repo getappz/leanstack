@@ -95,6 +95,40 @@ struct ArtifactPublishRequest {
     #[schemars(description = "Existing artifact id to update in place — keeps the same URL and live-reloads open viewers")]
     #[serde(default)]
     update_id: Option<String>,
+    #[schemars(description = "Short label for this version, shown in history (e.g. \"draft\", \"final\")")]
+    #[serde(default)]
+    label: Option<String>,
+    #[schemars(description = "One-line description shown in the gallery")]
+    #[serde(default)]
+    description: Option<String>,
+    #[schemars(description = "One or two emoji used as the page icon")]
+    #[serde(default)]
+    favicon: Option<String>,
+    #[schemars(description = "Optimistic-concurrency guard: update only applies if the artifact's current version equals this; otherwise a version-conflict error is returned")]
+    #[serde(default)]
+    base_version: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ArtifactListRequest {
+    #[schemars(description = "Only artifacts from this session (omit for all)")]
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ArtifactGetRequest {
+    #[schemars(description = "Artifact id from artifact_publish or artifact_list")]
+    id: String,
+    #[schemars(description = "Specific version to fetch (omit for latest)")]
+    #[serde(default)]
+    version: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ArtifactDeleteRequest {
+    #[schemars(description = "Artifact id to delete (removes all versions)")]
+    id: String,
 }
 
 #[derive(Default)]
@@ -268,10 +302,20 @@ impl AgentflareMcp {
         Ok((store.clone(), server.port()))
     }
 
-    #[tool(description = "Publish a live-shareable artifact page (HTML, markdown, text, ...) and return its local URL. Pass update_id to update an existing artifact in place — same URL, open viewers live-reload.")]
+    #[tool(description = "Publish a live-shareable artifact page (HTML, markdown, mermaid, text, ...) and return its local URL. Pass update_id to update in place — same URL, open viewers live-reload; every publish snapshots a version. Pass base_version to fail on concurrent edits instead of clobbering.")]
     fn artifact_publish(
         &self,
-        Parameters(ArtifactPublishRequest { name, r#type, content, session_id, update_id }): Parameters<ArtifactPublishRequest>,
+        Parameters(ArtifactPublishRequest {
+            name,
+            r#type,
+            content,
+            session_id,
+            update_id,
+            label,
+            description,
+            favicon,
+            base_version,
+        }): Parameters<ArtifactPublishRequest>,
     ) -> Result<String, ErrorData> {
         if name.trim().is_empty() {
             return Err(ErrorData::invalid_params("name is required", None));
@@ -288,16 +332,85 @@ impl AgentflareMcp {
             content,
             session_id: session_id.unwrap_or_default(),
             update_id,
+            label,
+            description,
+            favicon,
+            base_version,
         };
-        let resp = store
-            .publish(&req)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let resp = store.publish(&req).map_err(Self::artifact_error)?;
         let result = serde_json::json!({
             "id": resp.id,
+            "version": resp.version,
             "url": format!("http://127.0.0.1:{port}/{}", resp.id),
             "index": format!("http://127.0.0.1:{port}/"),
         });
         Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
+    }
+
+    /// NotFound and InvalidInput (version conflict) are caller-fixable →
+    /// invalid_params; everything else is an internal error.
+    fn artifact_error(e: std::io::Error) -> ErrorData {
+        match e.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput => {
+                ErrorData::invalid_params(e.to_string(), None)
+            }
+            _ => ErrorData::internal_error(e.to_string(), None),
+        }
+    }
+
+    #[tool(description = "List published artifacts (id, name, type, version, description, session) with their local URLs. Optionally filter by session_id.")]
+    fn artifact_list(
+        &self,
+        Parameters(ArtifactListRequest { session_id }): Parameters<ArtifactListRequest>,
+    ) -> Result<String, ErrorData> {
+        let (store, port) = self.ensure_artifact_server()?;
+        let summaries = store
+            .list(session_id.as_deref())
+            .map_err(Self::artifact_error)?;
+        let items: Vec<serde_json::Value> = summaries
+            .iter()
+            .map(|s| {
+                let mut v = serde_json::to_value(s).unwrap_or_default();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "url".into(),
+                        serde_json::json!(format!("http://127.0.0.1:{port}/{}", s.id)),
+                    );
+                }
+                v
+            })
+            .collect();
+        Ok(serde_json::to_string_pretty(&items).unwrap_or_default())
+    }
+
+    #[tool(description = "Fetch an artifact's full content and metadata by id; pass version to read an older snapshot. Version history itself is at GET /{id}/versions.")]
+    fn artifact_get(
+        &self,
+        Parameters(ArtifactGetRequest { id, version }): Parameters<ArtifactGetRequest>,
+    ) -> Result<String, ErrorData> {
+        if id.trim().is_empty() {
+            return Err(ErrorData::invalid_params("id is required", None));
+        }
+        let (store, _port) = self.ensure_artifact_server()?;
+        let artifact = match version {
+            Some(n) => store.get_version(&id, n),
+            None => store.get(&id),
+        }
+        .map_err(Self::artifact_error)?;
+        Ok(serde_json::to_string_pretty(&artifact).unwrap_or_default())
+    }
+
+    #[tool(description = "Delete an artifact and all its versions by id.")]
+    fn artifact_delete(
+        &self,
+        Parameters(ArtifactDeleteRequest { id }): Parameters<ArtifactDeleteRequest>,
+    ) -> Result<String, ErrorData> {
+        if id.trim().is_empty() {
+            return Err(ErrorData::invalid_params("id is required", None));
+        }
+        let (store, _port) = self.ensure_artifact_server()?;
+        let deleted = store.delete(&id).map_err(Self::artifact_error)?;
+        Ok(serde_json::json!({ "deleted": deleted }).to_string())
     }
 
     fn gateway_db_path() -> std::path::PathBuf {
@@ -864,6 +977,10 @@ mod tests {
                 content: "artifact-body-marker".into(),
                 session_id: None,
                 update_id: None,
+                label: None,
+                description: None,
+                favicon: None,
+                base_version: None,
             }))
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -890,6 +1007,10 @@ mod tests {
                 content: "v1".into(),
                 session_id: Some("ses-1".into()),
                 update_id: None,
+                label: None,
+                description: None,
+                favicon: None,
+                base_version: None,
             }))
             .unwrap(),
         )
@@ -903,12 +1024,123 @@ mod tests {
                 content: "v2".into(),
                 session_id: Some("ses-1".into()),
                 update_id: Some(id.clone()),
+                label: None,
+                description: None,
+                favicon: None,
+                base_version: None,
             }))
             .unwrap(),
         )
         .unwrap();
         assert_eq!(second["id"].as_str().unwrap(), id);
         assert_eq!(second["url"], first["url"]);
+    }
+
+    #[test]
+    fn artifact_list_get_delete_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = AgentflareMcp {
+            artifacts_dir_override: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let publish = |name: &str, session: &str| -> serde_json::Value {
+            serde_json::from_str(
+                &s.artifact_publish(Parameters(ArtifactPublishRequest {
+                    name: name.into(),
+                    r#type: None,
+                    content: format!("content-of-{name}"),
+                    session_id: Some(session.into()),
+                    update_id: None,
+                    label: None,
+                    description: Some(format!("desc-{name}")),
+                    favicon: None,
+                    base_version: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let a = publish("alpha", "ses-1");
+        let _b = publish("beta", "ses-2");
+
+        let all: serde_json::Value =
+            serde_json::from_str(&s.artifact_list(Parameters(ArtifactListRequest { session_id: None })).unwrap())
+                .unwrap();
+        assert_eq!(all.as_array().unwrap().len(), 2);
+
+        let one: serde_json::Value = serde_json::from_str(
+            &s.artifact_list(Parameters(ArtifactListRequest { session_id: Some("ses-1".into()) }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(one.as_array().unwrap().len(), 1);
+        assert_eq!(one[0]["name"], "alpha");
+        assert_eq!(one[0]["description"], "desc-alpha");
+
+        let id = a["id"].as_str().unwrap().to_string();
+        let got: serde_json::Value = serde_json::from_str(
+            &s.artifact_get(Parameters(ArtifactGetRequest { id: id.clone(), version: None })).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(got["content"], "content-of-alpha");
+
+        let del: serde_json::Value = serde_json::from_str(
+            &s.artifact_delete(Parameters(ArtifactDeleteRequest { id: id.clone() })).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(del["deleted"], true);
+
+        let err = s
+            .artifact_get(Parameters(ArtifactGetRequest { id, version: None }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn artifact_publish_version_and_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = AgentflareMcp {
+            artifacts_dir_override: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let first: serde_json::Value = serde_json::from_str(
+            &s.artifact_publish(Parameters(ArtifactPublishRequest {
+                name: "doc".into(),
+                r#type: None,
+                content: "v1".into(),
+                session_id: None,
+                update_id: None,
+                label: Some("draft".into()),
+                description: None,
+                favicon: None,
+                base_version: None,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["version"], 1);
+        let id = first["id"].as_str().unwrap().to_string();
+
+        // stale base_version maps to invalid_params, not internal_error
+        let update = |base: Option<u32>, content: &str| {
+            s.artifact_publish(Parameters(ArtifactPublishRequest {
+                name: "doc".into(),
+                r#type: None,
+                content: content.into(),
+                session_id: None,
+                update_id: Some(id.clone()),
+                label: None,
+                description: None,
+                favicon: None,
+                base_version: base,
+            }))
+        };
+        let second: serde_json::Value = serde_json::from_str(&update(Some(1), "v2").unwrap()).unwrap();
+        assert_eq!(second["version"], 2);
+
+        let err = update(Some(1), "v3-stale").unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.to_string().contains("conflict"), "{err}");
     }
 
     #[test]
@@ -926,6 +1158,10 @@ mod tests {
                     content: content.into(),
                     session_id: None,
                     update_id: None,
+                    label: None,
+                    description: None,
+                    favicon: None,
+                    base_version: None,
                 }))
                 .unwrap_err();
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);

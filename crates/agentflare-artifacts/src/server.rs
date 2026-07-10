@@ -5,17 +5,24 @@ use std::sync::Arc;
 use std::thread;
 
 pub struct ArtifactServer {
+    host: String,
     port: u16,
     store: Arc<ArtifactStore>,
 }
 
 impl ArtifactServer {
-    /// Start the server. `port` 0 binds an OS-assigned free port;
-    /// a nonzero port is bound exactly, erroring if unavailable.
+    /// Start the server on loopback. `port` 0 binds an OS-assigned free
+    /// port; a nonzero port is bound exactly, erroring if unavailable.
     pub fn start(store: Arc<ArtifactStore>, port: u16) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", port))?;
+        Self::start_on(store, "127.0.0.1", port)
+    }
+
+    /// Start on a specific interface (e.g. "0.0.0.0" for LAN sharing).
+    pub fn start_on(store: Arc<ArtifactStore>, host: &str, port: u16) -> std::io::Result<Self> {
+        let listener = TcpListener::bind((host, port))?;
         let actual_port = listener.local_addr()?.port();
         let server = ArtifactServer {
+            host: host.to_string(),
             port: actual_port,
             store: store.clone(),
         };
@@ -40,11 +47,11 @@ impl ArtifactServer {
     }
 
     pub fn url_for(&self, id: &str) -> String {
-        format!("http://127.0.0.1:{}/{id}", self.port)
+        format!("http://{}:{}/{id}", self.host, self.port)
     }
 
     pub fn base_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        format!("http://{}:{}", self.host, self.port)
     }
 }
 
@@ -88,11 +95,26 @@ fn handle_connection(mut stream: TcpStream, store: &ArtifactStore) {
         ("GET", path) if path == "/" => index_page(store),
         ("GET", path) if path.ends_with("/live") => {
             let id = path.strip_suffix("/live").unwrap_or("").trim_start_matches('/');
+            if !valid_id(id) {
+                let _ = stream.write_all(not_found().0.as_bytes());
+                let _ = stream.flush();
+                return;
+            }
             return serve_sse(&mut stream, store, id);
         }
+        ("GET", path) if path.ends_with("/versions") => {
+            let id = path.strip_suffix("/versions").unwrap_or("").trim_start_matches('/');
+            versions_json(store, id)
+        }
         ("GET", path) => {
-            let id = path.trim_start_matches('/');
-            serve_artifact(store, id)
+            let rest = path.trim_start_matches('/');
+            match rest.split_once("/v/") {
+                Some((id, v)) => match v.parse::<u32>() {
+                    Ok(n) => serve_artifact(store, id, Some(n)),
+                    Err(_) => not_found(),
+                },
+                None => serve_artifact(store, rest, None),
+            }
         }
         _ => (
             "HTTP/1.0 405 Method Not Allowed\r\n\r\nMethod Not Allowed".to_string(),
@@ -103,80 +125,178 @@ fn handle_connection(mut stream: TcpStream, store: &ArtifactStore) {
     let _ = stream.flush();
 }
 
-fn serve_artifact(store: &ArtifactStore, id: &str) -> (String,) {
-    match store.get(id) {
+/// Artifact ids are single path segments (UUIDs); anything that could
+/// navigate the filesystem is rejected before it reaches a path join.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && !id.contains(['/', '\\']) && !id.contains("..")
+}
+
+fn not_found() -> (String,) {
+    (
+        "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\nArtifact not found"
+            .to_string(),
+    )
+}
+
+fn http_200(content_type: &str, body: &str) -> (String,) {
+    (format!(
+        "HTTP/1.0 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    ),)
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Content embedded inside a `<script>` block as a JS string literal.
+/// serde_json handles quoting; escaping `<` blocks `</script>` breakout.
+fn js_string(s: &str) -> String {
+    serde_json::to_string(s)
+        .unwrap_or_else(|_| "\"\"".into())
+        .replace('<', "\\u003c")
+}
+
+fn serve_artifact(store: &ArtifactStore, id: &str, version: Option<u32>) -> (String,) {
+    if !valid_id(id) {
+        return not_found();
+    }
+    let artifact = match version {
+        Some(n) => store.get_version(id, n),
+        None => store.get(id),
+    };
+    match artifact {
         Ok(artifact) => {
-            let body = render_artifact_page(&artifact);
-            let headers = format!(
-                "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            (format!("{headers}{body}"),)
+            let body = render_artifact_page(&artifact, version.is_none());
+            http_200("text/html; charset=utf-8", &body)
         }
-        Err(_) => (
-            "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\nArtifact not found"
-                .to_string(),
+        Err(_) => not_found(),
+    }
+}
+
+fn versions_json(store: &ArtifactStore, id: &str) -> (String,) {
+    if !valid_id(id) {
+        return not_found();
+    }
+    match store.versions(id) {
+        Ok(history) => http_200(
+            "application/json",
+            &serde_json::to_string_pretty(&history).unwrap_or_else(|_| "[]".into()),
         ),
+        Err(_) => not_found(),
     }
 }
 
 fn index_page(store: &ArtifactStore) -> (String,) {
     let artifacts = store.list(None).unwrap_or_default();
-    let mut items = String::new();
+    // Group by session, newest session activity first (list() is already
+    // sorted newest-first, and BTreeMap keeps session groups stable).
+    let mut sessions: std::collections::BTreeMap<&str, Vec<&crate::types::ArtifactSummary>> =
+        std::collections::BTreeMap::new();
     for a in &artifacts {
-        items.push_str(&format!(
-            r#"<li><a href="/{}">{}</a> <small>({})</small></li>"#,
-            a.id, a.name, a.artifact_type
-        ));
+        sessions.entry(a.session_id.as_str()).or_default().push(a);
+    }
+    let mut groups = String::new();
+    for (session, items) in &sessions {
+        let session_label = if session.is_empty() { "(no session)" } else { session };
+        groups.push_str(&format!("<h2>{}</h2>\n<ul>\n", html_escape(session_label)));
+        for a in items {
+            let icon = a.favicon.as_deref().unwrap_or("📄");
+            let desc = a
+                .description
+                .as_deref()
+                .map(|d| format!("<br><small>{}</small>", html_escape(d)))
+                .unwrap_or_default();
+            groups.push_str(&format!(
+                r#"<li>{} <a href="/{}">{}</a> <small>({}, v{}) · <a href="/{}/versions">history</a></small>{}</li>"#,
+                html_escape(icon),
+                a.id,
+                html_escape(&a.name),
+                a.artifact_type,
+                a.version,
+                a.id,
+                desc
+            ));
+            groups.push('\n');
+        }
+        groups.push_str("</ul>\n");
+    }
+    if groups.is_empty() {
+        groups = "<p>No artifacts published yet.</p>".into();
     }
     let body = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>agentflare artifacts</title>
-<style>body{{font-family:system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem}}ul{{list-style:none;padding:0}}li{{padding:.5rem 0;border-bottom:1px solid #eee}}a{{color:#0066cc;text-decoration:none}}small{{color:#666}}</style>
+<style>body{{font-family:system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem}}ul{{list-style:none;padding:0}}li{{padding:.5rem 0;border-bottom:1px solid #eee}}a{{color:#0066cc;text-decoration:none}}small{{color:#666}}h2{{color:#444;font-size:1rem;margin-top:1.5rem}}</style>
 </head>
-<body><h1>agentflare artifacts</h1><ul>{items}</ul></body>
+<body><h1>agentflare artifacts</h1>{groups}</body>
 </html>"#
     );
-    let headers = format!(
-        "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    (format!("{headers}{body}"),)
+    http_200("text/html; charset=utf-8", &body)
 }
 
-fn render_artifact_page(artifact: &crate::types::Artifact) -> String {
-    let live_url = format!("/{}/live", artifact.id);
+/// Shared `<head>` chunk: escaped title, optional emoji favicon, live-reload
+/// wiring (only on the latest version — snapshots are immutable).
+fn page_head(artifact: &crate::types::Artifact, live: bool) -> String {
+    let mut head = format!(
+        "<meta charset=\"utf-8\"><title>{}</title>\n",
+        html_escape(&artifact.name)
+    );
+    if let Some(emoji) = &artifact.favicon {
+        head.push_str(&format!(
+            "<link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>{}</text></svg>\">\n",
+            html_escape(emoji)
+        ));
+    }
+    if live {
+        head.push_str(&format!(
+            "<script>const es=new EventSource('/{}/live');es.onmessage=()=>location.reload()</script>\n",
+            artifact.id
+        ));
+    }
+    head
+}
+
+fn render_artifact_page(artifact: &crate::types::Artifact, live: bool) -> String {
+    let head = page_head(artifact, live);
+    let title = html_escape(&artifact.name);
+    let snapshot_banner = if live {
+        String::new()
+    } else {
+        format!(
+            r#"<p style="background:#fff3cd;padding:.5rem 1rem;border-radius:4px">viewing v{} (read-only snapshot) — <a href="/{}">back to latest</a></p>"#,
+            artifact.version, artifact.id
+        )
+    };
+    let style = "<style>body{font-family:system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem}pre{background:#f5f5f5;padding:1rem;border-radius:4px;overflow-x:auto}h1{border-bottom:2px solid #eee;padding-bottom:.5rem}</style>";
     match artifact.artifact_type {
-        crate::types::ArtifactType::Html => {
-            format!(
-                r#"<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>{title}</title>
-<script>const es=new EventSource('{live}');es.onmessage=()=>location.reload()</script>
-</head>
-<body>{content}</body>
-</html>"#,
-                title = artifact.name,
-                live = live_url,
-                content = artifact.content
-            )
-        }
-        _ => {
-            format!(
-                r#"<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>{title}</title>
-<script>const es=new EventSource('{live}');es.onmessage=()=>location.reload()</script>
-<style>body{{font-family:system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem}}pre{{background:#f5f5f5;padding:1rem;border-radius:4px;overflow-x:auto}}h1{{border-bottom:2px solid #eee;padding-bottom:.5rem}}</style>
-</head>
-<body><h1>{title}</h1><pre>{content}</pre></body>
-</html>"#,
-                title = artifact.name,
-                live = live_url,
-                content = artifact.content
-            )
-        }
+        // Html and Diagram (svg) are raw by design: rendering agent-authored
+        // documents is the entire point of these types.
+        crate::types::ArtifactType::Html => format!(
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>{head}</head>\n<body>{snapshot_banner}{}</body>\n</html>",
+            artifact.content
+        ),
+        crate::types::ArtifactType::Diagram => format!(
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>{head}{style}</head>\n<body>{snapshot_banner}<h1>{title}</h1>{}</body>\n</html>",
+            artifact.content
+        ),
+        crate::types::ArtifactType::Markdown => format!(
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>{head}{style}</head>\n<body>{snapshot_banner}<main id=\"content\"></main>\n<script src=\"https://cdn.jsdelivr.net/npm/marked@12/marked.min.js\"></script>\n<script>document.getElementById('content').innerHTML=marked.parse({src});</script>\n</body>\n</html>",
+            src = js_string(&artifact.content)
+        ),
+        crate::types::ArtifactType::Mermaid => format!(
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>{head}{style}</head>\n<body>{snapshot_banner}<h1>{title}</h1><pre class=\"mermaid\">{}</pre>\n<script type=\"module\">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';mermaid.initialize({{startOnLoad:true}});</script>\n</body>\n</html>",
+            html_escape(&artifact.content)
+        ),
+        crate::types::ArtifactType::Text => format!(
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>{head}{style}</head>\n<body>{snapshot_banner}<h1>{title}</h1><pre>{}</pre></body>\n</html>",
+            html_escape(&artifact.content)
+        ),
     }
 }
 

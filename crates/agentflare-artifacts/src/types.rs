@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactType {
     Html,
     Markdown,
     Mermaid,
     Diagram,
+    #[default]
     Text,
 }
 
@@ -57,6 +58,12 @@ pub struct Artifact {
     pub session_id: String,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favicon: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +75,12 @@ pub struct ArtifactSummary {
     pub session_id: String,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favicon: Option<String>,
 }
 
 impl From<&Artifact> for ArtifactSummary {
@@ -79,19 +92,34 @@ impl From<&Artifact> for ArtifactSummary {
             session_id: a.session_id.clone(),
             created_at: a.created_at,
             updated_at: a.updated_at,
+            version: a.version,
+            description: a.description.clone(),
+            favicon: a.favicon.clone(),
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PublishRequest {
     pub name: String,
     #[serde(rename = "type")]
     pub artifact_type: ArtifactType,
     pub content: String,
     pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_id: Option<String>,
+    /// Short human-readable name for this version, shown in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// One or two emoji shown as the page icon and in the gallery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favicon: Option<String>,
+    /// Compare-and-swap guard: if set, the update only applies when the
+    /// artifact's current version still equals this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_version: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -99,4 +127,13 @@ pub struct PublishResponse {
     pub id: String,
     pub url: String,
     pub session_id: String,
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VersionInfo {
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub created_at: u64,
 }

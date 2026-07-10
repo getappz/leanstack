@@ -1,4 +1,6 @@
-use crate::types::{Artifact, ArtifactSummary, ArtifactType, PublishRequest, PublishResponse};
+use crate::types::{
+    Artifact, ArtifactSummary, ArtifactType, PublishRequest, PublishResponse, VersionInfo,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -10,6 +12,8 @@ const ARTIFACTS_DIR: &str = "artifacts";
 const META_FILE: &str = "meta.json";
 const CONTENT_FILE: &str = "content";
 
+const VERSIONS_DIR: &str = "versions";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ArtifactMeta {
     pub id: String,
@@ -18,6 +22,14 @@ struct ArtifactMeta {
     pub session_id: String,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favicon: Option<String>,
+    #[serde(default)]
+    pub history: Vec<VersionInfo>,
 }
 
 #[derive(Clone)]
@@ -48,23 +60,51 @@ impl ArtifactStore {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let is_update = self.artifact_dir(&id).exists();
+        let prev = self.read_meta(&id);
+
+        if let (Some(base), Some(prev_meta)) = (req.base_version, prev.as_ref()) {
+            if base != prev_meta.version {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "version conflict: base_version {base}, but current version is {} — re-read the artifact and retry",
+                        prev_meta.version
+                    ),
+                ));
+            }
+        }
+
+        let version = prev.as_ref().map(|m| m.version + 1).unwrap_or(1);
+        let mut history = prev.as_ref().map(|m| m.history.clone()).unwrap_or_default();
+        history.push(VersionInfo {
+            version,
+            label: req.label.clone(),
+            created_at: now,
+        });
 
         let meta = ArtifactMeta {
             id: id.clone(),
             name: req.name.clone(),
             artifact_type: req.artifact_type.clone(),
             session_id: req.session_id.clone(),
-            created_at: if is_update {
-                self.read_meta(&id).map(|m| m.created_at).unwrap_or(now)
-            } else {
-                now
-            },
+            created_at: prev.as_ref().map(|m| m.created_at).unwrap_or(now),
             updated_at: now,
+            version,
+            // Omitting description/favicon on an update keeps the old value.
+            description: req
+                .description
+                .clone()
+                .or_else(|| prev.as_ref().and_then(|m| m.description.clone())),
+            favicon: req
+                .favicon
+                .clone()
+                .or_else(|| prev.as_ref().and_then(|m| m.favicon.clone())),
+            history,
         };
 
         let dir = self.artifact_dir(&id);
-        fs::create_dir_all(&dir)?;
+        fs::create_dir_all(dir.join(VERSIONS_DIR))?;
+        fs::write(dir.join(VERSIONS_DIR).join(version.to_string()), &req.content)?;
         fs::write(dir.join(META_FILE), serde_json::to_string_pretty(&meta)?)?;
         fs::write(dir.join(CONTENT_FILE), &req.content)?;
 
@@ -73,13 +113,35 @@ impl ArtifactStore {
             id,
             url,
             session_id: req.session_id.clone(),
+            version,
         };
 
-        if is_update {
+        if prev.is_some() {
             self.broadcast(&response.id, "refresh");
         }
 
         Ok(response)
+    }
+
+    /// Version history, oldest first.
+    pub fn versions(&self, id: &str) -> std::io::Result<Vec<VersionInfo>> {
+        self.read_meta(id)
+            .map(|m| m.history)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("artifact {id} not found"),
+                )
+            })
+    }
+
+    /// A specific version's snapshot; `get()` always serves the latest.
+    pub fn get_version(&self, id: &str, version: u32) -> std::io::Result<Artifact> {
+        let mut artifact = self.get(id)?;
+        let content_path = self.artifact_dir(id).join(VERSIONS_DIR).join(version.to_string());
+        artifact.content = fs::read_to_string(content_path)?;
+        artifact.version = version;
+        Ok(artifact)
     }
 
     pub fn get(&self, id: &str) -> std::io::Result<Artifact> {
@@ -101,6 +163,9 @@ impl ArtifactStore {
             session_id: meta.session_id,
             created_at: meta.created_at,
             updated_at: meta.updated_at,
+            version: meta.version,
+            description: meta.description,
+            favicon: meta.favicon,
         })
     }
 
@@ -126,6 +191,9 @@ impl ArtifactStore {
                             session_id: meta.session_id,
                             created_at: meta.created_at,
                             updated_at: meta.updated_at,
+                            version: meta.version,
+                            description: meta.description,
+                            favicon: meta.favicon,
                         });
                     }
                 }

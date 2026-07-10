@@ -44,6 +44,7 @@ mod tests {
             content: "Hello, world!".into(),
             session_id: "ses-1".into(),
             update_id: None,
+            ..Default::default()
         };
         let resp = store.publish(&req).unwrap();
         assert!(!resp.id.is_empty());
@@ -64,6 +65,7 @@ mod tests {
             content: "v1".into(),
             session_id: "ses-1".into(),
             update_id: None,
+            ..Default::default()
         };
         let resp = store.publish(&req).unwrap();
         let id = resp.id.clone();
@@ -74,6 +76,7 @@ mod tests {
             content: "v2".into(),
             session_id: "ses-1".into(),
             update_id: Some(id.clone()),
+            ..Default::default()
         };
         let resp2 = store.publish(&update).unwrap();
         assert_eq!(resp2.id, id);
@@ -95,6 +98,7 @@ mod tests {
                 content: "a".into(),
                 session_id: "ses-1".into(),
                 update_id: None,
+                ..Default::default()
             })
             .unwrap();
         store
@@ -104,6 +108,7 @@ mod tests {
                 content: "b".into(),
                 session_id: "ses-2".into(),
                 update_id: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -125,6 +130,7 @@ mod tests {
                 content: "x".into(),
                 session_id: "s".into(),
                 update_id: None,
+                ..Default::default()
             })
             .unwrap();
         assert!(store.delete(&resp.id).unwrap());
@@ -145,6 +151,7 @@ mod tests {
                 content: "OK".into(),
                 session_id: "ses-1".into(),
                 update_id: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -176,6 +183,9 @@ mod tests {
             session_id: "s".into(),
             created_at: 100,
             updated_at: 200,
+            version: 1,
+            description: None,
+            favicon: None,
         };
         let json = serde_json::to_string(&a).unwrap();
         let b: Artifact = serde_json::from_str(&json).unwrap();
@@ -203,5 +213,241 @@ mod tests {
             resp.contains("HTTP/1.0 200") || resp.contains("HTTP/1.1 200"),
             "server responds on preferred port: {resp}"
         );
+    }
+
+    #[test]
+    fn publish_creates_version_history() {
+        let store = test_store("publish_creates_version_history");
+        let resp = store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                content: "v1-content".into(),
+                session_id: "s".into(),
+                label: Some("first".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp.version, 1);
+        let id = resp.id;
+
+        let resp2 = store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                content: "v2-content".into(),
+                session_id: "s".into(),
+                update_id: Some(id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp2.version, 2);
+
+        let history = store.versions(&id).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].version, 1);
+        assert_eq!(history[0].label.as_deref(), Some("first"));
+        assert_eq!(history[1].version, 2);
+
+        // old version content stays retrievable; current get() is the latest
+        assert_eq!(store.get_version(&id, 1).unwrap().content, "v1-content");
+        let current = store.get(&id).unwrap();
+        assert_eq!(current.content, "v2-content");
+        assert_eq!(current.version, 2);
+    }
+
+    #[test]
+    fn publish_stale_base_version_conflicts() {
+        let store = test_store("publish_stale_base_version_conflicts");
+        let id = store
+            .publish(&PublishRequest {
+                name: "cas".into(),
+                content: "v1".into(),
+                session_id: "s".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+
+        // correct base succeeds
+        let ok = store.publish(&PublishRequest {
+            name: "cas".into(),
+            content: "v2".into(),
+            session_id: "s".into(),
+            update_id: Some(id.clone()),
+            base_version: Some(1),
+            ..Default::default()
+        });
+        assert_eq!(ok.unwrap().version, 2);
+
+        // stale base (still 1, current is 2) conflicts
+        let err = store
+            .publish(&PublishRequest {
+                name: "cas".into(),
+                content: "v3-lost-update".into(),
+                session_id: "s".into(),
+                update_id: Some(id.clone()),
+                base_version: Some(1),
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("conflict"), "{err}");
+        assert_eq!(store.get(&id).unwrap().content, "v2");
+
+        // no base_version = last-write-wins, still allowed
+        let forced = store
+            .publish(&PublishRequest {
+                name: "cas".into(),
+                content: "v3".into(),
+                session_id: "s".into(),
+                update_id: Some(id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(forced.version, 3);
+    }
+
+    fn served_store(name: &str) -> (Arc<ArtifactStore>, u16) {
+        let store = Arc::new(test_store(name));
+        let server = ArtifactServer::start(store.clone(), 0).unwrap();
+        let port = server.port();
+        std::mem::forget(server); // keep listener alive for the test duration
+        (store, port)
+    }
+
+    #[test]
+    fn server_rejects_path_traversal_ids() {
+        let (store, port) = served_store("server_rejects_path_traversal_ids");
+        // Plant an artifact-shaped dir OUTSIDE the store root: base is
+        // <dir>/artifacts, so "../escape" reaches <dir>/escape via join.
+        let outside = store.base_path().parent().unwrap().join("escape");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            outside.join("meta.json"),
+            r#"{"id":"escape","name":"loot","artifact_type":"text","session_id":"s","created_at":1,"updated_at":1}"#,
+        )
+        .unwrap();
+        std::fs::write(outside.join("content"), "ESCAPED-FILE-CONTENT").unwrap();
+
+        for path in ["/../escape", "/a/../../escape", "/a\\..\\escape"] {
+            let resp = read_http(path, port);
+            assert!(
+                !resp.contains("ESCAPED-FILE-CONTENT"),
+                "{path} must not serve outside the store: {resp}"
+            );
+            assert!(
+                resp.contains("404") || resp.contains("Not Found"),
+                "{path} must 404: {resp}"
+            );
+        }
+    }
+
+    #[test]
+    fn server_escapes_html_in_names_and_text_content() {
+        let (store, port) = served_store("server_escapes_html_in_names_and_text");
+        let resp = store
+            .publish(&PublishRequest {
+                name: "<script>alert('name')</script>".into(),
+                content: "</pre><script>alert('content')</script>".into(),
+                session_id: "s".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let page = read_http(&format!("/{}", resp.id), port);
+        assert!(!page.contains("<script>alert"), "raw script must not survive: {page}");
+        assert!(page.contains("&lt;script&gt;"), "escaped form present: {page}");
+
+        let index = read_http("/", port);
+        assert!(!index.contains("<script>alert"), "index escapes names: {index}");
+    }
+
+    #[test]
+    fn server_serves_version_snapshots_and_history() {
+        let (store, port) = served_store("server_serves_version_snapshots");
+        let id = store
+            .publish(&PublishRequest {
+                name: "vdoc".into(),
+                content: "OLD-CONTENT".into(),
+                session_id: "s".into(),
+                label: Some("draft".into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        store
+            .publish(&PublishRequest {
+                name: "vdoc".into(),
+                content: "NEW-CONTENT".into(),
+                session_id: "s".into(),
+                update_id: Some(id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let current = read_http(&format!("/{id}"), port);
+        assert!(current.contains("NEW-CONTENT"), "{current}");
+
+        let old = read_http(&format!("/{id}/v/1"), port);
+        assert!(old.contains("OLD-CONTENT"), "{old}");
+
+        let history = read_http(&format!("/{id}/versions"), port);
+        assert!(history.contains("\"version\": 1") || history.contains("\"version\":1"), "{history}");
+        assert!(history.contains("draft"), "label in history: {history}");
+    }
+
+    #[test]
+    fn markdown_and_mermaid_pages_render_client_side() {
+        let (store, port) = served_store("markdown_and_mermaid_render");
+        let md = store
+            .publish(&PublishRequest {
+                name: "md-doc".into(),
+                artifact_type: ArtifactType::Markdown,
+                content: "# Title".into(),
+                session_id: "s".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let page = read_http(&format!("/{}", md.id), port);
+        assert!(page.contains("marked"), "markdown page loads renderer: {page}");
+
+        let mm = store
+            .publish(&PublishRequest {
+                name: "mm-doc".into(),
+                artifact_type: ArtifactType::Mermaid,
+                content: "graph TD; A-->B;".into(),
+                session_id: "s".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let page = read_http(&format!("/{}", mm.id), port);
+        assert!(page.contains("mermaid"), "mermaid page loads renderer: {page}");
+    }
+
+    #[test]
+    fn server_start_on_binds_requested_host() {
+        let store = Arc::new(test_store("server_start_on_binds_requested_host"));
+        let server = ArtifactServer::start_on(store, "0.0.0.0", 0).unwrap();
+        assert!(server.base_url().contains("0.0.0.0"));
+        // bound on all interfaces — loopback must reach it
+        let resp = read_http("/", server.port());
+        assert!(resp.contains("200"), "{resp}");
+    }
+
+    #[test]
+    fn index_gallery_shows_metadata() {
+        let (store, port) = served_store("index_gallery_shows_metadata");
+        store
+            .publish(&PublishRequest {
+                name: "fancy".into(),
+                content: "x".into(),
+                session_id: "ses-42".into(),
+                description: Some("a fancy description".into()),
+                favicon: Some("📊".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let index = read_http("/", port);
+        assert!(index.contains("a fancy description"), "{index}");
+        assert!(index.contains("📊"), "{index}");
+        assert!(index.contains("ses-42"), "grouped by session: {index}");
     }
 }
