@@ -162,7 +162,8 @@ fn clean_mcp_configs(dry_run: bool) {
 fn clean_mcp_entry(path: &PathBuf, dry_run: bool) {
     if !path.exists() { return; }
     let content = fs::read_to_string(path).unwrap_or_default();
-    if !content.contains("engram") && !content.contains("lean-ctx") {
+    // "flare" also matches "agentflare", covering the legacy entry name.
+    if !content.contains("engram") && !content.contains("lean-ctx") && !content.contains("flare") {
         return;
     }
     if let Ok(mut config) = serde_json::from_str::<Value>(&content) {
@@ -172,6 +173,8 @@ fn clean_mcp_entry(path: &PathBuf, dry_run: bool) {
         if let Some(mcp) = config.get_mut(key).and_then(|v| v.as_object_mut()) {
             mcp.remove("engram");
             mcp.remove("lean-ctx");
+            mcp.remove("flare");
+            mcp.remove("agentflare");
             if mcp.is_empty() {
                 config.as_object_mut().unwrap().remove(key);
             }

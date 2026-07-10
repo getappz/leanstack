@@ -482,7 +482,7 @@ pub fn get_components(host: &str) -> Vec<Component> {
             id: "agentflare-mcp",
             needs_consent: true,
             describe: if host_owned == "claude-code" {
-                "agentflare MCP server (skill_search/skill_load) — claude mcp add agentflare -- agentflare mcp".to_string()
+                "agentflare MCP server (skill_search/skill_load) — claude mcp add flare -- agentflare mcp".to_string()
             } else if matches!(host_owned.as_str(), "cline" | "continue" | "opencode") {
                 format!("agentflare MCP server (skill_search/skill_load) — manual MCP registration for {host_owned}")
             } else {
@@ -493,16 +493,16 @@ pub fn get_components(host: &str) -> Vec<Component> {
                 Box::new(move || match host.as_str() {
                     "claude-code" => claude_json()
                         .get("mcpServers")
-                        .and_then(|m| m.get("agentflare"))
+                        .and_then(|m| m.get("flare"))
                         .is_some(),
                     "cline" => json_at(&home().join(".cline").join("mcp.json"))
                         .get("mcpServers")
-                        .and_then(|m| m.get("agentflare"))
+                        .and_then(|m| m.get("flare"))
                         .is_some(),
-                    "continue" => cwd().join(".continue").join("mcpServers").join("agentflare.json").exists(),
+                    "continue" => cwd().join(".continue").join("mcpServers").join("flare.json").exists(),
                     "opencode" => json_at(&home().join(".config").join("opencode").join("opencode.jsonc"))
                         .get("mcp")
-                        .and_then(|m| m.get("agentflare"))
+                        .and_then(|m| m.get("flare"))
                         .is_some(),
                     _ => true,
                 })
@@ -519,22 +519,27 @@ pub fn get_components(host: &str) -> Vec<Component> {
                     let entry = serde_json::json!({ "command": bin, "args": ["mcp"] });
                     match host.as_str() {
                         "claude-code" => {
-                            if run_ok("claude", &["mcp", "add", "agentflare", "-s", "user", "--", &bin, "mcp"]) {
-                                "agentflare MCP server registered with claude-code".to_string()
+                            // Registered as 'flare' so slash commands read
+                            // /flare:artifact instead of /agentflare:artifact.
+                            // Migrate: drop the legacy long-name entry first so
+                            // both prefixes never coexist.
+                            let _ = run_ok("claude", &["mcp", "remove", "agentflare", "-s", "user"]);
+                            if run_ok("claude", &["mcp", "add", "flare", "-s", "user", "--", &bin, "mcp"]) {
+                                "agentflare MCP server registered with claude-code as 'flare'".to_string()
                             } else {
-                                format!("agentflare MCP registration failed — run manually: claude mcp add agentflare -s user -- \"{bin}\" mcp")
+                                format!("agentflare MCP registration failed — run manually: claude mcp add flare -s user -- \"{bin}\" mcp")
                             }
                         }
                         "cline" => {
                             let path = home().join(".cline").join("mcp.json");
-                            if merge_json(&path, "agentflare", entry) {
-                                format!("{} (agentflare registered)", path.display())
+                            if merge_json(&path, "flare", entry) {
+                                format!("{} (flare registered)", path.display())
                             } else {
                                 format!("failed to write {}", path.display())
                             }
                         }
                         "continue" => {
-                            let path = cwd().join(".continue").join("mcpServers").join("agentflare.json");
+                            let path = cwd().join(".continue").join("mcpServers").join("flare.json");
                             if write_if_absent(&path, &(serde_json::to_string_pretty(&entry).unwrap() + "\n")) {
                                 format!("{} written", path.display())
                             } else {
@@ -543,8 +548,8 @@ pub fn get_components(host: &str) -> Vec<Component> {
                         }
                         "opencode" => {
                             let path = home().join(".config").join("opencode").join("opencode.jsonc");
-                            if merge_opencode_mcp(&path, "agentflare", entry) {
-                                format!("{} (agentflare registered)", path.display())
+                            if merge_opencode_mcp(&path, "flare", entry) {
+                                format!("{} (flare registered)", path.display())
                             } else {
                                 format!("failed to write {}", path.display())
                             }
