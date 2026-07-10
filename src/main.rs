@@ -18,6 +18,7 @@ mod hook;
 mod init;
 mod mcp_prompts;
 mod mcp_server;
+mod mise_install;
 mod optimize;
 mod paths;
 mod pricing;
