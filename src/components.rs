@@ -305,15 +305,15 @@ pub fn get_components(host: &str) -> Vec<Component> {
                 })
             },
         },
-        // mise (dev-tool version manager) — a uniform, cross-platform way to
-        // provide the toolchains agentflare's integrations need (Go for
-        // engram, Node/npm for lean-ctx) on hosts that lack them. Installed
-        // before those tools so their install sites can rely on it. Host-
-        // independent: every agent benefits from the toolchains it provides.
+        // mise (dev-tool version manager) — the cross-platform, dependency-free
+        // installer for engram's prebuilt binary (mise's `github:` backend
+        // downloads + checksum-verifies it, no toolchain). Installed before
+        // engram so its install site can rely on it. Host-independent. (lean-ctx
+        // has its own native installer and doesn't need mise; see tool_install.)
         Component {
             id: "mise",
             needs_consent: true,
-            describe: "mise (dev-tool manager) — provides toolchains (Go, Node) agentflare's integrations need; https://mise.run".to_string(),
+            describe: "mise (dev-tool manager) — installs engram's prebuilt binary via its github backend; https://mise.run".to_string(),
             check: Box::new(|| crate::mise_install::mise_bin().is_some()),
             apply: Box::new(|| match crate::mise_install::ensure_mise() {
                 crate::mise_install::MiseOutcome::Present(_) => "mise already installed".to_string(),
@@ -326,11 +326,14 @@ pub fn get_components(host: &str) -> Vec<Component> {
         Component {
             id: "leanctx",
             needs_consent: true,
-            // lean-ctx's own `onboard` command wires MCP into whichever
-            // supported tool it detects, so no per-host branching needed
-            // here — same as engram, trust the upstream tool's own setup.
-            describe: "lean-ctx (context compression) — npm install -g lean-ctx-bin && lean-ctx onboard".to_string(),
-            check: Box::new(|| run_ok(if cfg!(windows) { "where" } else { "which" }, &["lean-ctx"])),
+            // lean-ctx's own installer (and `onboard`) wires MCP into whichever
+            // supported tool it detects, so no per-host branching needed here —
+            // same as engram, trust the upstream tool's own setup. Installed via
+            // its native prebuilt-binary installer (see tool_install), not mise:
+            // lean-ctx ships a proper `curl | sh` that downloads, verifies, and
+            // onboards on its own.
+            describe: "lean-ctx (context compression) — native installer (curl | sh, or brew) + onboard".to_string(),
+            check: Box::new(|| crate::tool_install::installed(&crate::tool_install::LEAN_CTX)),
             apply: {
                 let log = leanctx_log.clone();
                 Box::new(move || {
@@ -338,16 +341,11 @@ pub fn get_components(host: &str) -> Vec<Component> {
                         return format!("lean-ctx install already triggered — check {}", log.display());
                     }
                     let _ = fs::create_dir_all(log.parent().unwrap());
-                    let cmd = "npm install -g lean-ctx-bin && lean-ctx onboard";
-                    let result = if cfg!(windows) {
-                        Command::new("cmd").args(["/c", cmd]).status()
-                    } else {
-                        Command::new("sh").args(["-c", cmd]).status()
-                    };
+                    let outcome = crate::tool_install::install(&crate::tool_install::LEAN_CTX);
                     let _ = fs::write(&log, format!("{:?}", std::time::SystemTime::now()));
-                    match result {
-                        Ok(s) if s.success() => "lean-ctx installed and onboarded".to_string(),
-                        _ => "lean-ctx install failed — run manually: npm install -g lean-ctx-bin && lean-ctx onboard".to_string(),
+                    match outcome {
+                        Ok(m) => format!("{m} + onboarded"),
+                        Err(e) => e,
                     }
                 })
             },

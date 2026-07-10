@@ -26,6 +26,7 @@ mod rollup;
 mod rule_text;
 mod shell;
 mod state;
+mod tool_install;
 mod uninstall;
 mod update;
 
