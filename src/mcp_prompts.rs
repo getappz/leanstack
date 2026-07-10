@@ -34,6 +34,13 @@ pub fn list_prompts() -> Vec<Prompt> {
                 "publish|list|get|update|delete plus options, e.g. `publish --type markdown --favicon 🚀` (omit for usage)",
             )]),
         ),
+        Prompt::new(
+            "handoff",
+            Some("Hand a work product to another agent runtime, or check your inbox/threads"),
+            Some(vec![PromptArgument::new("command").with_description(
+                "`<recipient> <brief>` to send (e.g. `codex review the API design above`), `inbox [me]`, or `thread <id>` (omit for usage)",
+            )]),
+        ),
     ];
     prompts.extend(
         SUB_SKILLS
@@ -46,6 +53,9 @@ pub fn list_prompts() -> Vec<Prompt> {
 pub fn get_prompt(request: &GetPromptRequestParams) -> Option<GetPromptResult> {
     if request.name == "artifact" {
         return Some(get_artifact_command(request));
+    }
+    if request.name == "handoff" {
+        return Some(get_handoff_command(request));
     }
     if request.name == "ponytail" {
         return Some(get_ponytail_mode(request));
@@ -133,6 +143,44 @@ fn get_artifact_command(request: &GetPromptRequestParams) -> GetPromptResult {
     ))
 }
 
+fn get_handoff_command(request: &GetPromptRequestParams) -> GetPromptResult {
+    let command = request
+        .arguments
+        .as_ref()
+        .and_then(|a| a.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if command.is_empty() {
+        return assistant_text(
+            "Handoff — agent-to-agent work exchange via artifacts. Pass as this command's argument:\n\
+             <recipient> <brief> — hand the relevant work product to that agent (e.g. `codex review the API design above`)\n\
+             inbox [me] — list artifacts addressed to an agent (default: claude-code)\n\
+             thread <id> — show a handoff thread's artifacts in order\n\
+             Work products only — facts and decisions belong in engram memory.",
+        );
+    }
+
+    assistant_text(format!(
+        "Handoff command: `{command}`\n\n\
+         Grammar: first word is a subcommand (`inbox`, `thread`) or a recipient; the rest is the brief.\n\
+         - `<recipient> <brief>` → artifact_publish with recipient=<recipient>, sender=claude-code, \
+         a fresh thread_id (or the current one when continuing an exchange), name from the brief, \
+         and content = the work product the brief points at (the preceding conversation content, \
+         diff, review, or document — ask only if genuinely ambiguous). Prepend the brief to the \
+         content so the recipient knows what is being asked. When answering an item from your \
+         inbox, set reply_to=<that artifact id> and reuse its thread_id.\n\
+         - `inbox [me]` → artifact_list with recipient=<me or claude-code>; summarize sender, \
+         name, and brief for each.\n\
+         - `thread <id>` → artifact_list with thread_id=<id>; present in chronological order with \
+         reply lineage.\n\
+         Report the resulting URL (or listing) afterwards. Work products only — facts/decisions \
+         go to engram, not artifacts."
+    ))
+}
+
 fn get_ponytail_skill(skill: &str) -> GetPromptResult {
     if let Err(e) = ponytail::set_active(skill) {
         return assistant_text(format!("Failed to persist ponytail mode: {e}"));
@@ -152,8 +200,8 @@ mod tests {
         assert!(names.contains(&"ponytail"));
         assert!(names.contains(&"ponytail-review"));
         assert!(names.contains(&"ponytail-no-hallucination"));
-        // ponytail + artifact + one per sub-skill
-        assert_eq!(names.len(), 2 + SUB_SKILLS.len());
+        // ponytail + artifact + handoff + one per sub-skill
+        assert_eq!(names.len(), 3 + SUB_SKILLS.len());
     }
 
     #[test]
@@ -173,6 +221,38 @@ mod tests {
         let text = format!("{:?}", result.messages[0].content);
         assert!(text.contains("publish"), "{text}");
         assert!(text.contains("list"), "{text}");
+    }
+
+    #[test]
+    fn lists_handoff_prompt() {
+        let prompts = list_prompts();
+        assert!(prompts.iter().any(|p| p.name == "handoff"));
+    }
+
+    #[test]
+    fn bare_handoff_prompt_returns_usage() {
+        let result = get_prompt(&GetPromptRequestParams::new("handoff")).unwrap();
+        let text = format!("{:?}", result.messages[0].content);
+        assert!(text.contains("<recipient>"), "{text}");
+        assert!(text.contains("inbox"), "{text}");
+        assert!(text.contains("thread"), "{text}");
+    }
+
+    #[test]
+    fn handoff_prompt_embeds_command_and_tool_mapping() {
+        use rmcp::model::JsonObject;
+        let mut args = JsonObject::new();
+        args.insert(
+            "command".to_string(),
+            serde_json::json!("codex review the API design above"),
+        );
+        let params = GetPromptRequestParams::new("handoff").with_arguments(args);
+        let result = get_prompt(&params).unwrap();
+        let text = format!("{:?}", result.messages[0].content);
+        assert!(text.contains("codex review the API design above"), "{text}");
+        assert!(text.contains("artifact_publish"), "{text}");
+        assert!(text.contains("recipient"), "{text}");
+        assert!(text.contains("reply_to"), "{text}");
     }
 
     #[test]
