@@ -20,12 +20,21 @@ const SUB_SKILLS: &[(&str, &str)] = &[
 ];
 
 pub fn list_prompts() -> Vec<Prompt> {
-    let mut prompts = vec![Prompt::new(
-        "ponytail",
-        Some("Switch or report Ponytail lazy-dev mode"),
-        Some(vec![PromptArgument::new("mode")
-            .with_description("lite|full|ultra|off|status (omit to report current mode)")]),
-    )];
+    let mut prompts = vec![
+        Prompt::new(
+            "ponytail",
+            Some("Switch or report Ponytail lazy-dev mode"),
+            Some(vec![PromptArgument::new("mode")
+                .with_description("lite|full|ultra|off|status (omit to report current mode)")]),
+        ),
+        Prompt::new(
+            "artifact",
+            Some("Publish, list, get, update, or delete live-shareable artifact pages"),
+            Some(vec![PromptArgument::new("command").with_description(
+                "publish|list|get|update|delete plus options, e.g. `publish --type markdown --favicon 🚀` (omit for usage)",
+            )]),
+        ),
+    ];
     prompts.extend(
         SUB_SKILLS
             .iter()
@@ -35,6 +44,9 @@ pub fn list_prompts() -> Vec<Prompt> {
 }
 
 pub fn get_prompt(request: &GetPromptRequestParams) -> Option<GetPromptResult> {
+    if request.name == "artifact" {
+        return Some(get_artifact_command(request));
+    }
     if request.name == "ponytail" {
         return Some(get_ponytail_mode(request));
     }
@@ -82,6 +94,42 @@ fn get_ponytail_mode(request: &GetPromptRequestParams) -> GetPromptResult {
     }
 }
 
+fn get_artifact_command(request: &GetPromptRequestParams) -> GetPromptResult {
+    let command = request
+        .arguments
+        .as_ref()
+        .and_then(|a| a.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if command.is_empty() {
+        return assistant_text(
+            "Artifact commands (live-shareable local pages):\n\
+             /agentflare:artifact publish [--name N] [--type html|markdown|mermaid|diagram|text] [--session S] [--label L] [--description D] [--favicon 🚀] — publish preceding/attached content\n\
+             /agentflare:artifact update <id> [--base-version N] [options] — update in place (open tabs live-reload)\n\
+             /agentflare:artifact list [--session S]\n\
+             /agentflare:artifact get <id> [--version N]\n\
+             /agentflare:artifact delete <id>",
+        );
+    }
+
+    assistant_text(format!(
+        "Artifact command requested: `{command}`\n\n\
+         Parse the subcommand and options, then execute with the agentflare MCP tools \
+         (load via ToolSearch if deferred):\n\
+         - publish → artifact_publish; content is the inline content if given, otherwise \
+         the most relevant content from the conversation (ask if genuinely ambiguous). \
+         Map --name, --type, --session (session_id), --label, --description, --favicon.\n\
+         - update <id> → artifact_publish with update_id=<id>; honor --base-version (base_version).\n\
+         - list → artifact_list, honoring --session.\n\
+         - get <id> → artifact_get, honoring --version.\n\
+         - delete <id> → artifact_delete.\n\
+         After the call, report the resulting URL (or listing/content) to the user."
+    ))
+}
+
 fn get_ponytail_skill(skill: &str) -> GetPromptResult {
     if let Err(e) = ponytail::set_active(skill) {
         return assistant_text(format!("Failed to persist ponytail mode: {e}"));
@@ -101,12 +149,43 @@ mod tests {
         assert!(names.contains(&"ponytail"));
         assert!(names.contains(&"ponytail-review"));
         assert!(names.contains(&"ponytail-no-hallucination"));
-        assert_eq!(names.len(), 1 + SUB_SKILLS.len());
+        // ponytail + artifact + one per sub-skill
+        assert_eq!(names.len(), 2 + SUB_SKILLS.len());
     }
 
     #[test]
     fn unknown_prompt_name_returns_none() {
         assert!(get_prompt(&GetPromptRequestParams::new("not-a-real-prompt")).is_none());
+    }
+
+    #[test]
+    fn lists_artifact_prompt() {
+        let prompts = list_prompts();
+        assert!(prompts.iter().any(|p| p.name == "artifact"));
+    }
+
+    #[test]
+    fn bare_artifact_prompt_returns_usage() {
+        let result = get_prompt(&GetPromptRequestParams::new("artifact")).unwrap();
+        let text = format!("{:?}", result.messages[0].content);
+        assert!(text.contains("publish"), "{text}");
+        assert!(text.contains("list"), "{text}");
+    }
+
+    #[test]
+    fn artifact_prompt_embeds_command_and_tool_mapping() {
+        use rmcp::model::JsonObject;
+        let mut args = JsonObject::new();
+        args.insert(
+            "command".to_string(),
+            serde_json::json!("publish --type markdown --favicon 🚀"),
+        );
+        let params = GetPromptRequestParams::new("artifact").with_arguments(args);
+        let result = get_prompt(&params).unwrap();
+        let text = format!("{:?}", result.messages[0].content);
+        assert!(text.contains("publish --type markdown --favicon 🚀"), "{text}");
+        assert!(text.contains("artifact_publish"), "{text}");
+        assert!(text.contains("artifact_delete"), "{text}");
     }
 
     #[test]
