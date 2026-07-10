@@ -55,13 +55,18 @@ pub const LEAN_CTX: Tool = Tool {
             command: "brew tap yvgude/lean-ctx && brew install lean-ctx && lean-ctx onboard",
         },
     ],
-    // lean-ctx onboard installs a shell hook that gates non-allowlisted
-    // commands. Allow agentflare (so it can run itself) and mise (agentflare
-    // installs engram through it and `agentflare run` launches via it — mise is
-    // not in lean-ctx's built-in default allowlist). Run as a direct process
-    // spawn (not `sh -c`), because that same hook also blocks `sh -c` inline
-    // execution outright — an allowlist entry wouldn't save it.
-    post_install: &[&["lean-ctx", "allow", "agentflare", "mise"]],
+    // Post-install steps, run as direct process spawns (not `sh -c`, which
+    // lean-ctx's hook also blocks):
+    //   1. allow agentflare + mise in the shell-hook allowlist. agentflare
+    //      installs engram through mise and `agentflare run` launches via it,
+    //      and neither is in lean-ctx's built-in default allowlist, so the
+    //      onboarded gate would otherwise block them under the default enforce.
+    //   2. set the strongest compression ("power mode") — the reason to run
+    //      lean-ctx at all is denser model output.
+    post_install: &[
+        &["lean-ctx", "allow", "agentflare", "mise"],
+        &["lean-ctx", "config", "set", "compression_level", "max"],
+    ],
 };
 
 /// Whether `tool` is already installed (its binary resolves on PATH).
@@ -158,12 +163,17 @@ mod tests {
         // curl (universal, no extra deps) is preferred over brew.
         assert_eq!(LEAN_CTX.methods[0].requires, "curl");
         assert!(LEAN_CTX.methods.iter().all(|m| !m.command.is_empty()));
-        // agentflare must allowlist itself (and mise) in lean-ctx's shell hook.
+        // agentflare must allowlist itself (and mise) in lean-ctx's shell hook,
+        // and turn on power-mode compression.
         assert!(LEAN_CTX.post_install.iter().any(|argv| {
             argv.first() == Some(&"lean-ctx")
                 && argv.contains(&"agentflare")
                 && argv.contains(&"mise")
         }));
+        assert!(LEAN_CTX
+            .post_install
+            .iter()
+            .any(|argv| argv.contains(&"compression_level") && argv.contains(&"max")));
     }
 
     #[test]
