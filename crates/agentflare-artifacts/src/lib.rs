@@ -186,6 +186,11 @@ mod tests {
             version: 1,
             description: None,
             favicon: None,
+            sender: None,
+            recipient: None,
+            thread_id: None,
+            reply_to: None,
+            git: None,
         };
         let json = serde_json::to_string(&a).unwrap();
         let b: Artifact = serde_json::from_str(&json).unwrap();
@@ -430,6 +435,116 @@ mod tests {
         // bound on all interfaces — loopback must reach it
         let resp = read_http("/", server.port());
         assert!(resp.contains("200"), "{resp}");
+    }
+
+    #[test]
+    fn handoff_envelope_roundtrips() {
+        let store = test_store("handoff_envelope_roundtrips");
+        let resp = store
+            .publish(&PublishRequest {
+                name: "review-packet".into(),
+                content: "please review".into(),
+                session_id: "s".into(),
+                sender: Some("claude-code".into()),
+                recipient: Some("codex".into()),
+                thread_id: Some("thread-7".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let got = store.get(&resp.id).unwrap();
+        assert_eq!(got.sender.as_deref(), Some("claude-code"));
+        assert_eq!(got.recipient.as_deref(), Some("codex"));
+        assert_eq!(got.thread_id.as_deref(), Some("thread-7"));
+        assert_eq!(got.reply_to, None);
+
+        // a reply in the same thread carries lineage
+        let reply = store
+            .publish(&PublishRequest {
+                name: "review-reply".into(),
+                content: "looks good".into(),
+                session_id: "s".into(),
+                sender: Some("codex".into()),
+                recipient: Some("claude-code".into()),
+                thread_id: Some("thread-7".into()),
+                reply_to: Some(resp.id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        let summaries = store.list(None).unwrap();
+        let reply_summary = summaries.iter().find(|s| s.id == reply.id).unwrap();
+        assert_eq!(reply_summary.reply_to.as_deref(), Some(resp.id.as_str()));
+        assert_eq!(reply_summary.recipient.as_deref(), Some("claude-code"));
+    }
+
+    #[test]
+    fn identical_content_update_is_deduped() {
+        let store = test_store("identical_content_update_is_deduped");
+        let id = store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                content: "same-content".into(),
+                session_id: "s".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+
+        // same content again: no new version, metadata still updatable
+        let resp = store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                content: "same-content".into(),
+                session_id: "s".into(),
+                update_id: Some(id.clone()),
+                description: Some("added later".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp.version, 1, "identical content must not bump the version");
+        assert_eq!(store.versions(&id).unwrap().len(), 1);
+        assert_eq!(store.get(&id).unwrap().description.as_deref(), Some("added later"));
+
+        // different content still bumps
+        let resp = store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                content: "changed-content".into(),
+                session_id: "s".into(),
+                update_id: Some(id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp.version, 2);
+        assert_eq!(store.versions(&id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn diff_between_versions() {
+        let store = test_store("diff_between_versions");
+        let id = store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                content: "line one\nline two\n".into(),
+                session_id: "s".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                content: "line one\nline 2\nline three\n".into(),
+                session_id: "s".into(),
+                update_id: Some(id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let diff = store.diff(&id, 1, 2).unwrap();
+        assert!(diff.contains("-line two"), "{diff}");
+        assert!(diff.contains("+line 2"), "{diff}");
+        assert!(diff.contains("+line three"), "{diff}");
     }
 
     #[test]

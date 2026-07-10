@@ -64,6 +64,16 @@ pub struct Artifact {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub favicon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitProvenance>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -81,6 +91,14 @@ pub struct ArtifactSummary {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub favicon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 impl From<&Artifact> for ArtifactSummary {
@@ -95,6 +113,10 @@ impl From<&Artifact> for ArtifactSummary {
             version: a.version,
             description: a.description.clone(),
             favicon: a.favicon.clone(),
+            sender: a.sender.clone(),
+            recipient: a.recipient.clone(),
+            thread_id: a.thread_id.clone(),
+            reply_to: a.reply_to.clone(),
         }
     }
 }
@@ -120,6 +142,21 @@ pub struct PublishRequest {
     /// artifact's current version still equals this value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_version: Option<u32>,
+    /// Handoff envelope: which agent/runtime published this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    /// Handoff envelope: which agent/runtime this is addressed to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    /// Handoff envelope: conversation thread this belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Handoff envelope: artifact id this replies to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// Git context of the publisher, captured best-effort by the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitProvenance>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,6 +165,17 @@ pub struct PublishResponse {
     pub url: String,
     pub session_id: String,
     pub version: u32,
+}
+
+/// Best-effort git context captured where the publish happened.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GitProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

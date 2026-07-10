@@ -1,5 +1,6 @@
 use crate::types::{
-    Artifact, ArtifactSummary, ArtifactType, PublishRequest, PublishResponse, VersionInfo,
+    Artifact, ArtifactSummary, ArtifactType, GitProvenance, PublishRequest, PublishResponse,
+    VersionInfo,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,6 +31,16 @@ struct ArtifactMeta {
     pub favicon: Option<String>,
     #[serde(default)]
     pub history: Vec<VersionInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitProvenance>,
 }
 
 #[derive(Clone)]
@@ -74,14 +85,32 @@ impl ArtifactStore {
             }
         }
 
-        let version = prev.as_ref().map(|m| m.version + 1).unwrap_or(1);
-        let mut history = prev.as_ref().map(|m| m.history.clone()).unwrap_or_default();
-        history.push(VersionInfo {
-            version,
-            label: req.label.clone(),
-            created_at: now,
-        });
+        // Dedupe: an update whose content is byte-identical refreshes
+        // metadata in place — no new snapshot, no bump, no broadcast.
+        let dir = self.artifact_dir(&id);
+        let unchanged = prev.is_some()
+            && fs::read_to_string(dir.join(CONTENT_FILE))
+                .map(|current| current == req.content)
+                .unwrap_or(false);
 
+        let version = match (&prev, unchanged) {
+            (Some(m), true) => m.version,
+            (Some(m), false) => m.version + 1,
+            (None, _) => 1,
+        };
+        let mut history = prev.as_ref().map(|m| m.history.clone()).unwrap_or_default();
+        if !unchanged {
+            history.push(VersionInfo {
+                version,
+                label: req.label.clone(),
+                created_at: now,
+            });
+        }
+
+        // Omitted optional fields on an update keep their old value.
+        let keep = |new: &Option<String>, old: fn(&ArtifactMeta) -> Option<String>| {
+            new.clone().or_else(|| prev.as_ref().and_then(old))
+        };
         let meta = ArtifactMeta {
             id: id.clone(),
             name: req.name.clone(),
@@ -90,21 +119,23 @@ impl ArtifactStore {
             created_at: prev.as_ref().map(|m| m.created_at).unwrap_or(now),
             updated_at: now,
             version,
-            // Omitting description/favicon on an update keeps the old value.
-            description: req
-                .description
-                .clone()
-                .or_else(|| prev.as_ref().and_then(|m| m.description.clone())),
-            favicon: req
-                .favicon
-                .clone()
-                .or_else(|| prev.as_ref().and_then(|m| m.favicon.clone())),
+            description: keep(&req.description, |m| m.description.clone()),
+            favicon: keep(&req.favicon, |m| m.favicon.clone()),
             history,
+            sender: keep(&req.sender, |m| m.sender.clone()),
+            recipient: keep(&req.recipient, |m| m.recipient.clone()),
+            thread_id: keep(&req.thread_id, |m| m.thread_id.clone()),
+            reply_to: keep(&req.reply_to, |m| m.reply_to.clone()),
+            git: req
+                .git
+                .clone()
+                .or_else(|| prev.as_ref().and_then(|m| m.git.clone())),
         };
 
-        let dir = self.artifact_dir(&id);
         fs::create_dir_all(dir.join(VERSIONS_DIR))?;
-        fs::write(dir.join(VERSIONS_DIR).join(version.to_string()), &req.content)?;
+        if !unchanged {
+            fs::write(dir.join(VERSIONS_DIR).join(version.to_string()), &req.content)?;
+        }
         fs::write(dir.join(META_FILE), serde_json::to_string_pretty(&meta)?)?;
         fs::write(dir.join(CONTENT_FILE), &req.content)?;
 
@@ -116,11 +147,23 @@ impl ArtifactStore {
             version,
         };
 
-        if prev.is_some() {
+        if prev.is_some() && !unchanged {
             self.broadcast(&response.id, "refresh");
         }
 
         Ok(response)
+    }
+
+    /// Unified diff between two version snapshots of an artifact.
+    pub fn diff(&self, id: &str, from: u32, to: u32) -> std::io::Result<String> {
+        let versions_dir = self.artifact_dir(id).join(VERSIONS_DIR);
+        let old = fs::read_to_string(versions_dir.join(from.to_string()))?;
+        let new = fs::read_to_string(versions_dir.join(to.to_string()))?;
+        let diff = similar::TextDiff::from_lines(&old, &new);
+        Ok(diff
+            .unified_diff()
+            .header(&format!("{id} v{from}"), &format!("{id} v{to}"))
+            .to_string())
     }
 
     /// Version history, oldest first.
@@ -166,6 +209,11 @@ impl ArtifactStore {
             version: meta.version,
             description: meta.description,
             favicon: meta.favicon,
+            sender: meta.sender,
+            recipient: meta.recipient,
+            thread_id: meta.thread_id,
+            reply_to: meta.reply_to,
+            git: meta.git,
         })
     }
 
@@ -194,6 +242,10 @@ impl ArtifactStore {
                             version: meta.version,
                             description: meta.description,
                             favicon: meta.favicon,
+                            sender: meta.sender,
+                            recipient: meta.recipient,
+                            thread_id: meta.thread_id,
+                            reply_to: meta.reply_to,
                         });
                     }
                 }

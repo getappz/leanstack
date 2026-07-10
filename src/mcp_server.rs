@@ -80,7 +80,7 @@ struct GatewayExecuteRequest {
     args: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ArtifactPublishRequest {
     #[schemars(description = "Display name of the artifact")]
     name: String,
@@ -107,11 +107,49 @@ struct ArtifactPublishRequest {
     #[schemars(description = "Optimistic-concurrency guard: update only applies if the artifact's current version equals this; otherwise a version-conflict error is returned")]
     #[serde(default)]
     base_version: Option<u32>,
+    #[schemars(description = "Handoff envelope: which agent/runtime is publishing (e.g. claude-code, codex)")]
+    #[serde(default)]
+    sender: Option<String>,
+    #[schemars(description = "Handoff envelope: agent/runtime this artifact is addressed to — for WORK PRODUCTS only; facts and decisions belong in memory (engram), not artifacts")]
+    #[serde(default)]
+    recipient: Option<String>,
+    #[schemars(description = "Handoff envelope: thread this belongs to; replies reuse the sender's thread_id")]
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[schemars(description = "Handoff envelope: artifact id this replies to")]
+    #[serde(default)]
+    reply_to: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct ArtifactListRequest {
+    #[schemars(description = "Only artifacts from this session (omit for all)")]
+    #[serde(default)]
+    session_id: Option<String>,
+    #[schemars(description = "Inbox filter: only artifacts addressed to this agent/runtime")]
+    #[serde(default)]
+    recipient: Option<String>,
+    #[schemars(description = "Only artifacts in this handoff thread")]
+    #[serde(default)]
+    thread_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ArtifactListRequest {
-    #[schemars(description = "Only artifacts from this session (omit for all)")]
+struct ArtifactDiffRequest {
+    #[schemars(description = "Artifact id")]
+    id: String,
+    #[schemars(description = "Older version number to diff from")]
+    from_version: u32,
+    #[schemars(description = "Newer version number (omit for latest)")]
+    #[serde(default)]
+    to_version: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ArtifactSearchRequest {
+    #[schemars(description = "Case-insensitive text to find in names, descriptions, or content")]
+    query: String,
+    #[schemars(description = "Restrict to this session (omit for all)")]
     #[serde(default)]
     session_id: Option<String>,
 }
@@ -315,6 +353,10 @@ impl AgentflareMcp {
             description,
             favicon,
             base_version,
+            sender,
+            recipient,
+            thread_id,
+            reply_to,
         }): Parameters<ArtifactPublishRequest>,
     ) -> Result<String, ErrorData> {
         if name.trim().is_empty() {
@@ -336,6 +378,11 @@ impl AgentflareMcp {
             description,
             favicon,
             base_version,
+            sender,
+            recipient,
+            thread_id,
+            reply_to,
+            git: Self::git_provenance(),
         };
         let resp = store.publish(&req).map_err(Self::artifact_error)?;
         let result = serde_json::json!({
@@ -345,6 +392,25 @@ impl AgentflareMcp {
             "index": format!("http://127.0.0.1:{port}/"),
         });
         Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
+    }
+
+    /// Best-effort git context of this process's cwd (the project the MCP
+    /// server was launched in). None outside a repo; never fails a publish.
+    fn git_provenance() -> Option<agentflare_artifacts::GitProvenance> {
+        fn git(args: &[&str]) -> Option<String> {
+            let out = std::process::Command::new("git").args(args).output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (!s.is_empty()).then_some(s)
+        }
+        let commit = git(&["rev-parse", "HEAD"])?;
+        Some(agentflare_artifacts::GitProvenance {
+            repo: git(&["remote", "get-url", "origin"]),
+            r#ref: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
+            commit: Some(commit),
+        })
     }
 
     /// NotFound and InvalidInput (version conflict) are caller-fixable →
@@ -358,10 +424,10 @@ impl AgentflareMcp {
         }
     }
 
-    #[tool(description = "List published artifacts (id, name, type, version, description, session) with their local URLs. Optionally filter by session_id.")]
+    #[tool(description = "List published artifacts (id, name, type, version, description, session, handoff envelope) with their local URLs. Filter by session_id, recipient (inbox), or thread_id.")]
     fn artifact_list(
         &self,
-        Parameters(ArtifactListRequest { session_id }): Parameters<ArtifactListRequest>,
+        Parameters(ArtifactListRequest { session_id, recipient, thread_id }): Parameters<ArtifactListRequest>,
     ) -> Result<String, ErrorData> {
         let (store, port) = self.ensure_artifact_server()?;
         let summaries = store
@@ -369,6 +435,10 @@ impl AgentflareMcp {
             .map_err(Self::artifact_error)?;
         let items: Vec<serde_json::Value> = summaries
             .iter()
+            .filter(|s| {
+                recipient.as_deref().is_none_or(|r| s.recipient.as_deref() == Some(r))
+                    && thread_id.as_deref().is_none_or(|t| s.thread_id.as_deref() == Some(t))
+            })
             .map(|s| {
                 let mut v = serde_json::to_value(s).unwrap_or_default();
                 if let Some(obj) = v.as_object_mut() {
@@ -398,6 +468,70 @@ impl AgentflareMcp {
         }
         .map_err(Self::artifact_error)?;
         Ok(serde_json::to_string_pretty(&artifact).unwrap_or_default())
+    }
+
+    #[tool(description = "Unified diff between two versions of an artifact; to_version defaults to the latest. Use after an update to see what changed.")]
+    fn artifact_diff(
+        &self,
+        Parameters(ArtifactDiffRequest { id, from_version, to_version }): Parameters<ArtifactDiffRequest>,
+    ) -> Result<String, ErrorData> {
+        if id.trim().is_empty() {
+            return Err(ErrorData::invalid_params("id is required", None));
+        }
+        let (store, _port) = self.ensure_artifact_server()?;
+        let to = match to_version {
+            Some(v) => v,
+            None => store.get(&id).map_err(Self::artifact_error)?.version,
+        };
+        store.diff(&id, from_version, to).map_err(Self::artifact_error)
+    }
+
+    #[tool(description = "Case-insensitive search across artifact names, descriptions, and content; returns matching summaries with a snippet around the first content match.")]
+    fn artifact_search(
+        &self,
+        Parameters(ArtifactSearchRequest { query, session_id }): Parameters<ArtifactSearchRequest>,
+    ) -> Result<String, ErrorData> {
+        if query.trim().is_empty() {
+            return Err(ErrorData::invalid_params("query is required", None));
+        }
+        let (store, port) = self.ensure_artifact_server()?;
+        let needle = query.to_lowercase();
+        let mut hits = Vec::new();
+        for summary in store.list(session_id.as_deref()).map_err(Self::artifact_error)? {
+            let name_hit = summary.name.to_lowercase().contains(&needle);
+            let desc_hit = summary
+                .description
+                .as_deref()
+                .is_some_and(|d| d.to_lowercase().contains(&needle));
+            let content = store.get(&summary.id).map(|a| a.content).unwrap_or_default();
+            let content_pos = content.to_lowercase().find(&needle);
+            if !(name_hit || desc_hit || content_pos.is_some()) {
+                continue;
+            }
+            let snippet = content_pos.map(|pos| {
+                let mut start = pos.saturating_sub(40);
+                while !content.is_char_boundary(start) {
+                    start -= 1;
+                }
+                let mut end = (pos + needle.len() + 40).min(content.len());
+                while !content.is_char_boundary(end) {
+                    end += 1;
+                }
+                content[start..end].to_string()
+            });
+            let mut v = serde_json::to_value(&summary).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "url".into(),
+                    serde_json::json!(format!("http://127.0.0.1:{port}/{}", summary.id)),
+                );
+                if let Some(snippet) = snippet {
+                    obj.insert("snippet".into(), serde_json::json!(snippet));
+                }
+            }
+            hits.push(v);
+        }
+        Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
     }
 
     #[tool(description = "Delete an artifact and all its versions by id.")]
@@ -977,10 +1111,7 @@ mod tests {
                 content: "artifact-body-marker".into(),
                 session_id: None,
                 update_id: None,
-                label: None,
-                description: None,
-                favicon: None,
-                base_version: None,
+                ..Default::default()
             }))
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -1007,10 +1138,7 @@ mod tests {
                 content: "v1".into(),
                 session_id: Some("ses-1".into()),
                 update_id: None,
-                label: None,
-                description: None,
-                favicon: None,
-                base_version: None,
+                ..Default::default()
             }))
             .unwrap(),
         )
@@ -1024,10 +1152,7 @@ mod tests {
                 content: "v2".into(),
                 session_id: Some("ses-1".into()),
                 update_id: Some(id.clone()),
-                label: None,
-                description: None,
-                favicon: None,
-                base_version: None,
+                ..Default::default()
             }))
             .unwrap(),
         )
@@ -1051,10 +1176,8 @@ mod tests {
                     content: format!("content-of-{name}"),
                     session_id: Some(session.into()),
                     update_id: None,
-                    label: None,
                     description: Some(format!("desc-{name}")),
-                    favicon: None,
-                    base_version: None,
+                    ..Default::default()
                 }))
                 .unwrap(),
             )
@@ -1064,13 +1187,16 @@ mod tests {
         let _b = publish("beta", "ses-2");
 
         let all: serde_json::Value =
-            serde_json::from_str(&s.artifact_list(Parameters(ArtifactListRequest { session_id: None })).unwrap())
+            serde_json::from_str(&s.artifact_list(Parameters(ArtifactListRequest::default())).unwrap())
                 .unwrap();
         assert_eq!(all.as_array().unwrap().len(), 2);
 
         let one: serde_json::Value = serde_json::from_str(
-            &s.artifact_list(Parameters(ArtifactListRequest { session_id: Some("ses-1".into()) }))
-                .unwrap(),
+            &s.artifact_list(Parameters(ArtifactListRequest {
+                session_id: Some("ses-1".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(one.as_array().unwrap().len(), 1);
@@ -1111,9 +1237,7 @@ mod tests {
                 session_id: None,
                 update_id: None,
                 label: Some("draft".into()),
-                description: None,
-                favicon: None,
-                base_version: None,
+                ..Default::default()
             }))
             .unwrap(),
         )
@@ -1129,10 +1253,8 @@ mod tests {
                 content: content.into(),
                 session_id: None,
                 update_id: Some(id.clone()),
-                label: None,
-                description: None,
-                favicon: None,
                 base_version: base,
+                ..Default::default()
             }))
         };
         let second: serde_json::Value = serde_json::from_str(&update(Some(1), "v2").unwrap()).unwrap();
@@ -1141,6 +1263,165 @@ mod tests {
         let err = update(Some(1), "v3-stale").unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(err.to_string().contains("conflict"), "{err}");
+    }
+
+    #[test]
+    fn artifact_list_filters_by_recipient_and_thread() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = AgentflareMcp {
+            artifacts_dir_override: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let publish = |name: &str, recipient: Option<&str>, thread: Option<&str>| -> serde_json::Value {
+            serde_json::from_str(
+                &s.artifact_publish(Parameters(ArtifactPublishRequest {
+                    name: name.into(),
+                    content: format!("content {name}"),
+                    sender: Some("claude-code".into()),
+                    recipient: recipient.map(Into::into),
+                    thread_id: thread.map(Into::into),
+                    ..Default::default()
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        publish("packet", Some("codex"), Some("t1"));
+        publish("reply", Some("claude-code"), Some("t1"));
+        publish("other", None, None);
+
+        let inbox: serde_json::Value = serde_json::from_str(
+            &s.artifact_list(Parameters(ArtifactListRequest {
+                recipient: Some("codex".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inbox.as_array().unwrap().len(), 1);
+        assert_eq!(inbox[0]["name"], "packet");
+
+        let thread: serde_json::Value = serde_json::from_str(
+            &s.artifact_list(Parameters(ArtifactListRequest {
+                thread_id: Some("t1".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(thread.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn artifact_diff_tool_returns_unified_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = AgentflareMcp {
+            artifacts_dir_override: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let first: serde_json::Value = serde_json::from_str(
+            &s.artifact_publish(Parameters(ArtifactPublishRequest {
+                name: "doc".into(),
+                content: "alpha\nbeta\n".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let id = first["id"].as_str().unwrap().to_string();
+        s.artifact_publish(Parameters(ArtifactPublishRequest {
+            name: "doc".into(),
+            content: "alpha\ngamma\n".into(),
+            update_id: Some(id.clone()),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        // to_version omitted = latest
+        let diff = s
+            .artifact_diff(Parameters(ArtifactDiffRequest {
+                id,
+                from_version: 1,
+                to_version: None,
+            }))
+            .unwrap();
+        assert!(diff.contains("-beta"), "{diff}");
+        assert!(diff.contains("+gamma"), "{diff}");
+    }
+
+    #[test]
+    fn artifact_search_matches_name_description_and_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = AgentflareMcp {
+            artifacts_dir_override: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        s.artifact_publish(Parameters(ArtifactPublishRequest {
+            name: "alpha".into(),
+            content: "there is a hidden NEEDLE in here".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+        s.artifact_publish(Parameters(ArtifactPublishRequest {
+            name: "beta".into(),
+            content: "nothing to see".into(),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let hits: serde_json::Value = serde_json::from_str(
+            &s.artifact_search(Parameters(ArtifactSearchRequest {
+                query: "needle".into(),
+                session_id: None,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hits.as_array().unwrap().len(), 1);
+        assert_eq!(hits[0]["name"], "alpha");
+        assert!(
+            hits[0]["snippet"].as_str().unwrap().to_lowercase().contains("needle"),
+            "{hits}"
+        );
+
+        let by_name: serde_json::Value = serde_json::from_str(
+            &s.artifact_search(Parameters(ArtifactSearchRequest {
+                query: "beta".into(),
+                session_id: None,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(by_name.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn artifact_publish_captures_git_provenance_in_repo() {
+        // Tests run with cwd inside this git repo, so capture must succeed.
+        let tmp = tempfile::tempdir().unwrap();
+        let s = AgentflareMcp {
+            artifacts_dir_override: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let out: serde_json::Value = serde_json::from_str(
+            &s.artifact_publish(Parameters(ArtifactPublishRequest {
+                name: "prov".into(),
+                content: "x".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let got: serde_json::Value = serde_json::from_str(
+            &s.artifact_get(Parameters(ArtifactGetRequest {
+                id: out["id"].as_str().unwrap().into(),
+                version: None,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let commit = got["git"]["commit"].as_str().expect("git commit captured");
+        assert!(commit.len() >= 7, "{got}");
     }
 
     #[test]
@@ -1158,10 +1439,7 @@ mod tests {
                     content: content.into(),
                     session_id: None,
                     update_id: None,
-                    label: None,
-                    description: None,
-                    favicon: None,
-                    base_version: None,
+                    ..Default::default()
                 }))
                 .unwrap_err();
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
