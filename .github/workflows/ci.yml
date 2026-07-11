@@ -35,6 +35,10 @@ jobs:
   build:
     needs: changes
     if: always()
+    # A hung test would otherwise pin a runner for GitHub's 6h default and
+    # block the branch's required check indefinitely; fail fast instead. A
+    # cold-cache build+test finishes well under this on every OS.
+    timeout-minutes: 25
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
