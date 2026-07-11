@@ -30,6 +30,7 @@ pub fn open() -> rusqlite::Result<Connection> {
     restrict(&path, 0o600);
     tune(&conn)?;
     crate::claims::migrate(&conn)?;
+    crate::review::migrate(&conn)?;
     crate::gateway_secrets::migrate(&conn)?;
     // One-time migration: copy secrets from old gateway.db
     // (pre-#138 separate file) into agentflare.db.
