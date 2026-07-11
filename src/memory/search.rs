@@ -29,7 +29,7 @@ pub fn search(
            AND o.deleted_at IS NULL
            AND (?3 IS NULL OR o.project = ?3)
            AND (?4 IS NULL OR o.type = ?4)
-         ORDER BY rank
+         ORDER BY bm25(observations_fts, 3.0, 1.0, 1.0, 1.0, 1.0)
          LIMIT ?2";
 
     let mut stmt = conn.prepare(sql)?;
@@ -68,20 +68,9 @@ fn search_fallback(
 fn build_fts_query(raw: &str) -> String {
     let tokens: Vec<String> = raw
         .split_whitespace()
+        .map(|t| t.replace('"', "")) // strip embedded quotes, then quote whole token
         .filter(|t| !t.is_empty())
-        .map(|t| {
-            if t.chars().any(|c| c == '"' || c == '*' || c == '(' || c == ')' || c == '+' || c == '-' || c == '~') {
-                let cleaned: String = t.chars().filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '~' | '^')).collect();
-                if cleaned.is_empty() {
-                    String::new()
-                } else {
-                    format!("\"{}\"", cleaned)
-                }
-            } else {
-                format!("\"{}\"", t)
-            }
-        })
-        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{t}\""))
         .collect();
     if tokens.is_empty() {
         // Every token sanitized to empty (e.g. raw == "***"). Fall back to a
@@ -171,5 +160,42 @@ mod tests {
         let results = search(&conn, "marker", Some("proj-a"), Some("decision"), 3).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].r#type, "decision");
+    }
+
+    // Regression test for the weighted bm25() ranking, mirroring
+    // skill-registry's `name_match_outranks_description_match`: a query term
+    // that's literally the observation's title should outrank an
+    // observation where the term only appears buried in the content.
+    #[test]
+    fn title_match_outranks_content_match() {
+        let conn = new_db();
+        observations::save(
+            &conn,
+            None,
+            "note",
+            "zephyr configuration guide",
+            "some filler text about unrelated setup steps and general notes",
+            None,
+            Some("proj-a"),
+            None,
+            None,
+        )
+        .unwrap();
+        observations::save(
+            &conn,
+            None,
+            "note",
+            "unrelated title about widgets",
+            "this note mentions zephyr only once buried among filler words describing other things",
+            None,
+            Some("proj-a"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results = search(&conn, "zephyr", Some("proj-a"), None, 10).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "zephyr configuration guide");
     }
 }
