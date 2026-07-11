@@ -143,6 +143,16 @@ struct ReviewRoundRequest {
     repo: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ReviewScoresRequest {
+    #[schemars(description = "Scope to one repo owner/name (default: current repo)")]
+    #[serde(default)]
+    repo: Option<String>,
+    #[schemars(description = "Aggregate across every repo (default false)")]
+    #[serde(default)]
+    all_repos: bool,
+}
+
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ArtifactPublishRequest {
     #[schemars(description = "Display name of the artifact")]
@@ -903,6 +913,36 @@ impl AgentflareMcp {
         let n = crate::review::clear(&conn, &repo, &pr)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(serde_json::json!({ "cleared": n, "repo": repo, "pr": pr }).to_string())
+    }
+
+    #[tool(description = "Record this round's per-agent accuracy: how many of each finder's findings cited a real changed line (verified) vs total. Idempotent per round. Feeds review_scores.")]
+    fn review_record(
+        &self,
+        Parameters(ReviewConsensusRequest { pr, base, head, repo }): Parameters<ReviewConsensusRequest>,
+    ) -> Result<String, ErrorData> {
+        let conn = Self::claim_db()?;
+        let repo = Self::resolve_repo_or_err(repo)?;
+        let pr = Self::resolve_round(pr)?;
+        let findings = crate::review::load(&conn, &repo, &pr)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let diff = crate::review::compute_diff(base.as_deref(), head.as_deref())
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
+        let changed = crate::review::changed_lines(&diff);
+        let n = crate::review::record_round(&conn, &repo, &pr, &findings, &changed, crate::claims::now())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(serde_json::json!({ "recorded_agents": n, "repo": repo, "pr": pr }).to_string())
+    }
+
+    #[tool(description = "Per-agent accuracy across recorded rounds: verified/total citation rate, ranked. Use to weight which finders to trust or dispatch.")]
+    fn review_scores(
+        &self,
+        Parameters(ReviewScoresRequest { repo, all_repos }): Parameters<ReviewScoresRequest>,
+    ) -> Result<String, ErrorData> {
+        let conn = Self::claim_db()?;
+        let scope = if all_repos { None } else { Some(Self::resolve_repo_or_err(repo)?) };
+        let scores = crate::review::scores(&conn, scope.as_deref())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(serde_json::to_string_pretty(&scores).unwrap_or_default())
     }
 
     fn resolve_repo_or_err(repo: Option<String>) -> Result<String, ErrorData> {

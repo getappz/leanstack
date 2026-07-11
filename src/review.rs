@@ -26,7 +26,16 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             category   TEXT,
             created_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS review_findings_round ON review_findings (repo, pr);",
+        CREATE INDEX IF NOT EXISTS review_findings_round ON review_findings (repo, pr);
+        CREATE TABLE IF NOT EXISTS score_events (
+            repo        TEXT NOT NULL,
+            pr          TEXT NOT NULL,
+            agent       TEXT NOT NULL,
+            total       INTEGER NOT NULL,
+            verified    INTEGER NOT NULL,
+            recorded_at INTEGER NOT NULL,
+            PRIMARY KEY (repo, pr, agent)
+        );",
     )
 }
 
@@ -137,6 +146,86 @@ pub fn clear(conn: &Connection, repo: &str, pr: &str) -> rusqlite::Result<usize>
         "DELETE FROM review_findings WHERE repo = ?1 AND pr = ?2",
         params![repo, pr],
     )?)
+}
+
+// --- accuracy scoring --------------------------------------------------------
+
+/// A finder's aggregate accuracy across recorded rounds.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentScore {
+    pub agent: String,
+    pub findings: u32,
+    pub verified: u32,
+    /// verified / findings, 0.0 when no findings.
+    pub accuracy: f64,
+    pub rounds: u32,
+}
+
+/// Records this round's per-agent tally (total findings, and how many cited a
+/// real changed line) into `score_events`, upserting one row per agent so
+/// re-recording the same round REPLACES its contribution rather than
+/// double-counting. Returns the number of agents recorded.
+pub fn record_round(
+    conn: &Connection,
+    repo: &str,
+    pr: &str,
+    findings: &[StoredFinding],
+    changed: &HashMap<String, HashSet<u32>>,
+    now: i64,
+) -> rusqlite::Result<usize> {
+    let mut per_agent: HashMap<&str, (u32, u32)> = HashMap::new();
+    for sf in findings {
+        let entry = per_agent.entry(sf.agent.as_str()).or_default();
+        entry.0 += 1;
+        if changed.get(&sf.finding.file).is_some_and(|s| s.contains(&sf.finding.line)) {
+            entry.1 += 1;
+        }
+    }
+    for (agent, (total, verified)) in &per_agent {
+        conn.execute(
+            "INSERT INTO score_events (repo, pr, agent, total, verified, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(repo, pr, agent) DO UPDATE SET
+                 total = excluded.total,
+                 verified = excluded.verified,
+                 recorded_at = excluded.recorded_at",
+            params![repo, pr, agent, total, verified, now],
+        )?;
+    }
+    Ok(per_agent.len())
+}
+
+/// Aggregates recorded score events per agent (optionally scoped to `repo`),
+/// ranked by accuracy then volume.
+pub fn scores(conn: &Connection, repo: Option<&str>) -> rusqlite::Result<Vec<AgentScore>> {
+    let mut stmt = conn.prepare(
+        "SELECT agent, SUM(total), SUM(verified), COUNT(*)
+         FROM score_events
+         WHERE (?1 IS NULL OR repo = ?1)
+         GROUP BY agent",
+    )?;
+    let mut out: Vec<AgentScore> = stmt
+        .query_map(params![repo], |r| {
+            let findings: i64 = r.get(1)?;
+            let verified: i64 = r.get(2)?;
+            let rounds: i64 = r.get(3)?;
+            Ok(AgentScore {
+                agent: r.get(0)?,
+                findings: findings as u32,
+                verified: verified as u32,
+                accuracy: if findings > 0 { verified as f64 / findings as f64 } else { 0.0 },
+                rounds: rounds as u32,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    out.sort_by(|a, b| {
+        b.accuracy
+            .partial_cmp(&a.accuracy)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.findings.cmp(&a.findings))
+            .then_with(|| a.agent.cmp(&b.agent))
+    });
+    Ok(out)
 }
 
 // --- diff parsing (pure) -----------------------------------------------------
@@ -512,6 +601,53 @@ diff --git a/f b/f
         let loaded = load(&conn, "o/r", "7").unwrap();
         assert_eq!(loaded.len(), 1, "re-submit should replace, not append");
         assert_eq!(loaded[0].finding.line, 2);
+    }
+
+    #[test]
+    fn record_round_tallies_verified_vs_total_per_agent() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let ch = changed(&[("f", &[1, 2])]);
+        // agentA: 1 verified (f:1) + 1 off-diff (f:99). agentB: 1 verified.
+        let findings = vec![
+            sf("agentA", "f", 1, None),
+            sf("agentA", "f", 99, None),
+            sf("agentB", "f", 2, None),
+        ];
+        record_round(&conn, "o/r", "7", &findings, &ch, 100).unwrap();
+        let s = scores(&conn, Some("o/r")).unwrap();
+        let a = s.iter().find(|x| x.agent == "agentA").unwrap();
+        assert_eq!((a.findings, a.verified), (2, 1));
+        assert!((a.accuracy - 0.5).abs() < 1e-9);
+        let b = s.iter().find(|x| x.agent == "agentB").unwrap();
+        assert_eq!((b.findings, b.verified), (1, 1));
+        assert!((b.accuracy - 1.0).abs() < 1e-9);
+        // Ranked by accuracy: B (1.0) before A (0.5).
+        assert_eq!(s[0].agent, "agentB");
+    }
+
+    #[test]
+    fn re_recording_a_round_replaces_not_double_counts() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let ch = changed(&[("f", &[1])]);
+        let findings = vec![sf("agentA", "f", 1, None)];
+        record_round(&conn, "o/r", "7", &findings, &ch, 100).unwrap();
+        record_round(&conn, "o/r", "7", &findings, &ch, 200).unwrap();
+        let s = scores(&conn, Some("o/r")).unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0].findings, s[0].rounds), (1, 1), "same round must not double-count");
+    }
+
+    #[test]
+    fn scores_aggregate_across_distinct_rounds() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let ch = changed(&[("f", &[1])]);
+        record_round(&conn, "o/r", "7", &[sf("agentA", "f", 1, None)], &ch, 100).unwrap();
+        record_round(&conn, "o/r", "8", &[sf("agentA", "f", 1, None)], &ch, 100).unwrap();
+        let s = scores(&conn, Some("o/r")).unwrap();
+        assert_eq!((s[0].findings, s[0].rounds), (2, 2));
     }
 
     #[test]
