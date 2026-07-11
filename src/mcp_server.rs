@@ -208,8 +208,42 @@ pub struct AgentflareMcp {
 }
 
 /// flared's default HTTP port; its artifact routes live under /artifacts.
-const FLARED_PORT: u16 = 35273;
+const FLARED_DEFAULT_PORT: u16 = 35273;
 const FLARED_ARTIFACTS_PATH: &str = "/artifacts/";
+
+/// flared's HTTP port: honor a `port` override in its config.toml when
+/// readable (a `--port` CLI override is invisible here and lands on the
+/// fixed-port fallback chain); default otherwise.
+fn flared_port() -> u16 {
+    dirs::config_dir()
+        .map(|dir| dir.join("flared").join("config.toml"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| parse_flared_port(&text))
+        .unwrap_or(FLARED_DEFAULT_PORT)
+}
+
+/// Extract the top-level `port` key from flared's config.toml text — a
+/// minimal scan that avoids a toml dependency for one key. Absent or
+/// malformed values -> None.
+fn parse_flared_port(text: &str) -> Option<u16> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            // TOML top-level keys end at the first table header
+            return None;
+        }
+        if let Some(rest) = line.strip_prefix("port")
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+        {
+            return value
+                .trim()
+                .split(|c: char| c == '#' || c.is_whitespace())
+                .next()
+                .and_then(|v| v.parse().ok());
+        }
+    }
+    None
+}
 
 /// How artifact pages reach the browser for this process.
 enum ArtifactBackend {
@@ -364,10 +398,10 @@ impl AgentflareMcp {
         // An external server can stop at any time (flared restarted, the
         // owning session exited): re-probe before handing out its URL and
         // resolve from scratch when it is gone.
-        if let Some((_, ArtifactBackend::External { port, path })) = guard.as_ref() {
-            if !agentflare_artifacts::probe_path(*port, path) {
-                *guard = None;
-            }
+        if let Some((_, ArtifactBackend::External { port, path })) = guard.as_ref()
+            && !agentflare_artifacts::probe_path(*port, path)
+        {
+            *guard = None;
         }
         if guard.is_none() {
             let (store, backend) = match self.artifacts_dir_override.clone() {
@@ -400,9 +434,10 @@ impl AgentflareMcp {
     fn shared_backend(
         store: &std::sync::Arc<agentflare_artifacts::ArtifactStore>,
     ) -> Result<ArtifactBackend, ErrorData> {
-        if agentflare_artifacts::probe_path(FLARED_PORT, FLARED_ARTIFACTS_PATH) {
+        let flared = flared_port();
+        if agentflare_artifacts::probe_path(flared, FLARED_ARTIFACTS_PATH) {
             return Ok(ArtifactBackend::External {
-                port: FLARED_PORT,
+                port: flared,
                 path: FLARED_ARTIFACTS_PATH,
             });
         }
@@ -960,6 +995,18 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_flared_port_reads_top_level_key_only() {
+        assert_eq!(parse_flared_port("port = 4444\n"), Some(4444));
+        assert_eq!(parse_flared_port("# comment\nport=9999 # inline\n"), Some(9999));
+        // tables end the top-level scan; a port inside one is not flared's
+        assert_eq!(parse_flared_port("[[registries]]\nport = 1\n"), None);
+        // prefix collisions and malformed values are not overrides
+        assert_eq!(parse_flared_port("portable = 1\nlight_interval_secs = 60\n"), None);
+        assert_eq!(parse_flared_port("port = not-a-number\n"), None);
+        assert_eq!(parse_flared_port(""), None);
+    }
 
     #[test]
     fn get_info_reports_agentflare_identity() {
