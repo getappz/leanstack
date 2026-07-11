@@ -50,7 +50,10 @@ pub fn gateway_toml_path() -> PathBuf {
 }
 
 /// A remote that mentions "github" — matches `github.com` in HTTPS/SSH URLs
-/// and SSH host aliases like `git@github-work:org/repo.git`.
+/// and SSH host aliases like `git@github-work:org/repo.git`. Deliberately
+/// broad: a rare false positive (e.g. a non-GitHub remote whose path contains
+/// "github") only leads to the consent prompt, which the user can decline —
+/// preferred over missing a legitimately-GitHub SSH alias.
 fn remotes_mention_github(remotes: &str) -> bool {
     remotes.to_lowercase().contains("github")
 }
@@ -77,10 +80,15 @@ pub fn already_registered(name: &str) -> bool {
 }
 
 /// Appends the integration's block to gateway.toml (creating the file if
-/// needed), preserving any existing servers. Assumes the caller already
-/// checked `already_registered` is false. Returns a status line.
+/// needed), preserving any existing servers. Self-guarding: if the server is
+/// already registered it no-ops rather than appending a duplicate table (which
+/// would be invalid TOML), so it's safe to call directly, not only behind the
+/// caller's `already_registered` check. Returns a status line.
 pub fn register(intg: &GatewayIntegration) -> String {
     let path = gateway_toml_path();
+    if already_registered(intg.name) {
+        return format!("skip  {} already registered ({})", intg.name, path.display());
+    }
     let existing = fs::read_to_string(&path).unwrap_or_default();
 
     let mut out = existing.trim_end().to_string();
@@ -136,12 +144,19 @@ mod tests {
     #[test]
     fn register_is_idempotent_and_never_duplicates() {
         with_temp_home(|| {
-            register(&GITHUB);
+            let msg1 = register(&GITHUB);
+            assert!(msg1.starts_with("ok"), "first: {msg1}");
             let first = fs::read_to_string(gateway_toml_path()).unwrap();
-            // The init flow guards on already_registered, but even a direct
-            // re-register must not corrupt the file into two [servers.github].
-            assert!(already_registered("github"));
-            assert_eq!(first.matches("[servers.github]").count(), 1);
+
+            // A second direct call must no-op, not append a second
+            // [servers.github] table (which would be invalid TOML).
+            let msg2 = register(&GITHUB);
+            assert!(msg2.starts_with("skip"), "second: {msg2}");
+            let second = fs::read_to_string(gateway_toml_path()).unwrap();
+
+            assert_eq!(first, second, "second register must not change the file");
+            assert_eq!(second.matches("[servers.github]").count(), 1);
+            assert!(gateway_registry::parse_config(&second).is_ok());
         });
     }
 
