@@ -244,9 +244,15 @@ fn confirm_gateway_integrations(agent: &str, yes: bool) {
             continue;
         }
 
-        println!("  {}", register(intg));
-        for line in (intg.post_note)() {
-            println!("{line}");
+        let status = register(intg);
+        let registered = status.starts_with("ok");
+        println!("  {status}");
+        // Only print the follow-up (e.g. how to store the token) when the
+        // server was actually written — not when register failed or skipped.
+        if registered {
+            for line in (intg.post_note)() {
+                println!("{line}");
+            }
         }
     }
 }
