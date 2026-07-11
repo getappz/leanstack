@@ -692,9 +692,12 @@ impl AgentflareMcp {
         &self,
         Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
     ) -> Result<String, ErrorData> {
+        // Only capture the current checkout's commit when the repo is
+        // auto-resolved from it; an explicit repo may name a different one.
+        let repo_overridden = repo.as_ref().is_some_and(|r| !r.is_empty());
         let (conn, repo) = Self::claim_ctx(&target, repo)?;
         let owner = crate::claims::owner_id();
-        let commit = Self::git_provenance().and_then(|g| g.commit);
+        let commit = if repo_overridden { None } else { Self::git_provenance().and_then(|g| g.commit) };
         let outcome = crate::claims::acquire(
             &conn, &repo, &target, &owner, commit.as_deref(),
             crate::claims::now(), crate::claims::ttl_secs(),
@@ -733,6 +736,18 @@ impl AgentflareMcp {
         let ok = crate::claims::release(&conn, &repo, &target, &owner)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(serde_json::json!({ "released": ok, "repo": repo, "target": target }).to_string())
+    }
+
+    #[tool(description = "Mark a claim you own as done — keeps the audit row (unlike release, which deletes it) while freeing the target for re-acquisition. Returns done=false if it wasn't yours.")]
+    fn claim_done(
+        &self,
+        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
+    ) -> Result<String, ErrorData> {
+        let (conn, repo) = Self::claim_ctx(&target, repo)?;
+        let owner = crate::claims::owner_id();
+        let ok = crate::claims::done(&conn, &repo, &target, &owner, crate::claims::now())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(serde_json::json!({ "done": ok, "repo": repo, "target": target }).to_string())
     }
 
     #[tool(description = "List work claims. Defaults to live claims for the current repo; set all=true to include stale/done, all_repos=true to span every repo.")]

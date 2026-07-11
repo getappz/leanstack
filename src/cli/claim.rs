@@ -65,8 +65,11 @@ impl ClaimArgs {
 
         match self.action {
             ClaimAction::Acquire { target, repo } => {
+                // Only attach the current checkout's commit when the repo was
+                // auto-resolved from it; an explicit --repo may name a different
+                // repository, so HEAD here would be misleading provenance.
+                let commit = if repo.is_none() { git_commit() } else { None };
                 let repo = require_repo(repo);
-                let commit = git_commit();
                 match crate::claims::acquire(&conn, &repo, &target, &owner, commit.as_deref(), now, ttl) {
                     Ok(crate::claims::Acquire::Acquired) => {
                         println!("claimed {repo} {target}  (owner {owner})");
