@@ -3,6 +3,7 @@ mod alias;
 mod artifacts;
 mod auth;
 mod caveman;
+mod claim;
 mod coaching;
 mod cost;
 mod gateway;
@@ -52,6 +53,7 @@ pub enum Commands {
     Handoff(handoff::HandoffArgs),
     Ponytail(ponytail::PonytailArgs),
     Caveman(caveman::CavemanArgs),
+    Claim(claim::ClaimArgs),
 }
 
 impl Commands {
@@ -73,6 +75,7 @@ impl Commands {
             Self::Handoff(cmd) => cmd.run(),
             Self::Ponytail(cmd) => cmd.run(),
             Self::Caveman(cmd) => cmd.run(),
+            Self::Claim(cmd) => cmd.run(),
         }
     }
 }
