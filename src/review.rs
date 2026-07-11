@@ -149,7 +149,13 @@ pub fn changed_lines(diff: &str) -> HashMap<String, HashSet<u32>> {
     let mut file: Option<String> = None;
     let mut new_line: u32 = 0;
     for raw in diff.lines() {
-        if let Some(path) = raw.strip_prefix("+++ ") {
+        if raw.starts_with("diff --git ") {
+            // New file section. Clear the current file so the metadata lines
+            // that follow (`index …`, `--- …`, mode/rename headers) aren't
+            // mistaken for context lines of the PREVIOUS file — which would
+            // insert phantom changed-line numbers and falsely verify findings.
+            file = None;
+        } else if let Some(path) = raw.strip_prefix("+++ ") {
             // "+++ b/src/foo.rs" → "src/foo.rs" ("/dev/null" for deletions).
             let p = path.trim().trim_start_matches("b/");
             file = (p != "/dev/null").then(|| p.to_string());
@@ -165,6 +171,8 @@ pub fn changed_lines(diff: &str) -> HashMap<String, HashSet<u32>> {
                     new_line += 1;
                 }
                 Some('-') => { /* old-side only; new-side counter unchanged */ }
+                // "\ No newline at end of file" is a marker, not a line.
+                Some('\\') => {}
                 _ => {
                     // context line (leading space, or a blank line in the hunk)
                     out.entry(f.clone()).or_default().insert(new_line);
@@ -388,6 +396,45 @@ diff --git a/src/foo.rs b/src/foo.rs
         let foo = &c["src/foo.rs"];
         // new-side: 10 ctx a, 11 new one, 12 new two, 13 ctx b
         assert!(foo.contains(&10) && foo.contains(&11) && foo.contains(&12) && foo.contains(&13));
+    }
+
+    #[test]
+    fn changed_lines_does_not_leak_metadata_across_files_in_a_multi_file_diff() {
+        // The `diff --git`/`index` lines between file sections must not be
+        // counted as context lines of the preceding file (which would insert a
+        // phantom changed line and falsely verify a finding citing it).
+        let diff = "\
+diff --git a/f1 b/f1
+--- a/f1
++++ b/f1
+@@ -1,1 +1,2 @@
+ keep
++added
+diff --git a/f2 b/f2
+--- a/f2
++++ b/f2
+@@ -1,1 +1,1 @@
+-old
++new
+";
+        let c = changed_lines(diff);
+        assert_eq!(c["f1"], [1u32, 2].into_iter().collect::<HashSet<_>>(), "f1 should be exactly {{1,2}}, no phantom line 3");
+        assert_eq!(c["f2"], [1u32].into_iter().collect::<HashSet<_>>());
+    }
+
+    #[test]
+    fn changed_lines_ignores_no_newline_marker() {
+        let diff = "\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1,1 +1,1 @@
+-old
++new
+\\ No newline at end of file
+";
+        let c = changed_lines(diff);
+        assert_eq!(c["f"], [1u32].into_iter().collect::<HashSet<_>>());
     }
 
     #[test]
