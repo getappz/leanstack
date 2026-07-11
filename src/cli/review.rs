@@ -56,6 +56,28 @@ pub enum ReviewAction {
         #[arg(long)]
         repo: Option<String>,
     },
+    /// Record this round's per-agent accuracy (verified vs total findings).
+    Record {
+        #[arg(long)]
+        pr: Option<String>,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        head: Option<String>,
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Show per-agent accuracy across recorded rounds.
+    Scores {
+        /// Scope to one repo (default: current repo; ignored with --all-repos).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Aggregate across every repo.
+        #[arg(long)]
+        all_repos: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl ReviewArgs {
@@ -114,6 +136,34 @@ impl ReviewArgs {
                 match crate::review::clear(&conn, &repo, &pr) {
                     Ok(n) => println!("cleared {n} finding(s) for {repo}#{pr}"),
                     Err(e) => fail(format!("clear failed: {e}")),
+                }
+            }
+            ReviewAction::Record { pr, base, head, repo } => {
+                let repo = require_repo(repo);
+                let pr = resolve_pr(pr);
+                let findings = crate::review::load(&conn, &repo, &pr)
+                    .unwrap_or_else(|e| fail(format!("load failed: {e}")));
+                let diff = crate::review::compute_diff(base.as_deref(), head.as_deref())
+                    .unwrap_or_else(|e| fail(e));
+                let changed = crate::review::changed_lines(&diff);
+                match crate::review::record_round(&conn, &repo, &pr, &findings, &changed, crate::claims::now()) {
+                    Ok(n) => println!("recorded accuracy for {n} agent(s) on {repo}#{pr}"),
+                    Err(e) => fail(format!("record failed: {e}")),
+                }
+            }
+            ReviewAction::Scores { repo, all_repos, json } => {
+                let scope = if all_repos { None } else { Some(require_repo(repo)) };
+                let scores = crate::review::scores(&conn, scope.as_deref())
+                    .unwrap_or_else(|e| fail(format!("scores failed: {e}")));
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&scores).unwrap_or_default());
+                } else if scores.is_empty() {
+                    println!("no recorded scores");
+                } else {
+                    for s in scores {
+                        println!("{:<20} {:.0}%  ({}/{} verified, {} round(s))",
+                            s.agent, s.accuracy * 100.0, s.verified, s.findings, s.rounds);
+                    }
                 }
             }
         }
