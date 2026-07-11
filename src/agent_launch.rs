@@ -111,14 +111,51 @@ pub struct Captured {
     pub timed_out: bool,
 }
 
-/// Run `cmd` to completion, capturing stdout, and kill the child if it outlives
-/// `timeout` (reporting `timed_out`). Stdout is drained on a separate thread so
-/// a child that fills the OS pipe buffer can't deadlock the wait loop.
+/// Kill `child` and everything it spawned, not just the direct process. A
+/// plain `child.kill()` only signals the direct child; if that child (e.g.
+/// `claude -p`, `codex exec`) has itself spawned a grandchild that inherited
+/// the piped stdout fd, the grandchild can keep that pipe's write end open
+/// after the direct child dies — which hangs the reader thread's
+/// `read_to_string` (it blocks until every writer closes the pipe) forever,
+/// defeating the timeout entirely. `run_captured` puts the child in its own
+/// process group (Unix) so we can kill the whole group here.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{}", child.id()))
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .status();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = child.kill();
+    }
+}
+
+/// Run `cmd` to completion, capturing stdout, and kill the child (and its
+/// whole process tree) if it outlives `timeout` (reporting `timed_out`).
+/// Stdout is drained on a separate thread so a child that fills the OS pipe
+/// buffer can't deadlock the wait loop.
 #[allow(dead_code)]
 pub fn run_captured(mut cmd: Command, timeout: Duration) -> std::io::Result<Captured> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
     cmd.stdin(Stdio::null());
+    // Make the child the leader of a new process group so any descendants it
+    // spawns (which inherit the group by default) can be killed together via
+    // `kill_tree` — see its doc comment for why this matters.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn()?;
 
     let mut pipe = child.stdout.take().expect("stdout piped above");
@@ -135,7 +172,7 @@ pub fn run_captured(mut cmd: Command, timeout: Duration) -> std::io::Result<Capt
             break status;
         }
         if start.elapsed() >= timeout {
-            let _ = child.kill();
+            kill_tree(&mut child);
             let status = child.wait()?;
             timed_out = true;
             break status;
@@ -303,6 +340,27 @@ mod tests {
         assert!(!out.success, "a killed child is not a success");
         // Must return promptly, not wait out the full 5s sleep.
         assert!(start.elapsed() < std::time::Duration::from_secs(2), "did not kill promptly");
+    }
+
+    // Proves the fix for the "descendant outlives the direct child" hang: the
+    // direct child backgrounds a grandchild that inherits the piped stdout fd,
+    // then waits on it. If timeout only killed the direct child (the old
+    // `child.kill()` behavior), the grandchild would keep the pipe's write end
+    // open and `reader.join()` would block for the full 5s sleep. With
+    // process-group tree-killing, both die together and this returns promptly.
+    #[cfg(unix)]
+    #[test]
+    fn run_captured_times_out_and_kills_the_whole_tree() {
+        let start = std::time::Instant::now();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 5 & wait");
+        let out = run_captured(cmd, std::time::Duration::from_millis(150)).unwrap();
+        assert!(out.timed_out, "should report timeout");
+        assert!(!out.success, "a killed child is not a success");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "did not kill the whole tree promptly — a descendant likely kept the stdout pipe open"
+        );
     }
 
     fn headless_registry() -> Vec<AgentSpec> {
