@@ -69,9 +69,19 @@ pub fn active_scope() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Both tests read/write the same process-global state files
+    // (`flag_path()` / `session_path()`). Cargo runs them on parallel threads
+    // by default, so without this lock `clear_nonexistent_is_noop`'s
+    // `clear_active()` can delete the flag file `roundtrip_active_mode` just
+    // wrote — a race that passes on Linux but panics on macOS and hangs on
+    // Windows. Serialize every test that touches these files.
+    static STATE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn roundtrip_active_mode() {
+        let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_active();
         assert_eq!(active_mode(), None);
 
@@ -93,6 +103,7 @@ mod tests {
 
     #[test]
     fn clear_nonexistent_is_noop() {
+        let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_active();
         clear_active();
         clear_session();
