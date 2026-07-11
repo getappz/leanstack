@@ -37,42 +37,49 @@ pub fn open() -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// If `~/.agentflare/gateway.db` exists with a `gateway_secrets` table,
-/// copy rows into `agentflare.db` that don't already exist (so re-running
-/// the migration is idempotent). Leaves the old file in place.
 fn migrate_old_gateway_db(conn: &Connection) -> rusqlite::Result<()> {
-    let old_path = old_gateway_db_path();
+    import_legacy_secrets(conn, &old_gateway_db_path())
+}
+
+/// Copy secrets from a legacy `gateway.db` (pre-#138 separate file) into the
+/// shared db, then rename the legacy file so it's imported exactly once.
+///
+/// Reads from the legacy db are best-effort: a missing file, an unopenable
+/// db, or an incompatible/malformed `gateway_secrets` schema all skip the
+/// import rather than failing `open()` — otherwise one bad legacy file would
+/// brick unrelated claims access too. Only writes into our own (healthy)
+/// shared db are fatal.
+///
+/// Renaming to `gateway.db.migrated` on success is the migration-complete
+/// marker: without it every `open()` re-imports via `INSERT OR IGNORE`, so a
+/// secret the user deleted would resurrect on the next run.
+fn import_legacy_secrets(conn: &Connection, old_path: &std::path::Path) -> rusqlite::Result<()> {
     if !old_path.exists() {
         return Ok(());
     }
-    // Probe: does the old file have a gateway_secrets table with rows?
-    let old = match Connection::open(&old_path) {
-        Ok(c) => c,
-        Err(_) => return Ok(()),
-    };
-    let count: i64 = match old.query_row(
-        "SELECT COUNT(*) FROM gateway_secrets",
-        [],
-        |r| r.get(0),
-    ) {
-        Ok(n) => n,
-        Err(_) => return Ok(()),
-    };
-    if count == 0 {
+    let Ok(old) = Connection::open(old_path) else {
         return Ok(());
-    }
-    // Copy each row that doesn't already exist in the new db.
-    let mut stmt = old.prepare("SELECT name, ciphertext FROM gateway_secrets")?;
-    let rows = stmt.query_map([], |r| {
+    };
+    let Ok(mut stmt) = old.prepare("SELECT name, ciphertext FROM gateway_secrets") else {
+        return Ok(()); // incompatible legacy schema — skip, don't brick open()
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
-    })?;
-    for row in rows {
-        let (name, ciphertext) = row?;
+    }) else {
+        return Ok(());
+    };
+    // `flatten` drops rows that fail to decode (e.g. malformed ciphertext)
+    // rather than propagating — one bad row must not abort the migration.
+    for (name, ciphertext) in rows.flatten() {
         conn.execute(
             "INSERT OR IGNORE INTO gateway_secrets (name, ciphertext) VALUES (?1, ?2)",
             params![name, ciphertext],
         )?;
     }
+    // Best-effort: if the rename fails we just re-import idempotently next time.
+    drop(stmt);
+    drop(old);
+    let _ = std::fs::rename(old_path, old_path.with_extension("db.migrated"));
     Ok(())
 }
 
@@ -98,4 +105,79 @@ fn tune(conn: &Connection) -> rusqlite::Result<()> {
     // in-memory dbs (tests), which is fine.
     let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::gateway_secrets::migrate(&conn).unwrap();
+        conn
+    }
+
+    fn write_legacy(path: &std::path::Path, ddl: &str, rows: &[(&str, &[u8])]) {
+        let old = Connection::open(path).unwrap();
+        old.execute_batch(ddl).unwrap();
+        for (name, ct) in rows {
+            old.execute(
+                "INSERT INTO gateway_secrets (name, ciphertext) VALUES (?1, ?2)",
+                params![name, ct],
+            )
+            .unwrap();
+        }
+    }
+
+    const GOOD_DDL: &str =
+        "CREATE TABLE gateway_secrets (name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL);";
+
+    #[test]
+    fn deleted_secret_stays_deleted_after_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("gateway.db");
+        write_legacy(&old_path, GOOD_DDL, &[("github_pat", b"cipher")]);
+
+        let conn = new_db();
+        import_legacy_secrets(&conn, &old_path).unwrap();
+        let present: i64 = conn
+            .query_row("SELECT COUNT(*) FROM gateway_secrets WHERE name='github_pat'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(present, 1, "secret should import on first open");
+
+        // Legacy file is renamed once migrated, so a re-import can't resurrect.
+        assert!(!old_path.exists(), "legacy file should be renamed after migration");
+        conn.execute("DELETE FROM gateway_secrets WHERE name='github_pat'", []).unwrap();
+        import_legacy_secrets(&conn, &old_path).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM gateway_secrets", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 0, "deleted secret must not resurrect on reopen");
+    }
+
+    #[test]
+    fn incompatible_legacy_schema_does_not_brick_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("gateway.db");
+        // gateway_secrets exists but lacks the `ciphertext` column.
+        let old = Connection::open(&old_path).unwrap();
+        old.execute_batch("CREATE TABLE gateway_secrets (name TEXT, blob BLOB);").unwrap();
+        old.execute("INSERT INTO gateway_secrets (name, blob) VALUES ('x', X'00')", []).unwrap();
+        drop(old);
+
+        let conn = new_db();
+        // Must be Ok — a malformed legacy schema is skipped, not propagated.
+        import_legacy_secrets(&conn, &old_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM gateway_secrets", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn missing_legacy_file_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = new_db();
+        import_legacy_secrets(&conn, &dir.path().join("nope.db")).unwrap();
+    }
 }
