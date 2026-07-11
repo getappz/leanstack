@@ -373,6 +373,14 @@ fn wire_opencode() {
         }
     };
 
+    // Drop a legacy engram.md entry from an install wired before engram was
+    // removed — `rule_files` no longer lists it, so it would otherwise sit
+    // there forever, unrewritten, since nothing below ever adds it back.
+    let legacy_engram_path = rules_dir.join("engram.md").to_string_lossy().replace('\\', "/");
+    let before_cleanup = arr.len();
+    arr.retain(|v| v.as_str() != Some(legacy_engram_path.as_str()));
+    let removed_legacy = arr.len() != before_cleanup;
+
     let mut added = 0;
     for &file in rule_files {
         let rule_path = rules_dir.join(file);
@@ -388,11 +396,14 @@ fn wire_opencode() {
         }
     }
 
-    if added > 0 {
+    if added > 0 || removed_legacy {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
         match fs::write(&path, serde_json::to_string_pretty(&config).unwrap() + "\n") {
+            Ok(_) if removed_legacy => {
+                println!("  ok    opencode.jsonc instructions wired ({added} rule(s), removed stale engram.md)")
+            }
             Ok(_) => println!("  ok    opencode.jsonc instructions wired ({added} rule(s))"),
             Err(e) => println!("  fail  writing opencode.jsonc: {e}"),
         }
@@ -799,6 +810,42 @@ mod tests {
             assert!(content.contains("/some/existing/rule.md"));
             let parsed: Value = serde_json::from_str(&content).unwrap();
             assert!(parsed["mcp"].is_object());
+        });
+    }
+
+    #[test]
+    fn wire_opencode_removes_legacy_engram_instruction_on_upgrade() {
+        with_temp_home(|| {
+            let config_path = home().join(".config").join("opencode").join("opencode.jsonc");
+            let rules_dir = home().join(".config").join("opencode").join("rules");
+            fs::create_dir_all(&rules_dir).unwrap();
+            // Simulates an install wired before engram was removed: all three
+            // remaining rules are already present, plus the stale engram one.
+            for f in ["exa.md", "git.md", "lean-ctx.md"] {
+                fs::write(rules_dir.join(f), format!("# {f}\n")).unwrap();
+            }
+            let legacy_engram_path = rules_dir.join("engram.md").to_string_lossy().replace('\\', "/");
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(
+                &config_path,
+                serde_json::to_string(&json!({
+                    "instructions": [
+                        format!("{}/exa.md", rules_dir.to_string_lossy().replace('\\', "/")),
+                        format!("{}/git.md", rules_dir.to_string_lossy().replace('\\', "/")),
+                        format!("{}/lean-ctx.md", rules_dir.to_string_lossy().replace('\\', "/")),
+                        legacy_engram_path.clone(),
+                    ]
+                })).unwrap(),
+            ).unwrap();
+
+            // Nothing new to add (all 3 current rules already wired), so this
+            // exercises the "rewrite triggered by removal alone" path.
+            wire_opencode();
+
+            let content = fs::read_to_string(&config_path).unwrap();
+            assert!(!content.contains(&legacy_engram_path), "stale engram.md entry should be removed: {content}");
+            assert!(content.contains("exa.md"));
+            assert!(content.contains("lean-ctx.md"));
         });
     }
 

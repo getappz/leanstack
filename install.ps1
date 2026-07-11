@@ -1,4 +1,4 @@
-<#
+﻿<#
 install.ps1 - Build agentflare locally on Windows and install it into Cargo's bin directory.
 
 Building locally (rather than downloading a prebuilt .exe) means the binary
