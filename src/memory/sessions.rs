@@ -152,3 +152,38 @@ pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 fn now_iso() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::schema;
+
+    fn new_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        schema::migrate(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn create_get_close_roundtrip() {
+        let conn = new_db();
+        let created = create(&conn, "sess-1", Some("proj-a"), Some("/repo")).unwrap();
+        assert_eq!(created.status, "active");
+        assert_eq!(created.project.as_deref(), Some("proj-a"));
+
+        let fetched = get(&conn, "sess-1").unwrap().unwrap();
+        assert_eq!(fetched.id, "sess-1");
+
+        close(&conn, "sess-1", "wrapped up").unwrap();
+        let closed = get(&conn, "sess-1").unwrap().unwrap();
+        assert_eq!(closed.status, "closed");
+        assert_eq!(closed.summary.as_deref(), Some("wrapped up"));
+        assert!(closed.ended_at.is_some());
+    }
+
+    #[test]
+    fn get_missing_session_returns_none() {
+        let conn = new_db();
+        assert!(get(&conn, "does-not-exist").unwrap().is_none());
+    }
+}

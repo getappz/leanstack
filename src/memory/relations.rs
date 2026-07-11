@@ -29,7 +29,11 @@ pub fn create(
     confidence: Option<f64>,
 ) -> rusqlite::Result<i64> {
     let now = now_iso();
-    conn.execute(
+    // `last_insert_rowid()` only reflects a successful INSERT: when the
+    // ON CONFLICT ... DO UPDATE arm fires instead, SQLite does not update
+    // it, so it can return an unrelated id. RETURNING gives us the actual
+    // row id regardless of which arm ran.
+    conn.query_row(
         "INSERT INTO memory_relations
             (source_id, target_id, relation, judgment_status, reason, evidence, confidence, session_id, created_at, updated_at)
          VALUES (?1, ?2, ?3, 'judged', ?4, ?5, ?6, ?7, ?8, ?8)
@@ -38,10 +42,11 @@ pub fn create(
             reason = COALESCE(?4, reason),
             evidence = COALESCE(?5, evidence),
             confidence = COALESCE(?6, confidence),
-            updated_at = ?8",
+            updated_at = ?8
+         RETURNING id",
         params![source_id, target_id, relation, reason, evidence, confidence, session_id, now],
-    )?;
-    Ok(conn.last_insert_rowid())
+        |r| r.get(0),
+    )
 }
 
 pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Relation>> {
@@ -89,4 +94,40 @@ fn map_relation(r: &rusqlite::Row<'_>) -> rusqlite::Result<Relation> {
 
 fn now_iso() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{observations, schema};
+
+    fn new_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        schema::migrate(&conn).unwrap();
+        conn
+    }
+
+    fn make_obs(conn: &Connection, title: &str) -> i64 {
+        match observations::save(conn, None, "note", title, "content", None, None, None, None).unwrap() {
+            observations::SaveOutcome::Created(id) => id,
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    // Regression test: re-relating the same (source, target, relation)
+    // triple used to be able to return an unrelated id, because
+    // last_insert_rowid() doesn't reflect the ON CONFLICT DO UPDATE path.
+    #[test]
+    fn create_twice_with_same_triple_returns_same_id() {
+        let conn = new_db();
+        let source = make_obs(&conn, "source obs");
+        let target = make_obs(&conn, "target obs");
+
+        let id1 = create(&conn, source, target, "related", None, Some("first reason"), None, None).unwrap();
+        let id2 = create(&conn, source, target, "related", None, Some("second reason"), None, None).unwrap();
+
+        assert_eq!(id1, id2);
+        let rel = get(&conn, id1).unwrap().unwrap();
+        assert_eq!(rel.reason.as_deref(), Some("second reason"));
+    }
 }

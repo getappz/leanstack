@@ -55,24 +55,25 @@ pub struct RecallInput {
 
 pub fn handle_recall(input: RecallInput) -> Result<String, String> {
     let conn = open_db()?;
+    recall_with_conn(&conn, input)
+}
+
+/// Core of `handle_recall`, taking an explicit connection so tests can run
+/// against an isolated in-memory database instead of the real brain.db.
+fn recall_with_conn(conn: &rusqlite::Connection, input: RecallInput) -> Result<String, String> {
     if let Some(id) = input.id {
-        let obs = observations::get(&conn, id).map_err(|e| format!("lookup failed: {e}"))?;
+        let obs = observations::get(conn, id).map_err(|e| format!("lookup failed: {e}"))?;
         return Ok(json!(obs).to_string());
     }
     let limit = input.limit.unwrap_or(10).min(50);
     let results = if let Some(ref q) = input.query.filter(|q| !q.trim().is_empty()) {
-        search::search(&conn, q, input.project.as_deref(), limit)
+        search::search(conn, q, input.project.as_deref(), input.r#type.as_deref(), limit)
             .map_err(|e| format!("search failed: {e}"))?
     } else {
-        observations::list_recent(&conn, input.project.as_deref(), limit)
+        observations::list_recent(conn, input.project.as_deref(), input.r#type.as_deref(), limit)
             .map_err(|e| format!("list failed: {e}"))?
     };
-    let filtered = if let Some(ref t) = input.r#type {
-        results.into_iter().filter(|o| o.r#type == *t).collect()
-    } else {
-        results
-    };
-    Ok(json!(filtered).to_string())
+    Ok(json!(results).to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,7 +90,7 @@ pub fn handle_context(input: ContextInput) -> Result<String, String> {
     };
     let recent_sessions = sessions::list_recent(&conn, input.project.as_deref(), 5)
         .map_err(|e| format!("recent sessions: {e}"))?;
-    let recent_obs = observations::list_recent(&conn, input.project.as_deref(), 10)
+    let recent_obs = observations::list_recent(&conn, input.project.as_deref(), None, 10)
         .map_err(|e| format!("recent observations: {e}"))?;
     let recent_summaries = summaries::list_recent(&conn, input.project.as_deref(), 5)
         .map_err(|e| format!("recent summaries: {e}"))?;
@@ -113,32 +114,37 @@ pub struct HandoffInput {
 }
 
 pub fn handle_handoff(input: HandoffInput) -> Result<String, String> {
+    let conn = open_db()?;
+    handoff_with_conn(&conn, input)
+}
+
+/// Core of `handle_handoff`, taking an explicit connection so tests can run
+/// against an isolated in-memory database instead of the real brain.db.
+fn handoff_with_conn(conn: &rusqlite::Connection, input: HandoffInput) -> Result<String, String> {
     if input.session_id.trim().is_empty() || input.summary.trim().is_empty() {
         return Err("session_id and summary are required".into());
     }
-    let conn = open_db()?;
-    let session = sessions::get(&conn, &input.session_id)
-        .map_err(|e| format!("session lookup: {e}"))?
-        .ok_or_else(|| format!("session not found: {}", input.session_id))?;
+    // `unchecked_transaction` (not `Connection::transaction`, which needs
+    // `&mut Connection`) so enrich+close+append commit atomically: a failure
+    // partway through used to leave the session closed without its summary,
+    // with no way to retry since it was already closed.
+    let tx = conn.unchecked_transaction().map_err(|e| format!("begin transaction: {e}"))?;
+
+    // `sessions::create` was never called from any CLI subcommand or MCP
+    // tool, so the sessions table was always empty in practice and this
+    // lookup would unconditionally fail with "session not found" for every
+    // session_id. Auto-create instead, so handoff works standalone.
+    let session = match sessions::get(&tx, &input.session_id).map_err(|e| format!("session lookup: {e}"))? {
+        Some(session) => session,
+        None => sessions::create(&tx, &input.session_id, None, None)
+            .map_err(|e| format!("create session: {e}"))?,
+    };
 
     let project = session.project.clone().unwrap_or_default();
     let findings = input.findings.as_ref().map(|v| serde_json::to_string(&v).unwrap_or_default());
     let decisions = input.decisions.as_ref().map(|v| serde_json::to_string(&v).unwrap_or_default());
     let files = input.files_touched.as_ref().map(|v| serde_json::to_string(&v).unwrap_or_default());
     let evidence = input.evidence.as_ref().map(|v| serde_json::to_string(&v).unwrap_or_default());
-
-    sessions::update_enriched(
-        &conn,
-        &input.session_id,
-        None,
-        findings.as_deref(),
-        decisions.as_deref(),
-        files.as_deref(),
-        evidence.as_deref(),
-        None,
-        None,
-    )
-    .map_err(|e| format!("update enriched: {e}"))?;
 
     let snapshot = json!({
         "session_id": input.session_id,
@@ -149,14 +155,30 @@ pub fn handle_handoff(input: HandoffInput) -> Result<String, String> {
         "files_touched_count": input.files_touched.as_ref().map(|v| v.len()).unwrap_or(0),
     })
     .to_string();
-    sessions::update_enriched(&conn, &input.session_id, None, None, None, None, None, None, Some(&snapshot))
-        .map_err(|e| format!("update snapshot: {e}"))?;
 
-    sessions::close(&conn, &input.session_id, &input.summary)
+    // Single write covering findings/decisions/files/evidence AND the
+    // snapshot — the snapshot never depended on the first write's result,
+    // so the previous two-call version was a redundant extra round trip.
+    sessions::update_enriched(
+        &tx,
+        &input.session_id,
+        None,
+        findings.as_deref(),
+        decisions.as_deref(),
+        files.as_deref(),
+        evidence.as_deref(),
+        None,
+        Some(&snapshot),
+    )
+    .map_err(|e| format!("update enriched: {e}"))?;
+
+    sessions::close(&tx, &input.session_id, &input.summary)
         .map_err(|e| format!("close session: {e}"))?;
 
-    summaries::append(&conn, &project, Some(&input.session_id), &input.summary)
+    summaries::append(&tx, &project, Some(&input.session_id), &input.summary)
         .map_err(|e| format!("append summary: {e}"))?;
+
+    tx.commit().map_err(|e| format!("commit handoff: {e}"))?;
 
     Ok(json!({
         "status": "closed",
@@ -229,5 +251,94 @@ pub fn handle_curate(input: CurateInput) -> Result<String, String> {
             Ok(json!({"status": if ok { "unpinned" } else { "not_found" }}).to_string())
         }
         other => Err(format!("unknown action '{other}'; use update, delete, pin, or unpin")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn new_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::schema::migrate(&conn).unwrap();
+        conn
+    }
+
+    // Regression test for item 10: sessions::create was never called from
+    // any CLI subcommand or MCP tool, so `sessions::get` always returned
+    // None and handoff unconditionally failed with "session not found".
+    // handle_handoff must now auto-create the session and succeed.
+    #[test]
+    fn handoff_with_never_created_session_succeeds() {
+        let conn = new_db();
+        let input = HandoffInput {
+            session_id: "never-seen-session".to_string(),
+            summary: "closed out the work".to_string(),
+            findings: None,
+            decisions: None,
+            files_touched: None,
+            evidence: None,
+        };
+        let out = handoff_with_conn(&conn, input).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["status"], "closed");
+        assert_eq!(v["session_id"], "never-seen-session");
+
+        let session = sessions::get(&conn, "never-seen-session").unwrap().unwrap();
+        assert_eq!(session.status, "closed");
+        assert_eq!(session.summary.as_deref(), Some("closed out the work"));
+    }
+
+    // Regression test for item 8: the snapshot write must land even though
+    // it's now folded into the same update_enriched call as the other
+    // fields, and the whole sequence must actually commit.
+    #[test]
+    fn handoff_persists_enriched_fields_and_snapshot() {
+        let conn = new_db();
+        let input = HandoffInput {
+            session_id: "sess-enrich".to_string(),
+            summary: "did the thing".to_string(),
+            findings: Some(vec![serde_json::json!({"file": "a.rs", "summary": "found x"})]),
+            decisions: None,
+            files_touched: None,
+            evidence: None,
+        };
+        handoff_with_conn(&conn, input).unwrap();
+
+        let session = sessions::get(&conn, "sess-enrich").unwrap().unwrap();
+        assert!(session.findings.contains("found x"));
+        assert!(session.compaction_snapshot.is_some());
+        assert!(session.compaction_snapshot.unwrap().contains("did the thing"));
+    }
+
+    // Regression test for item 7: the type filter used to be applied via
+    // post-fetch `.filter(...)` on already-limited results, so type-matching
+    // rows past the naive limit were silently dropped. It must now be
+    // applied in SQL, before LIMIT.
+    #[test]
+    fn recall_type_filter_finds_rows_past_naive_limit() {
+        let conn = new_db();
+        // The decision row is the OLDEST row; several newer bugfix rows
+        // follow it. list_recent orders by created_at DESC, so a naive
+        // "fetch top-N then filter by type" with a small limit would only
+        // ever see the newer bugfix rows and never reach the decision row.
+        observations::save(&conn, None, "decision", "the one decision", "the only decision here", None, Some("proj-a"), None, None).unwrap();
+        for i in 0..5 {
+            observations::save(&conn, None, "bugfix", &format!("bug {i}"), "irrelevant filler content", None, Some("proj-a"), None, None).unwrap();
+        }
+
+        let input = RecallInput {
+            query: None,
+            id: None,
+            r#type: Some("decision".to_string()),
+            project: Some("proj-a".to_string()),
+            limit: Some(2),
+        };
+        let out = recall_with_conn(&conn, input).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "decision");
     }
 }

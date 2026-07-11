@@ -77,7 +77,7 @@ impl MemoryArgs {
             MemoryCommands::Observations { project, limit } => {
                 match crate::memory::store::open() {
                     Err(e) => eprintln!("error: {e}"),
-                    Ok(conn) => match crate::memory::observations::list_recent(&conn, project.as_deref(), limit) {
+                    Ok(conn) => match crate::memory::observations::list_recent(&conn, project.as_deref(), None, limit) {
                         Ok(obs) => println!("{}", serde_json::to_string_pretty(&obs).unwrap_or_default()),
                         Err(e) => eprintln!("error: {e}"),
                     },
