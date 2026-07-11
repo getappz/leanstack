@@ -80,6 +80,28 @@ struct GatewayExecuteRequest {
     args: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ClaimTargetRequest {
+    #[schemars(description = "Target to claim, e.g. \"issue#42\" or \"pr#7\"")]
+    target: String,
+    #[schemars(description = "Repo key owner/name (default: normalized origin remote)")]
+    #[serde(default)]
+    repo: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ClaimListRequest {
+    #[schemars(description = "Repo key owner/name (default: current repo)")]
+    #[serde(default)]
+    repo: Option<String>,
+    #[schemars(description = "Include stale and done claims (default false)")]
+    #[serde(default)]
+    all: bool,
+    #[schemars(description = "List across every repo in the ledger (default false)")]
+    #[serde(default)]
+    all_repos: bool,
+}
+
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ArtifactPublishRequest {
     #[schemars(description = "Display name of the artifact")]
@@ -663,6 +685,111 @@ impl AgentflareMcp {
         let (store, _base) = self.ensure_artifact_server()?;
         let deleted = store.delete(&id).map_err(Self::artifact_error)?;
         Ok(serde_json::json!({ "deleted": deleted }).to_string())
+    }
+
+    #[tool(description = "Claim a GitHub issue/PR so other agents don't duplicate the work. Returns 'acquired' if you now own it, or 'held' with the current owner if a live claim exists. Only stale (past-TTL) or done claims are stolen. Re-heartbeat periodically to keep it.")]
+    fn claim_acquire(
+        &self,
+        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
+    ) -> Result<String, ErrorData> {
+        // Only capture the current checkout's commit when the repo is
+        // auto-resolved from it; an explicit repo may name a different one.
+        let repo_overridden = repo.as_ref().is_some_and(|r| !r.is_empty());
+        let (conn, repo) = Self::claim_ctx(&target, repo)?;
+        let owner = crate::claims::owner_id();
+        let commit = if repo_overridden { None } else { Self::git_provenance().and_then(|g| g.commit) };
+        let outcome = crate::claims::acquire(
+            &conn, &repo, &target, &owner, commit.as_deref(),
+            crate::claims::now(), crate::claims::ttl_secs(),
+        )
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(match outcome {
+            crate::claims::Acquire::Acquired => {
+                serde_json::json!({ "status": "acquired", "repo": repo, "target": target, "owner": owner })
+            }
+            crate::claims::Acquire::Held { owner: holder, age_secs } => {
+                serde_json::json!({ "status": "held", "repo": repo, "target": target, "owner": holder, "age_secs": age_secs })
+            }
+        }
+        .to_string())
+    }
+
+    #[tool(description = "Refresh the lease on a claim you own, so it isn't reclaimed as stale. Returns refreshed=false if the claim is gone or owned by someone else.")]
+    fn claim_heartbeat(
+        &self,
+        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
+    ) -> Result<String, ErrorData> {
+        let (conn, repo) = Self::claim_ctx(&target, repo)?;
+        let owner = crate::claims::owner_id();
+        let ok = crate::claims::heartbeat(&conn, &repo, &target, &owner, crate::claims::now())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(serde_json::json!({ "refreshed": ok, "repo": repo, "target": target }).to_string())
+    }
+
+    #[tool(description = "Release a claim you own, freeing the target for other agents. Returns released=false if it wasn't yours.")]
+    fn claim_release(
+        &self,
+        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
+    ) -> Result<String, ErrorData> {
+        let (conn, repo) = Self::claim_ctx(&target, repo)?;
+        let owner = crate::claims::owner_id();
+        let ok = crate::claims::release(&conn, &repo, &target, &owner)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(serde_json::json!({ "released": ok, "repo": repo, "target": target }).to_string())
+    }
+
+    #[tool(description = "Mark a claim you own as done — keeps the audit row (unlike release, which deletes it) while freeing the target for re-acquisition. Returns done=false if it wasn't yours.")]
+    fn claim_done(
+        &self,
+        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
+    ) -> Result<String, ErrorData> {
+        let (conn, repo) = Self::claim_ctx(&target, repo)?;
+        let owner = crate::claims::owner_id();
+        let ok = crate::claims::done(&conn, &repo, &target, &owner, crate::claims::now())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(serde_json::json!({ "done": ok, "repo": repo, "target": target }).to_string())
+    }
+
+    #[tool(description = "List work claims. Defaults to live claims for the current repo; set all=true to include stale/done, all_repos=true to span every repo.")]
+    fn claim_list(
+        &self,
+        Parameters(ClaimListRequest { repo, all, all_repos }): Parameters<ClaimListRequest>,
+    ) -> Result<String, ErrorData> {
+        let conn = Self::claim_db()?;
+        let scope = if all_repos {
+            None
+        } else {
+            Some(crate::claims::resolve_repo(repo).ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "could not determine repo — run in a git repo or pass repo=owner/name (or all_repos=true)",
+                    None,
+                )
+            })?)
+        };
+        let claims = crate::claims::list(&conn, scope.as_deref(), all, crate::claims::now(), crate::claims::ttl_secs())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(serde_json::to_string_pretty(&claims).unwrap_or_default())
+    }
+
+    /// Opens the ledger db, mapping errors to MCP internal_error.
+    fn claim_db() -> Result<rusqlite::Connection, ErrorData> {
+        crate::db::open().map_err(|e| ErrorData::internal_error(format!("cannot open ledger: {e}"), None))
+    }
+
+    /// Shared prelude for the per-target claim tools: validate target, open the
+    /// ledger, resolve the repo key.
+    fn claim_ctx(target: &str, repo: Option<String>) -> Result<(rusqlite::Connection, String), ErrorData> {
+        if target.trim().is_empty() {
+            return Err(ErrorData::invalid_params("target is required", None));
+        }
+        let conn = Self::claim_db()?;
+        let repo = crate::claims::resolve_repo(repo).ok_or_else(|| {
+            ErrorData::invalid_params(
+                "could not determine repo — run in a git repo or pass repo=owner/name",
+                None,
+            )
+        })?;
+        Ok((conn, repo))
     }
 
     fn gateway_db_path() -> std::path::PathBuf {
