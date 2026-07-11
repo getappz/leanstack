@@ -190,17 +190,80 @@ pub struct AgentflareMcp {
     /// AGENTFLARE_AGENT, baked into the MCP entry by `init --agent <name>`.
     /// Defaults artifact_publish's sender and the handoff prompt's "me".
     agent: Option<String>,
-    /// Store + HTTP server for `artifact_publish`, started lazily on first
-    /// use. Living in the same process as the publisher is what makes the
-    /// store's in-memory SSE broadcast (live page reload) actually fire.
+    /// Store + serving backend for `artifact_publish`, resolved lazily on
+    /// first use. The default store is served on a shared fixed port that
+    /// outlives this process when flared (or an earlier session) owns it;
+    /// cross-process live reload works because the SSE handler polls the
+    /// disk store.
     artifacts: std::sync::Mutex<
         Option<(
             std::sync::Arc<agentflare_artifacts::ArtifactStore>,
-            agentflare_artifacts::ArtifactServer,
+            ArtifactBackend,
         )>,
     >,
     /// Tests inject a temp dir here so they never touch ~/.agentflare/artifacts.
+    /// An overridden store is never shared: it always gets its own
+    /// OS-assigned port, since the fixed-port server serves the default dir.
     artifacts_dir_override: Option<std::path::PathBuf>,
+}
+
+/// flared's default HTTP port; its artifact routes live under /artifacts.
+const FLARED_DEFAULT_PORT: u16 = 35273;
+const FLARED_ARTIFACTS_PATH: &str = "/artifacts/";
+
+/// flared's HTTP port: honor a `port` override in its config.toml when
+/// readable (a `--port` CLI override is invisible here and lands on the
+/// fixed-port fallback chain); default otherwise.
+fn flared_port() -> u16 {
+    dirs::config_dir()
+        .map(|dir| dir.join("flared").join("config.toml"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| parse_flared_port(&text))
+        .unwrap_or(FLARED_DEFAULT_PORT)
+}
+
+/// Extract the top-level `port` key from flared's config.toml text — a
+/// minimal scan that avoids a toml dependency for one key. Absent or
+/// malformed values -> None.
+fn parse_flared_port(text: &str) -> Option<u16> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            // TOML top-level keys end at the first table header
+            return None;
+        }
+        if let Some(rest) = line.strip_prefix("port")
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+        {
+            return value
+                .trim()
+                .split(|c: char| c == '#' || c.is_whitespace())
+                .next()
+                .and_then(|v| v.parse().ok());
+        }
+    }
+    None
+}
+
+/// How artifact pages reach the browser for this process.
+enum ArtifactBackend {
+    /// This process owns the listener.
+    Owned(agentflare_artifacts::ArtifactServer),
+    /// Another process serves the shared store: flared under /artifacts on
+    /// its fixed port, or an earlier session's root-mounted server.
+    External { port: u16, path: &'static str },
+}
+
+impl ArtifactBackend {
+    /// Base URL artifact links hang off (no trailing slash).
+    fn base_url(&self) -> String {
+        match self {
+            ArtifactBackend::Owned(server) => server.base_url(),
+            ArtifactBackend::External { port, path } => {
+                format!("http://127.0.0.1:{port}{}", path.trim_end_matches('/'))
+            }
+        }
+    }
 }
 
 #[tool_router]
@@ -319,29 +382,80 @@ impl AgentflareMcp {
         }
     }
 
-    /// Lock the artifact store + server pair, lazily starting the HTTP
-    /// server (auto-assigned port) on first use. Returns a cloned store
-    /// handle and the bound port so callers don't hold the lock while
-    /// doing I/O.
+    /// Lock the artifact store + backend pair, resolving the backend on
+    /// first use: reuse an already-running artifact server (flared's
+    /// /artifacts routes, or another session), else bind the fixed port
+    /// ourselves, else fall back to an OS-assigned port. Returns a cloned
+    /// store handle and the base URL artifact links hang off, so callers
+    /// don't hold the lock while doing I/O.
     fn ensure_artifact_server(
         &self,
-    ) -> Result<(std::sync::Arc<agentflare_artifacts::ArtifactStore>, u16), ErrorData> {
+    ) -> Result<(std::sync::Arc<agentflare_artifacts::ArtifactStore>, String), ErrorData> {
         let mut guard = self
             .artifacts
             .lock()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        if guard.is_none() {
-            let dir = self
-                .artifacts_dir_override
-                .clone()
-                .unwrap_or_else(|| crate::paths::home().join(".agentflare").join("artifacts"));
-            let store = std::sync::Arc::new(agentflare_artifacts::ArtifactStore::new(dir));
-            let server = agentflare_artifacts::ArtifactServer::start(store.clone(), 0)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            *guard = Some((store, server));
+        // An external server can stop at any time (flared restarted, the
+        // owning session exited): re-probe before handing out its URL and
+        // resolve from scratch when it is gone.
+        if let Some((_, ArtifactBackend::External { port, path })) = guard.as_ref()
+            && !agentflare_artifacts::probe_path(*port, path)
+        {
+            *guard = None;
         }
-        let (store, server) = guard.as_ref().expect("just initialized above");
-        Ok((store.clone(), server.port()))
+        if guard.is_none() {
+            let (store, backend) = match self.artifacts_dir_override.clone() {
+                // Overridden stores (tests) stay private: the shared fixed
+                // port serves the default store, not this one.
+                Some(dir) => {
+                    let store =
+                        std::sync::Arc::new(agentflare_artifacts::ArtifactStore::new(dir));
+                    let server = agentflare_artifacts::ArtifactServer::start(store.clone(), 0)
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                    (store, ArtifactBackend::Owned(server))
+                }
+                None => {
+                    let dir = crate::paths::home().join(".agentflare").join("artifacts");
+                    let store =
+                        std::sync::Arc::new(agentflare_artifacts::ArtifactStore::new(dir));
+                    let backend = Self::shared_backend(&store)?;
+                    (store, backend)
+                }
+            };
+            *guard = Some((store, backend));
+        }
+        let (store, backend) = guard.as_ref().expect("just initialized above");
+        Ok((store.clone(), backend.base_url()))
+    }
+
+    /// Resolve serving for the default (shared) store: prefer flared's
+    /// always-on /artifacts routes, then another session's fixed-port
+    /// server, then bind the fixed port ourselves, else an OS port.
+    fn shared_backend(
+        store: &std::sync::Arc<agentflare_artifacts::ArtifactStore>,
+    ) -> Result<ArtifactBackend, ErrorData> {
+        let flared = flared_port();
+        if agentflare_artifacts::probe_path(flared, FLARED_ARTIFACTS_PATH) {
+            return Ok(ArtifactBackend::External {
+                port: flared,
+                path: FLARED_ARTIFACTS_PATH,
+            });
+        }
+        let port = agentflare_artifacts::DEFAULT_PORT;
+        if agentflare_artifacts::probe(port) {
+            return Ok(ArtifactBackend::External { port, path: "/" });
+        }
+        match agentflare_artifacts::ArtifactServer::start(store.clone(), port) {
+            Ok(server) => Ok(ArtifactBackend::Owned(server)),
+            // Lost the bind race to another session starting up, or a
+            // foreign app owns the port.
+            Err(_) if agentflare_artifacts::probe(port) => {
+                Ok(ArtifactBackend::External { port, path: "/" })
+            }
+            Err(_) => agentflare_artifacts::ArtifactServer::start(store.clone(), 0)
+                .map(ArtifactBackend::Owned)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None)),
+        }
     }
 
     #[tool(description = "Publish a live-shareable artifact page (HTML, markdown, mermaid, text, ...) and return its local URL. Pass update_id to update in place — same URL, open viewers live-reload; every publish snapshots a version. Pass base_version to fail on concurrent edits instead of clobbering.")]
@@ -369,7 +483,7 @@ impl AgentflareMcp {
         if content.is_empty() {
             return Err(ErrorData::invalid_params("content is required", None));
         }
-        let (store, port) = self.ensure_artifact_server()?;
+        let (store, base) = self.ensure_artifact_server()?;
         let req = agentflare_artifacts::PublishRequest {
             name,
             artifact_type: agentflare_artifacts::ArtifactType::from(
@@ -392,8 +506,8 @@ impl AgentflareMcp {
         let result = serde_json::json!({
             "id": resp.id,
             "version": resp.version,
-            "url": format!("http://127.0.0.1:{port}/{}", resp.id),
-            "index": format!("http://127.0.0.1:{port}/"),
+            "url": format!("{base}/{}", resp.id),
+            "index": format!("{base}/"),
         });
         Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
     }
@@ -433,7 +547,7 @@ impl AgentflareMcp {
         &self,
         Parameters(ArtifactListRequest { session_id, recipient, thread_id }): Parameters<ArtifactListRequest>,
     ) -> Result<String, ErrorData> {
-        let (store, port) = self.ensure_artifact_server()?;
+        let (store, base) = self.ensure_artifact_server()?;
         let summaries = store
             .list(session_id.as_deref())
             .map_err(Self::artifact_error)?;
@@ -448,7 +562,7 @@ impl AgentflareMcp {
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert(
                         "url".into(),
-                        serde_json::json!(format!("http://127.0.0.1:{port}/{}", s.id)),
+                        serde_json::json!(format!("{base}/{}", s.id)),
                     );
                 }
                 v
@@ -465,7 +579,7 @@ impl AgentflareMcp {
         if id.trim().is_empty() {
             return Err(ErrorData::invalid_params("id is required", None));
         }
-        let (store, _port) = self.ensure_artifact_server()?;
+        let (store, _base) = self.ensure_artifact_server()?;
         let artifact = match version {
             Some(n) => store.get_version(&id, n),
             None => store.get(&id),
@@ -482,7 +596,7 @@ impl AgentflareMcp {
         if id.trim().is_empty() {
             return Err(ErrorData::invalid_params("id is required", None));
         }
-        let (store, _port) = self.ensure_artifact_server()?;
+        let (store, _base) = self.ensure_artifact_server()?;
         let to = match to_version {
             Some(v) => v,
             None => store.get(&id).map_err(Self::artifact_error)?.version,
@@ -498,7 +612,7 @@ impl AgentflareMcp {
         if query.trim().is_empty() {
             return Err(ErrorData::invalid_params("query is required", None));
         }
-        let (store, port) = self.ensure_artifact_server()?;
+        let (store, base) = self.ensure_artifact_server()?;
         let needle = query.to_lowercase();
         let mut hits = Vec::new();
         for summary in store.list(session_id.as_deref()).map_err(Self::artifact_error)? {
@@ -527,7 +641,7 @@ impl AgentflareMcp {
             if let Some(obj) = v.as_object_mut() {
                 obj.insert(
                     "url".into(),
-                    serde_json::json!(format!("http://127.0.0.1:{port}/{}", summary.id)),
+                    serde_json::json!(format!("{base}/{}", summary.id)),
                 );
                 if let Some(snippet) = snippet {
                     obj.insert("snippet".into(), serde_json::json!(snippet));
@@ -546,7 +660,7 @@ impl AgentflareMcp {
         if id.trim().is_empty() {
             return Err(ErrorData::invalid_params("id is required", None));
         }
-        let (store, _port) = self.ensure_artifact_server()?;
+        let (store, _base) = self.ensure_artifact_server()?;
         let deleted = store.delete(&id).map_err(Self::artifact_error)?;
         Ok(serde_json::json!({ "deleted": deleted }).to_string())
     }
@@ -881,6 +995,18 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_flared_port_reads_top_level_key_only() {
+        assert_eq!(parse_flared_port("port = 4444\n"), Some(4444));
+        assert_eq!(parse_flared_port("# comment\nport=9999 # inline\n"), Some(9999));
+        // tables end the top-level scan; a port inside one is not flared's
+        assert_eq!(parse_flared_port("[[registries]]\nport = 1\n"), None);
+        // prefix collisions and malformed values are not overrides
+        assert_eq!(parse_flared_port("portable = 1\nlight_interval_secs = 60\n"), None);
+        assert_eq!(parse_flared_port("port = not-a-number\n"), None);
+        assert_eq!(parse_flared_port(""), None);
+    }
 
     #[test]
     fn get_info_reports_agentflare_identity() {
