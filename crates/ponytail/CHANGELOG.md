@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/getappz/agentflare/compare/ponytail-v0.1.0...ponytail-v0.1.1) - 2026-07-12
+
+### Fixed
+
+- *(ponytail)* serialize state tests that race on shared global files
+
+### Other
+
+- add clippy, fmt, and cargo-deny gates behind a CI Green aggregator ([#158](https://github.com/getappz/agentflare/pull/158))
+
 ## [0.1.0](https://github.com/getappz/agentflare/releases/tag/ponytail-v0.1.0) - 2026-07-08
 
 ### Added
