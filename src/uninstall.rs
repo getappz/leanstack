@@ -102,13 +102,17 @@ fn clean_opencode(dry_run: bool) {
     let config_path = home().join(".config").join("opencode").join("opencode.jsonc");
     if config_path.exists() {
         let content = fs::read_to_string(&config_path).unwrap_or_default();
-        if content.contains("agentflare") || content.contains("exa.md") {
+        if content.contains("agentflare")
+            || content.contains("exa.md")
+            || content.contains("git.md")
+            || content.contains("lean-ctx.md") {
             if let Ok(mut config) = serde_json::from_str::<Value>(&content) {
                 if let Some(instructions) = config.get_mut("instructions").and_then(|v| v.as_array_mut()) {
                     instructions.retain(|v| {
                         let s = v.as_str().unwrap_or("");
                         !s.contains("exa.md")
                             && !s.contains("git.md")
+                            && !s.contains("lean-ctx.md")
                     });
                     if instructions.is_empty() {
                         config.as_object_mut().unwrap().remove("instructions");
