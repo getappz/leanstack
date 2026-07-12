@@ -620,7 +620,7 @@ The MCP server runs over stdio (JSON-RPC 2.0) via the `rmcp` crate (`modelcontex
 **Server info:**
 - Name: `agentflare`
 - Version: `{CARGO_PKG_VERSION}` (same as CLI version)
-- Capabilities: `tools`, `resources`
+- Capabilities: `tools`, `resources`, `prompts`
 
 ### Tools
 
