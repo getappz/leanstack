@@ -17,17 +17,6 @@ unfamiliar code with its composed-context command before exploring.
 npm install -g lean-ctx-bin && lean-ctx onboard
 ```
 
-## Cross-session memory — engram
-
-Use [engram](https://github.com/Gentleman-Programming/engram) MCP tools for
-persistent cross-session memory: recall relevant context at session start,
-store durable decisions/facts as you learn them, create a handoff before a
-long session ends.
-
-```bash
-go install github.com/Gentleman-Programming/engram/cmd/engram@latest
-engram mcp   # or whatever your tool's MCP config points at
-```
 
 ## Web search
 

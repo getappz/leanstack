@@ -1,7 +1,7 @@
 // Cross-platform detect-or-install for mise (github.com/jdx/mise), a dev-tool
 // version manager. agentflare uses it as a uniform, host-independent way to
-// provide the external toolchains its integrations need — Go for the engram
-// binary, Node/npm for lean-ctx — on machines that don't already have them.
+// provide the external toolchains its integrations need — Node/npm for lean-ctx
+// — on machines that don't already have them.
 //
 // This module only handles mise itself (detection + bootstrap). Installing the
 // individual tools through mise happens at each tool's install site.
@@ -131,9 +131,8 @@ pub fn use_global(mise: &str, spec: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Install a tool globally from a backend spec (e.g.
-/// `github:Gentleman-Programming/engram`) and return the absolute path mise
-/// resolves `bin` to. mise installs into its own data dir, which is NOT on
+/// Install a tool globally from a backend spec and return the absolute path
+/// mise resolves `bin` to. mise installs into its own data dir, which is NOT on
 /// PATH — so callers use this absolute path directly (as an MCP command, etc.)
 /// rather than expecting the bare name to resolve. That's the whole point of
 /// routing through mise: a PATH-independent, cross-platform install path.

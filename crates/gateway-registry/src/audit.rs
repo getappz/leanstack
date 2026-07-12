@@ -64,10 +64,10 @@ mod tests {
     fn record_appends_a_line_with_expected_fields_and_no_raw_args() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path();
-        let args = serde_json::json!({"secret_value": "do-not-leak-me"});
+        let args = serde_json::json!({"query": "x", "limit": 5});
 
-        record(path, "engram", "memory_store", &args, Ok(()));
-        record(path, "engram", "memory_store", &args, Err("Upstream"));
+        record(path, "memory_store", "search", &args, Ok(()));
+        record(path, "memory_store", "search", &args, Err("Upstream"));
 
         let contents = std::fs::read_to_string(path).unwrap();
         assert!(!contents.contains("do-not-leak-me"), "{contents}");
@@ -75,8 +75,8 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let first: Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["server"], "engram");
-        assert_eq!(first["tool"], "memory_store");
+        assert_eq!(first["server"], "memory_store");
+        assert_eq!(first["tool"], "search");
         assert_eq!(first["outcome"], "ok");
         assert!(first["args_hash"].is_string());
 

@@ -723,7 +723,7 @@ curl -fsSL https://raw.githubusercontent.com/getappz/agentflare/master/install.s
 2. Surgically removes agentflare blocks from `~/.claude/settings.json`, `.cursor/hooks.json`, `opencode.jsonc`
 3. Removes rule files authored by `init` (content-checked, not path-only)
 4. Removes `~/.agentflare/` state directory
-5. Does **not** remove independent tool installations (Ponytail, Caveman, engram)
+5. Does **not** remove independent tool installations (Ponytail, Caveman)
 
 ### Recovery Points
 
@@ -733,7 +733,7 @@ curl -fsSL https://raw.githubusercontent.com/getappz/agentflare/master/install.s
 | `~/.agentflare/runtime-state.json` | Session tracking data | Yes (auto-recreated) |
 | `~/.agentflare/vault/` | Encrypted auth profiles (SQLite) | **No** — backup first |
 | `~/.agentflare/` (entire dir) | All state + vault | Yes (after vault backup) |
-| `~/.claude/rules/{exa,git,lean-ctx,engram}.md` | Agent rules | Yes (agentflare-authored) |
+| `~/.claude/rules/{exa,git,lean-ctx}.md` | Agent rules | Yes (agentflare-authored) |
 | `~/.claude/settings.json` (hooks section) | Hook configuration | Remove entries containing `"agentflare"` |
 | `.cursor/hooks.json` | Cursor hook config | Yes (if agentflare-authored) |
 | `~/.config/opencode/opencode.jsonc` (instructions) | OpenCode rule paths | Remove agentflare rule entries |

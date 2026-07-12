@@ -51,7 +51,7 @@ fn remove_dir(path: &PathBuf, dry_run: bool) {
 
 fn clean_claude_code(dry_run: bool) {
     let rules = home().join(".claude").join("rules");
-    for f in &["exa.md", "git.md", "lean-ctx.md", "engram.md"] {
+    for f in &["exa.md", "git.md", "lean-ctx.md"] {
         remove_file(&rules.join(f), dry_run);
     }
 
@@ -95,22 +95,20 @@ fn clean_claude_code(dry_run: bool) {
 
 fn clean_opencode(dry_run: bool) {
     let rules_dir = home().join(".config").join("opencode").join("rules");
-    for f in &["exa.md", "git.md", "lean-ctx.md", "engram.md"] {
+    for f in &["exa.md", "git.md", "lean-ctx.md"] {
         remove_file(&rules_dir.join(f), dry_run);
     }
 
     let config_path = home().join(".config").join("opencode").join("opencode.jsonc");
     if config_path.exists() {
         let content = fs::read_to_string(&config_path).unwrap_or_default();
-        if content.contains("agentflare") || content.contains("exa.md") || content.contains("engram.md") {
+        if content.contains("agentflare") || content.contains("exa.md") {
             if let Ok(mut config) = serde_json::from_str::<Value>(&content) {
                 if let Some(instructions) = config.get_mut("instructions").and_then(|v| v.as_array_mut()) {
                     instructions.retain(|v| {
                         let s = v.as_str().unwrap_or("");
                         !s.contains("exa.md")
                             && !s.contains("git.md")
-                            && !s.contains("lean-ctx.md")
-                            && !s.contains("engram.md")
                     });
                     if instructions.is_empty() {
                         config.as_object_mut().unwrap().remove("instructions");
@@ -153,9 +151,7 @@ fn clean_mcp_configs(dry_run: bool) {
     }
 
     let cwd = std::env::current_dir().unwrap_or_default();
-    let engram_mcp = cwd.join(".continue").join("mcpServers").join("engram.json");
     let agentflare_mcp = cwd.join(".continue").join("mcpServers").join("agentflare.json");
-    remove_file(&engram_mcp, dry_run);
     remove_file(&agentflare_mcp, dry_run);
 }
 
@@ -163,7 +159,7 @@ fn clean_mcp_entry(path: &PathBuf, dry_run: bool) {
     if !path.exists() { return; }
     let content = fs::read_to_string(path).unwrap_or_default();
     // "flare" also matches "agentflare", covering the legacy entry name.
-    if !content.contains("engram") && !content.contains("lean-ctx") && !content.contains("flare") {
+    if !content.contains("lean-ctx") && !content.contains("flare") {
         return;
     }
     if let Ok(mut config) = serde_json::from_str::<Value>(&content) {
@@ -171,7 +167,6 @@ fn clean_mcp_entry(path: &PathBuf, dry_run: bool) {
                   else if config.get("mcp").is_some() { "mcp" }
                   else { return };
         if let Some(mcp) = config.get_mut(key).and_then(|v| v.as_object_mut()) {
-            mcp.remove("engram");
             mcp.remove("lean-ctx");
             mcp.remove("flare");
             mcp.remove("agentflare");

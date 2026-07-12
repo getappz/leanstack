@@ -154,8 +154,7 @@ fn prompt_yes(message: &str, agent: &str, yes: bool) -> bool {
 
 /// Rule files under `rule_targets` are only ever written when absent (see
 /// components.rs's "rules" component) — safe by default, but it means a rule
-/// whose wording we later fix (e.g. the engram gateway-discovery bug fixed
-/// 2026-07-09) stays stale forever on machines that already have the old
+/// whose wording we later fix stays stale forever on machines that already have the old
 /// file. Offer to refresh it, same consent pattern as ponytail migration.
 fn confirm_rule_refresh(agent: &str, yes: bool) {
     for (path, current) in rule_targets(agent) {
@@ -314,7 +313,7 @@ fn wire_cursor() {
 fn wire_opencode() {
     let path = home().join(".config").join("opencode").join("opencode.jsonc");
     let rules_dir = home().join(".config").join("opencode").join("rules");
-    let rule_files: &[&str] = &["exa.md", "git.md", "lean-ctx.md", "engram.md"];
+    let rule_files: &[&str] = &["exa.md", "git.md", "lean-ctx.md"];
 
     let mut config: Value = fs::read_to_string(&path)
         .ok()
@@ -522,70 +521,12 @@ mod tests {
     use crate::paths::test_support::{with_temp_cwd, with_temp_home};
 
     #[test]
-    fn is_stale_rule_true_for_known_superseded_content() {
-        with_temp_home(|| {
-            let path = home().join(".claude").join("rules").join("engram.md");
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, format!("{}\n", rule_text::ENGRAM_SUPERSEDED[0])).unwrap();
-            assert!(is_stale_rule(&path, rule_text::ENGRAM));
-        });
-    }
-
-    #[test]
-    fn is_stale_rule_false_when_already_current() {
-        with_temp_home(|| {
-            let path = home().join(".claude").join("rules").join("engram.md");
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, format!("{}\n", rule_text::ENGRAM)).unwrap();
-            assert!(!is_stale_rule(&path, rule_text::ENGRAM));
-        });
-    }
-
-    #[test]
-    fn is_stale_rule_false_for_user_edited_content() {
-        with_temp_home(|| {
-            let path = home().join(".claude").join("rules").join("engram.md");
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, "my own custom engram notes\n").unwrap();
-            assert!(!is_stale_rule(&path, rule_text::ENGRAM));
-        });
-    }
-
-    #[test]
     fn is_stale_rule_false_for_rule_with_no_superseded_versions() {
         with_temp_home(|| {
             let path = home().join(".claude").join("rules").join("git.md");
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, "some old git rule text\n").unwrap();
             assert!(!is_stale_rule(&path, rule_text::GIT));
-        });
-    }
-
-    #[test]
-    fn confirm_rule_refresh_updates_stale_file_when_yes() {
-        with_temp_home(|| {
-            let path = home().join(".claude").join("rules").join("engram.md");
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, format!("{}\n", rule_text::ENGRAM_SUPERSEDED[0])).unwrap();
-
-            confirm_rule_refresh("claude-code", true);
-
-            let content = fs::read_to_string(&path).unwrap();
-            assert_eq!(content.trim_end(), rule_text::ENGRAM);
-        });
-    }
-
-    #[test]
-    fn confirm_rule_refresh_leaves_user_edited_file_alone() {
-        with_temp_home(|| {
-            let path = home().join(".claude").join("rules").join("engram.md");
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, "my own custom engram notes\n").unwrap();
-
-            confirm_rule_refresh("claude-code", true);
-
-            let content = fs::read_to_string(&path).unwrap();
-            assert_eq!(content.trim_end(), "my own custom engram notes");
         });
     }
 
@@ -727,7 +668,7 @@ mod tests {
             let config_path = home().join(".config").join("opencode").join("opencode.jsonc");
             let rules_dir = home().join(".config").join("opencode").join("rules");
             fs::create_dir_all(&rules_dir).unwrap();
-            for &f in &["exa.md", "git.md", "lean-ctx.md", "engram.md"] {
+            for &f in &["exa.md", "git.md", "lean-ctx.md"] {
                 fs::write(rules_dir.join(f), format!("# {f}\n")).unwrap();
             }
 
