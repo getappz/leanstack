@@ -462,7 +462,7 @@ pub struct AgentflareMcp {
     /// Tests inject a temp path here so they never touch the shared backend.db.
     backend_db_override: Option<std::path::PathBuf>,
     /// Tests inject a temp file path here so project-link resolution never
-    /// reads/writes this actual repo's `.agentflare-project/project.json`.
+    /// reads/writes this actual repo's `.agentflare/project.json`.
     backend_project_link_override: Option<std::path::PathBuf>,
     /// Tests inject a fake repo identity here — real resolution shells out
     /// to `git`/reads cwd, both process-global and unsafe to fake by
@@ -536,13 +536,13 @@ impl ArtifactBackend {
 //
 // Workspace is fully hidden: exactly one per system, auto-created lazily on
 // first use. Project is Vercel-style auto-linked:
-// `.agentflare-project/project.json` at the repo root maps this checkout to
+// `.agentflare/project.json` at the repo root maps this checkout to
 // a project, created on first use and re-linked (never duplicated — see
 // `resolve_project`) if the link file goes missing. Neither workspace_id nor
 // project_id is ever an MCP-exposed parameter; every backend_* tool resolves
 // both from cwd/git context.
 
-/// The `.agentflare-project/project.json` link file's shape.
+/// The `.agentflare/project.json` link file's shape.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ProjectLink {
     workspace_id: String,
@@ -1031,20 +1031,22 @@ impl AgentflareMcp {
     }
 
     /// Directory the per-repo project link (`project.json`) lives under.
-    /// Deliberately NOT `.agentflare` — that name is already this codebase's
-    /// global per-user data dir (`crate::paths::home().join(".agentflare")`,
-    /// holding `agentflare.db`, artifacts, etc.), which exists on every
-    /// machine. Reusing it here would make a directory walk-up eventually
-    /// find `~/.agentflare` as an "existing link" from almost any non-git
-    /// location, collapsing every non-git project into one shared project
-    /// rooted at the user's home directory.
+    /// Same name as this codebase's global per-user data dir
+    /// (`crate::paths::home().join(".agentflare")`, holding `agentflare.db`,
+    /// artifacts, etc.) — that's fine ONLY because `find_root_from`'s
+    /// walk-up is hard-bounded to never reach the user's home directory
+    /// (see below); the global dir only ever exists at exactly that one
+    /// path, so excluding that one path from the walk is sufficient to
+    /// keep the two `.agentflare` folders — the global one at `~/` and any
+    /// number of per-repo ones elsewhere — from ever being confused for
+    /// each other.
     ///
     /// Once a project is linked here, every subdirectory below it must keep
     /// resolving to that same project — checked as its own walk-up pass,
     /// ahead of `ROOT_MARKERS`, so a nested subdirectory's own marker (e.g.
     /// a monorepo package's own `package.json`) never shadows an
     /// already-linked ancestor.
-    const LINK_MARKER: &'static str = ".agentflare-project";
+    const LINK_MARKER: &'static str = ".agentflare";
 
     /// Fallback markers for a non-git project with no existing link yet —
     /// mirrors what `git rev-parse --show-toplevel` already gives git repos
@@ -1073,20 +1075,23 @@ impl AgentflareMcp {
             return std::path::PathBuf::from(root);
         }
         let cwd = std::env::current_dir().unwrap_or_default();
-        Self::find_root_from(&cwd)
+        Self::find_root_from(&cwd, &crate::paths::home())
     }
 
     /// Pure walk-up so the non-git fallback path is unit-testable without
-    /// mutating this process's real cwd (unsafe to do from parallel test
-    /// threads — cwd is process-global). Never walks as far as (or past)
-    /// the user's home directory — a defense-in-depth boundary independent
-    /// of `LINK_MARKER`'s name: whatever markers this ever checks for,
-    /// none of them should be able to make an arbitrary non-git directory
-    /// resolve all the way up to "the user's entire home directory."
-    fn find_root_from(start: &std::path::Path) -> std::path::PathBuf {
-        let home = crate::paths::home();
+    /// touching process-global state: neither this process's real cwd nor
+    /// `crate::paths::home()` (which itself reads the `AGENTFLARE_HOME_OVERRIDE`
+    /// env var other tests mutate concurrently under their own lock — calling
+    /// it from here directly made this function's result depend on unrelated
+    /// tests' timing). Both are passed in by the caller instead. Never walks
+    /// as far as (or past) `home` — this is what keeps `LINK_MARKER`
+    /// (`.agentflare`, same name as the global per-user data dir at
+    /// `~/.agentflare`) safe to reuse: the walk simply never gets far enough
+    /// up to see that directory at all, regardless of what marker name it's
+    /// looking for.
+    fn find_root_from(start: &std::path::Path, home: &std::path::Path) -> std::path::PathBuf {
         let mut dir = start;
-        while dir != home.as_path() {
+        while dir != home {
             if dir.join(Self::LINK_MARKER).exists() {
                 return dir.to_path_buf();
             }
@@ -1096,7 +1101,7 @@ impl AgentflareMcp {
             }
         }
         let mut dir = start;
-        while dir != home.as_path() {
+        while dir != home {
             if Self::ROOT_MARKERS.iter().any(|m| dir.join(m).exists()) {
                 return dir.to_path_buf();
             }
@@ -1223,7 +1228,7 @@ impl AgentflareMcp {
         format!("path:{}", canonical.to_string_lossy())
     }
 
-    /// Vercel-style auto-link: reads `.agentflare-project/project.json` at
+    /// Vercel-style auto-link: reads `.agentflare/project.json` at
     /// the repo root if present; otherwise derives a project from git/cwd
     /// context and creates or reconnects to it. Reconnects rather than
     /// duplicates when
@@ -3458,7 +3463,7 @@ mod tests {
         assert_eq!(id1, id2);
     }
 
-    /// If `.agentflare-project/project.json` is deleted (wiped worktree, `rm -rf`,
+    /// If `.agentflare/project.json` is deleted (wiped worktree, `rm -rf`,
     /// etc.) while the project it pointed to still exists, resolving again
     /// must reconnect to that same project — not silently fork a duplicate,
     /// which would strand the original project's items.
@@ -3525,35 +3530,65 @@ mod tests {
     /// Non-git projects need the same "root is stable no matter which
     /// subdirectory you're in" guarantee git repos get for free from `git
     /// rev-parse --show-toplevel` — otherwise the same project would split
-    /// across multiple `.agentflare-project/project.json` files depending on which
+    /// across multiple `.agentflare/project.json` files depending on which
     /// subdirectory a tool happened to be called from.
     #[test]
     fn find_root_from_walks_up_to_the_nearest_marker() {
+        // Bounding "home" at the tempdir's own parent contains the walk
+        // entirely within this test's constructed tree — passing some
+        // unrelated path here would NOT do that: the walk follows the real
+        // filesystem's `.parent()` chain regardless, so it would keep
+        // climbing past `root` into real ancestor directories (which may
+        // have their own real markers, e.g. this machine's actual
+        // `~/.agentflare`) until it happened to reach that unrelated path,
+        // which — not being a real ancestor — it never would, walking all
+        // the way to the filesystem root instead.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        let home = root.parent().unwrap();
         std::fs::write(root.join("package.json"), "{}").unwrap();
         let deep = root.join("src").join("nested").join("deep");
         std::fs::create_dir_all(&deep).unwrap();
 
-        assert_eq!(AgentflareMcp::find_root_from(&deep), root);
-        assert_eq!(AgentflareMcp::find_root_from(root), root);
+        assert_eq!(AgentflareMcp::find_root_from(&deep, home), root);
+        assert_eq!(AgentflareMcp::find_root_from(root, home), root);
     }
 
     #[test]
     fn find_root_from_prefers_an_existing_agentflare_link_over_other_markers() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        let home = root.parent().unwrap();
         // A nested directory with its own marker (e.g. a sub-package) must
         // not shadow an ancestor's existing project link — the
-        // .agentflare-project pass runs before the ROOT_MARKERS pass for
+        // .agentflare pass runs before the ROOT_MARKERS pass for
         // exactly this reason.
-        std::fs::create_dir_all(root.join(".agentflare-project")).unwrap();
+        std::fs::create_dir_all(root.join(".agentflare")).unwrap();
         let sub = root.join("packages").join("sub");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("package.json"), "{}").unwrap();
 
-        assert_eq!(AgentflareMcp::find_root_from(&sub), root);
-        assert_eq!(AgentflareMcp::find_root_from(root), root);
+        assert_eq!(AgentflareMcp::find_root_from(&sub, home), root);
+        assert_eq!(AgentflareMcp::find_root_from(root, home), root);
+    }
+
+    /// The boundary itself: a directory that IS `home` must never be
+    /// treated as a project root, even if it happens to contain a marker —
+    /// this is what keeps the global `~/.agentflare` data dir from ever
+    /// being mistaken for a per-repo link.
+    #[test]
+    fn find_root_from_never_resolves_to_home_itself() {
+        let home = tempfile::tempdir().unwrap();
+        // Stands in for the real global data dir at ~/.agentflare.
+        std::fs::create_dir_all(home.path().join(".agentflare")).unwrap();
+        let start = home.path().join("some_project");
+        std::fs::create_dir_all(&start).unwrap();
+
+        // `start` itself has no marker, and home — one level up — does. If
+        // the walk checked markers at `home`, this would return `home`. It
+        // must instead stop short of ever inspecting `home` and fall back
+        // to `start`.
+        assert_eq!(AgentflareMcp::find_root_from(&start, home.path()), start);
     }
 
     // No test for the "nothing found anywhere above" fallback: `find_root_from`
