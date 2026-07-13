@@ -153,3 +153,11 @@ CREATE TABLE IF NOT EXISTS webhook_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_logs_webhook ON webhook_logs(webhook_id);
 CREATE INDEX IF NOT EXISTS idx_webhook_logs_workspace ON webhook_logs(workspace_id);
+
+CREATE TABLE IF NOT EXISTS item_claims (
+  item_id      TEXT PRIMARY KEY REFERENCES items(id),
+  owner        TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);

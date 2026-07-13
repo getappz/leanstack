@@ -1,4 +1,5 @@
 pub mod asset;
+pub mod claim;
 pub mod db;
 pub mod error;
 pub mod events;

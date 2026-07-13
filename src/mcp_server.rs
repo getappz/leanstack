@@ -550,6 +550,16 @@ struct ProjectLink {
     identifier: String,
 }
 
+/// Default 4h — item claims are plausibly longer-running than
+/// `src/claims.rs`'s 30-min GitHub-issue-claim default, hence a separate env
+/// var rather than sharing `AGENTFLARE_CLAIM_TTL_SECS`.
+fn backend_claim_ttl_secs() -> i64 {
+    std::env::var("AGENTFLARE_BACKEND_CLAIM_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(14400) as i64
+}
+
 /// NotFound/Duplicate/InvalidTransition are caller-fixable → invalid_params;
 /// a raw database error is ours to fix → internal_error. Same split as
 /// `skill_load`'s NotFound/Ambiguous handling above.
@@ -645,6 +655,12 @@ struct BackendItemUpdateStateRequest {
 struct BackendItemDeleteRequest {
     #[schemars(description = "Item ID")]
     id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct BackendItemClaimRequest {
+    #[schemars(description = "Item ID")]
+    item_id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -2283,6 +2299,90 @@ impl AgentflareMcp {
         self.with_backend_db(|conn| {
             agentflare_backend::item::delete(conn, &id).map_err(map_backend_err)?;
             Ok(serde_json::json!({"deleted": true, "id": id}).to_string())
+        })?
+    }
+
+    #[tool(
+        description = "Claim a work item so other agents don't duplicate the work. Sets assignee + moves state to the project's Started state. Returns acquired, or held with the current owner if a live claim exists."
+    )]
+    fn backend_item_claim(
+        &self,
+        Parameters(BackendItemClaimRequest { item_id }): Parameters<BackendItemClaimRequest>,
+    ) -> Result<String, ErrorData> {
+        if item_id.trim().is_empty() {
+            return Err(ErrorData::invalid_params("item_id is required", None));
+        }
+        let owner = crate::claims::owner_id();
+        let now = crate::claims::now();
+        let ttl = backend_claim_ttl_secs();
+        self.with_backend_db(|conn| {
+            let outcome = agentflare_backend::item::claim(conn, &item_id, &owner, now, ttl)
+                .map_err(map_backend_err)?;
+            Ok(match outcome {
+                agentflare_backend::claim::Acquire::Acquired => {
+                    serde_json::json!({"status": "acquired", "item_id": item_id, "owner": owner})
+                }
+                agentflare_backend::claim::Acquire::Held { owner: holder, age_secs } => {
+                    serde_json::json!({"status": "held", "item_id": item_id, "owner": holder, "age_secs": age_secs})
+                }
+            }
+            .to_string())
+        })?
+    }
+
+    #[tool(
+        description = "Refresh the lease on a work item claim you own. Returns heartbeat=false if you don't hold a live claim."
+    )]
+    fn backend_item_heartbeat(
+        &self,
+        Parameters(BackendItemClaimRequest { item_id }): Parameters<BackendItemClaimRequest>,
+    ) -> Result<String, ErrorData> {
+        if item_id.trim().is_empty() {
+            return Err(ErrorData::invalid_params("item_id is required", None));
+        }
+        let owner = crate::claims::owner_id();
+        let now = crate::claims::now();
+        self.with_backend_db(|conn| {
+            let ok = agentflare_backend::claim::heartbeat(conn, &item_id, &owner, now)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            Ok(serde_json::json!({"heartbeat": ok, "item_id": item_id}).to_string())
+        })?
+    }
+
+    #[tool(
+        description = "Release a work item claim you own, without changing its state. Returns released=false if you don't hold a live claim."
+    )]
+    fn backend_item_release(
+        &self,
+        Parameters(BackendItemClaimRequest { item_id }): Parameters<BackendItemClaimRequest>,
+    ) -> Result<String, ErrorData> {
+        if item_id.trim().is_empty() {
+            return Err(ErrorData::invalid_params("item_id is required", None));
+        }
+        let owner = crate::claims::owner_id();
+        self.with_backend_db(|conn| {
+            let ok = agentflare_backend::claim::release(conn, &item_id, &owner)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            Ok(serde_json::json!({"released": ok, "item_id": item_id}).to_string())
+        })?
+    }
+
+    #[tool(
+        description = "Mark a claimed work item done: releases the claim and moves state to the project's Completed state. Returns done=false if you don't hold a live claim."
+    )]
+    fn backend_item_done(
+        &self,
+        Parameters(BackendItemClaimRequest { item_id }): Parameters<BackendItemClaimRequest>,
+    ) -> Result<String, ErrorData> {
+        if item_id.trim().is_empty() {
+            return Err(ErrorData::invalid_params("item_id is required", None));
+        }
+        let owner = crate::claims::owner_id();
+        let now = crate::claims::now();
+        self.with_backend_db(|conn| {
+            let done = agentflare_backend::item::claim_done(conn, &item_id, &owner, now)
+                .map_err(map_backend_err)?;
+            Ok(serde_json::json!({"done": done, "item_id": item_id}).to_string())
         })?
     }
 

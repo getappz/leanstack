@@ -127,6 +127,7 @@ dependencies = [
 name = "agentflare-backend"
 version = "0.1.0"
 dependencies = [
+ "agentflare-db-kit",
  "hex",
  "hmac",
  "rusqlite",

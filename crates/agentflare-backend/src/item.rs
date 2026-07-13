@@ -401,6 +401,56 @@ pub fn list_dependencies(conn: &Connection, item_id: &str) -> Result<Vec<String>
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
+/// Claims an item so other agents don't duplicate the work: on a fresh
+/// acquire, sets the assignee and moves state into the project's "started"
+/// group (which sets `started_at`, via `update_state`). A live claim held by
+/// someone else returns `Held` and leaves the item untouched. Acquisition,
+/// the state transition, and the assignee update are one transaction — a
+/// mid-sequence failure can't leave `item_claims` saying "claimed" while the
+/// item itself never reflects it.
+pub fn claim(
+    conn: &Connection,
+    item_id: &str,
+    owner: &str,
+    now: i64,
+    ttl_secs: i64,
+) -> Result<crate::claim::Acquire> {
+    let tx = conn.unchecked_transaction()?;
+    let outcome = crate::claim::acquire(&tx, item_id, owner, now, ttl_secs)?;
+    if outcome == crate::claim::Acquire::Acquired {
+        let item = get(&tx, item_id)?;
+        let started_state = crate::state::first_in_group(&tx, &item.project_id, "started")?;
+        update_state(&tx, item_id, &started_state.id)?;
+        update(
+            &tx,
+            item_id,
+            UpdateItem {
+                assignee_agent: Some(owner.to_string()),
+                ..Default::default()
+            },
+        )?;
+    }
+    tx.commit()?;
+    Ok(outcome)
+}
+
+/// Marks a claimed item done: releases the claim (re-claimable by anyone
+/// afterward) and moves state into the project's "completed" group. Always
+/// "completed", never "cancelled" — those are distinct outcomes. The done
+/// transition and the state update are one transaction, same reasoning as
+/// `claim()`.
+pub fn claim_done(conn: &Connection, item_id: &str, owner: &str, now: i64) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let done = crate::claim::done(&tx, item_id, owner, now)?;
+    if done {
+        let item = get(&tx, item_id)?;
+        let completed_state = crate::state::first_in_group(&tx, &item.project_id, "completed")?;
+        update_state(&tx, item_id, &completed_state.id)?;
+    }
+    tx.commit()?;
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -916,5 +966,100 @@ mod tests {
             update_state(&conn, &item.id, &other_project_state),
             Err(crate::error::Error::InvalidTransition(_))
         ));
+    }
+
+    const TTL: i64 = 14400;
+
+    fn make_item(conn: &Connection, pid: &str, sid: &str) -> Item {
+        create(
+            conn,
+            CreateItem {
+                project_id: pid.to_string(),
+                state_id: sid.to_string(),
+                name: "Test".into(),
+                description: None,
+                priority: None,
+                parent_id: None,
+                assignee_agent: None,
+                sort_order: None,
+                external_source: None,
+                external_id: None,
+                metadata: None,
+                label_ids: vec![],
+                assignee_ids: vec![],
+                dependency_ids: vec![],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn claim_acquires_sets_assignee_and_moves_to_started_state() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+        let outcome = claim(&conn, &item.id, "agent:1", 1000, TTL).unwrap();
+        assert_eq!(outcome, crate::claim::Acquire::Acquired);
+        let updated = get(&conn, &item.id).unwrap();
+        assert_eq!(updated.assignee_agent.as_deref(), Some("agent:1"));
+        assert_eq!(updated.state_id, state_in_group(&conn, &pid, "started"));
+        assert!(updated.started_at.is_some());
+    }
+
+    #[test]
+    fn claim_on_already_held_item_returns_held_and_leaves_item_unchanged() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+        claim(&conn, &item.id, "agent:1", 1000, TTL).unwrap();
+        let outcome = claim(&conn, &item.id, "agent:2", 1001, TTL).unwrap();
+        assert!(matches!(
+            outcome,
+            crate::claim::Acquire::Held { ref owner, .. } if owner == "agent:1"
+        ));
+        let unchanged = get(&conn, &item.id).unwrap();
+        assert_eq!(unchanged.assignee_agent.as_deref(), Some("agent:1"));
+    }
+
+    #[test]
+    fn stale_claim_is_stealable_by_a_different_owner() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+        claim(&conn, &item.id, "agent:1", 1000, TTL).unwrap();
+        let outcome = claim(&conn, &item.id, "agent:2", 1000 + TTL + 1, TTL).unwrap();
+        assert_eq!(outcome, crate::claim::Acquire::Acquired);
+        let updated = get(&conn, &item.id).unwrap();
+        assert_eq!(updated.assignee_agent.as_deref(), Some("agent:2"));
+    }
+
+    #[test]
+    fn claim_done_moves_to_completed_state_and_is_reclaimable() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+        claim(&conn, &item.id, "agent:1", 1000, TTL).unwrap();
+        assert!(claim_done(&conn, &item.id, "agent:1", 1100).unwrap());
+        let done_item = get(&conn, &item.id).unwrap();
+        assert_eq!(done_item.state_id, state_in_group(&conn, &pid, "completed"));
+        assert!(done_item.completed_at.is_some());
+
+        let outcome = claim(&conn, &item.id, "agent:2", 1200, TTL).unwrap();
+        assert_eq!(outcome, crate::claim::Acquire::Acquired);
+    }
+
+    #[test]
+    fn heartbeat_release_done_are_owner_scoped() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+        claim(&conn, &item.id, "agent:1", 1000, TTL).unwrap();
+
+        assert!(!crate::claim::heartbeat(&conn, &item.id, "agent:2", 1100).unwrap());
+        assert!(!crate::claim::release(&conn, &item.id, "agent:2").unwrap());
+        assert!(!claim_done(&conn, &item.id, "agent:2", 1100).unwrap());
+
+        assert!(crate::claim::heartbeat(&conn, &item.id, "agent:1", 1100).unwrap());
+        assert!(claim_done(&conn, &item.id, "agent:1", 1200).unwrap());
     }
 }
