@@ -39,6 +39,7 @@ mod state;
 mod tool_install;
 mod uninstall;
 mod update;
+mod worktree;
 
 use clap::Parser;
 

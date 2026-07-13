@@ -35,3 +35,19 @@ pub fn release(conn: &Connection, item_id: &str, owner: &str) -> rusqlite::Resul
 pub fn done(conn: &Connection, item_id: &str, owner: &str, now: i64) -> rusqlite::Result<bool> {
     LEDGER.done(conn, &[item_id], owner, now)
 }
+
+/// Returns true if there is an active (live, non-stale) claim on this item
+/// whose owner differs from `owner`. Used by the comment edit/delete gates
+/// to prevent modifying a comment when another agent has started work.
+pub fn has_active_claim_by_other(
+    conn: &Connection,
+    item_id: &str,
+    owner: &str,
+    now: i64,
+    ttl_secs: i64,
+) -> rusqlite::Result<bool> {
+    let claims = LEDGER.list(conn, false, now, ttl_secs)?;
+    Ok(claims
+        .iter()
+        .any(|c| c.key == [item_id] && c.owner != owner))
+}
