@@ -604,7 +604,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ItemRequest {
     #[schemars(
-        description = "Action: create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label"
+        description = "Action: create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label|comment|comment_edit|comment_delete|comment_list"
     )]
     action: String,
     #[schemars(
@@ -649,6 +649,12 @@ struct ItemRequest {
     )]
     #[serde(default)]
     state_group: Option<String>,
+    #[schemars(description = "Comment ID (required for comment_edit, comment_delete)")]
+    #[serde(default)]
+    comment_id: Option<String>,
+    #[schemars(description = "Comment body text (required for comment, comment_edit)")]
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -2525,9 +2531,142 @@ impl AgentflareMcp {
                     Ok(serde_json::json!({"removed": true, "item_id": item_id, "label_id": label_id}).to_string())
                 })?
             }
+            "comment" => {
+                let item_id = req
+                    .id
+                    .ok_or_else(|| ErrorData::invalid_params("id is required for comment", None))?;
+                let body = req.body.ok_or_else(|| {
+                    ErrorData::invalid_params("body is required for comment", None)
+                })?;
+                if item_id.trim().is_empty() || body.trim().is_empty() {
+                    return Err(ErrorData::invalid_params("id and body are required", None));
+                }
+                let author = crate::claims::owner_id();
+                self.with_backend_db(|conn| {
+                    let comment =
+                        agentflare_backend::comment::create(conn, &item_id, &author, &body)
+                            .map_err(map_backend_err)?;
+                    Ok(serde_json::to_string_pretty(&comment).unwrap_or_default())
+                })?
+            }
+            "comment_edit" => {
+                let comment_id = req.comment_id.ok_or_else(|| {
+                    ErrorData::invalid_params("comment_id is required for comment_edit", None)
+                })?;
+                let body = req.body.ok_or_else(|| {
+                    ErrorData::invalid_params("body is required for comment_edit", None)
+                })?;
+                if comment_id.trim().is_empty() || body.trim().is_empty() {
+                    return Err(ErrorData::invalid_params(
+                        "comment_id and body are required",
+                        None,
+                    ));
+                }
+                let owner = crate::claims::owner_id();
+                let now = crate::claims::now();
+                let ttl = backend_claim_ttl_secs();
+                self.with_backend_db(|conn| {
+                    let comment = agentflare_backend::comment::get(conn, &comment_id)
+                        .map_err(map_backend_err)?;
+                    if crate::claims::agent_of(&comment.author_agent)
+                        != crate::claims::agent_of(&owner)
+                    {
+                        return Err(ErrorData::invalid_params(
+                            "can only edit your own comments",
+                            None,
+                        ));
+                    }
+                    if !agentflare_backend::comment::is_latest(conn, &comment)
+                        .map_err(map_backend_err)?
+                    {
+                        return Err(ErrorData::invalid_params(
+                            "comment is not the latest on this item — cannot edit",
+                            None,
+                        ));
+                    }
+                    if agentflare_backend::claim::has_active_claim_by_other(
+                        conn,
+                        &comment.item_id,
+                        &owner,
+                        now,
+                        ttl,
+                    )
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    {
+                        return Err(ErrorData::invalid_params(
+                            "another agent has started work on this item — cannot edit",
+                            None,
+                        ));
+                    }
+                    let updated = agentflare_backend::comment::update(conn, &comment_id, &body)
+                        .map_err(map_backend_err)?;
+                    Ok(serde_json::to_string_pretty(&updated).unwrap_or_default())
+                })?
+            }
+            "comment_delete" => {
+                let comment_id = req.comment_id.ok_or_else(|| {
+                    ErrorData::invalid_params("comment_id is required for comment_delete", None)
+                })?;
+                if comment_id.trim().is_empty() {
+                    return Err(ErrorData::invalid_params("comment_id is required", None));
+                }
+                let owner = crate::claims::owner_id();
+                let now = crate::claims::now();
+                let ttl = backend_claim_ttl_secs();
+                self.with_backend_db(|conn| {
+                    let comment = agentflare_backend::comment::get(conn, &comment_id)
+                        .map_err(map_backend_err)?;
+                    if crate::claims::agent_of(&comment.author_agent)
+                        != crate::claims::agent_of(&owner)
+                    {
+                        return Err(ErrorData::invalid_params(
+                            "can only delete your own comments",
+                            None,
+                        ));
+                    }
+                    if !agentflare_backend::comment::is_latest(conn, &comment)
+                        .map_err(map_backend_err)?
+                    {
+                        return Err(ErrorData::invalid_params(
+                            "comment is not the latest on this item — cannot delete",
+                            None,
+                        ));
+                    }
+                    if agentflare_backend::claim::has_active_claim_by_other(
+                        conn,
+                        &comment.item_id,
+                        &owner,
+                        now,
+                        ttl,
+                    )
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    {
+                        return Err(ErrorData::invalid_params(
+                            "another agent has started work on this item — cannot delete",
+                            None,
+                        ));
+                    }
+                    agentflare_backend::comment::delete(conn, &comment_id)
+                        .map_err(map_backend_err)?;
+                    Ok(serde_json::json!({"deleted": true, "comment_id": comment_id}).to_string())
+                })?
+            }
+            "comment_list" => {
+                let item_id = req.id.ok_or_else(|| {
+                    ErrorData::invalid_params("id is required for comment_list", None)
+                })?;
+                if item_id.trim().is_empty() {
+                    return Err(ErrorData::invalid_params("id is required", None));
+                }
+                self.with_backend_db(|conn| {
+                    let comments = agentflare_backend::comment::list_by_item(conn, &item_id)
+                        .map_err(map_backend_err)?;
+                    Ok(serde_json::to_string_pretty(&comments).unwrap_or_default())
+                })?
+            }
             other => Err(ErrorData::invalid_params(
                 format!(
-                    "unknown item action: '{other}' — expected create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label"
+                    "unknown item action: '{other}' — expected create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label|comment|comment_edit|comment_delete|comment_list"
                 ),
                 None,
             )),
@@ -2535,7 +2674,7 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "Create, get, list, update, update_state, delete, claim, heartbeat, release, done, add_label, or remove_label work items in the repo's linked project. The `action` field selects the operation; see each field's description for when it's required."
+        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label|comment|comment_edit|comment_delete|comment_list). See each field's description for when it's required."
     )]
     fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
         self.item_inner(req)
@@ -4661,6 +4800,262 @@ mod tests {
                 },
             }
         });
+    }
+
+    #[test]
+    fn item_comment_create_and_list_roundtrip() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+
+        let comment: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment".into(),
+                id: Some(item_id.clone()),
+                body: Some("Hello, world!".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(comment["body"], "Hello, world!");
+        assert!(comment["author_agent"].as_str().unwrap().contains(':'));
+
+        let comments: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment_list".into(),
+                id: Some(item_id),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let arr = comments.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["body"], "Hello, world!");
+    }
+
+    #[test]
+    fn item_comment_rejects_empty_body() {
+        let (_tmp, s) = harness();
+        let err = s
+            .item(Parameters(ItemRequest {
+                action: "comment".into(),
+                id: Some("item-1".into()),
+                body: Some("".into()),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn item_comment_edit_succeeds_when_latest_and_own_and_unclaimed_by_other() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+
+        let comment: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment".into(),
+                id: Some(item_id.clone()),
+                body: Some("original".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let comment_id = comment["id"].as_str().unwrap().to_string();
+
+        let updated: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment_edit".into(),
+                comment_id: Some(comment_id.clone()),
+                body: Some("edited".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["body"], "edited");
+    }
+
+    #[test]
+    fn item_comment_edit_rejected_when_comment_not_found() {
+        let (_tmp, s) = harness();
+        let err = s
+            .item(Parameters(ItemRequest {
+                action: "comment_edit".into(),
+                comment_id: Some("nonexistent".into()),
+                body: Some("edited".into()),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn item_comment_edit_rejected_when_different_agent() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+
+        let comment_id = s
+            .with_backend_db(|conn| {
+                agentflare_backend::comment::create(conn, &item_id, "someone-else:1", "not mine")
+                    .unwrap()
+                    .id
+            })
+            .unwrap();
+
+        let err = s
+            .item(Parameters(ItemRequest {
+                action: "comment_edit".into(),
+                comment_id: Some(comment_id),
+                body: Some("edited".into()),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("own comments"));
+    }
+
+    #[test]
+    fn item_comment_edit_succeeds_across_sessions_of_same_agent() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+
+        // Same agent, different session instance — e.g. a prior CLI
+        // invocation, or an MCP server process that has since restarted.
+        let agent = crate::claims::agent_of(&crate::claims::owner_id()).to_string();
+        let earlier_session_author = format!("{agent}:some-earlier-session");
+
+        let comment_id = s
+            .with_backend_db(|conn| {
+                agentflare_backend::comment::create(
+                    conn,
+                    &item_id,
+                    &earlier_session_author,
+                    "mine, from an earlier session",
+                )
+                .unwrap()
+                .id
+            })
+            .unwrap();
+
+        let updated: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment_edit".into(),
+                comment_id: Some(comment_id),
+                body: Some("edited".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["body"], "edited");
+    }
+
+    #[test]
+    fn item_comment_edit_uses_id_tiebreak_when_timestamps_collide() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+
+        let first: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment".into(),
+                id: Some(item_id.clone()),
+                body: Some("first".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let first_id = first["id"].as_str().unwrap().to_string();
+
+        let second: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment".into(),
+                id: Some(item_id),
+                body: Some("second".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let second_id = second["id"].as_str().unwrap().to_string();
+
+        // Force both comments onto the same second-resolution timestamp, as
+        // happens routinely under real multi-agent traffic. Only the comment
+        // with the higher (later) UUIDv7 id should still count as latest.
+        s.with_backend_db(|conn| {
+            conn.execute(
+                "UPDATE item_comments SET created_at = 1000, updated_at = 1000",
+                [],
+            )
+            .unwrap();
+        })
+        .unwrap();
+
+        let err = s
+            .item(Parameters(ItemRequest {
+                action: "comment_edit".into(),
+                comment_id: Some(first_id),
+                body: Some("edited".into()),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        let updated: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment_edit".into(),
+                comment_id: Some(second_id),
+                body: Some("edited".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["body"], "edited");
+    }
+
+    #[test]
+    fn item_comment_delete_succeeds_when_latest_and_own() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+
+        let comment: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment".into(),
+                id: Some(item_id),
+                body: Some("delete-me".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let comment_id = comment["id"].as_str().unwrap().to_string();
+
+        let result: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "comment_delete".into(),
+                comment_id: Some(comment_id),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["deleted"], true);
     }
 
     #[test]

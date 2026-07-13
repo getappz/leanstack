@@ -172,6 +172,15 @@ pub fn owner_id() -> String {
     format!("{agent}:{instance}")
 }
 
+/// Strips the `:<instance>` suffix off an owner id, leaving the stable agent
+/// identity. Unlike claim ownership (deliberately instance-scoped, see
+/// `owner_id` above), authorship of a comment should survive across
+/// sessions — an agent restarting shouldn't lose the ability to edit its own
+/// words just because its instance suffix changed.
+pub fn agent_of(owner_id: &str) -> &str {
+    owner_id.split(':').next().unwrap_or(owner_id)
+}
+
 pub fn ttl_secs() -> i64 {
     std::env::var("AGENTFLARE_CLAIM_TTL_SECS")
         .ok()
