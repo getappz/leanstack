@@ -8,6 +8,7 @@ description = "Universal agent backend: workspace/project/item schema + CRUD, po
 publish = false
 
 [dependencies]
+db_kit = { package = "agentflare-db-kit", path = "../agentflare-db-kit" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

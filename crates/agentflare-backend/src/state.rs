@@ -134,6 +134,23 @@ pub fn get(conn: &Connection, id: &str) -> Result<State> {
     })
 }
 
+/// First state (by sequence) in `group` for the project — used to resolve
+/// the "Started"/"Completed" target when claiming or completing an item.
+pub fn first_in_group(conn: &Connection, project_id: &str, group: &str) -> Result<State> {
+    conn.query_row(
+        "SELECT id, project_id, name, group_name, sequence, is_default, color, created_at, updated_at, deleted_at
+         FROM states WHERE project_id = ?1 AND group_name = ?2 AND deleted_at IS NULL ORDER BY sequence LIMIT 1",
+        rusqlite::params![project_id, group],
+        row_to_state,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            crate::error::Error::NotFound(format!("no '{group}' state for project {project_id}"))
+        }
+        other => other.into(),
+    })
+}
+
 pub fn list_by_project(conn: &Connection, project_id: &str) -> Result<Vec<State>> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, name, group_name, sequence, is_default, color, created_at, updated_at, deleted_at
@@ -254,6 +271,25 @@ mod tests {
                 .iter()
                 .any(|s| s.name == "Done" && s.group_name == "completed")
         );
+    }
+
+    #[test]
+    fn first_in_group_returns_lowest_sequence_match() {
+        let conn = db::open_in_memory().unwrap();
+        let pid = seed_project(&conn);
+        let started = first_in_group(&conn, &pid, "started").unwrap();
+        assert_eq!(started.name, "In Progress");
+        assert_eq!(started.group_name, "started");
+    }
+
+    #[test]
+    fn first_in_group_errors_when_no_state_matches() {
+        let conn = db::open_in_memory().unwrap();
+        let pid = seed_project(&conn);
+        assert!(matches!(
+            first_in_group(&conn, &pid, "no-such-group"),
+            Err(crate::error::Error::NotFound(_))
+        ));
     }
 
     #[test]
