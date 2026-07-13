@@ -2441,7 +2441,20 @@ impl AgentflareMcp {
                         .map_err(map_backend_err)?;
                     Ok(match outcome {
                         agentflare_backend::claim::Acquire::Acquired => {
-                            serde_json::json!({"status": "acquired", "item_id": item_id, "owner": owner})
+                            let item = agentflare_backend::item::get(conn, &item_id).ok();
+                            let worktree_path = item.as_ref().and_then(|i| {
+                                crate::worktree::create_for_item(conn, i, &Self::repo_root())
+                            });
+                            let mut resp = serde_json::json!({
+                                "status": "acquired",
+                                "item_id": item_id,
+                                "owner": owner,
+                            });
+                            if let Some(ref path) = worktree_path {
+                                resp["worktree_path"] =
+                                    serde_json::Value::String(path.to_string_lossy().to_string());
+                            }
+                            resp
                         }
                         agentflare_backend::claim::Acquire::Held { owner: holder, age_secs } => {
                             serde_json::json!({"status": "held", "item_id": item_id, "owner": holder, "age_secs": age_secs})
@@ -5056,6 +5069,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result["deleted"], true);
+    }
+
+    #[test]
+    fn item_claim_response_includes_worktree_path() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+        let seq_id = created["sequence_id"].as_i64().unwrap();
+        // clean up any stale artifact from prior test runs
+        let root = AgentflareMcp::repo_root();
+        let stale_wt = root
+            .join(".worktrees")
+            .join("task")
+            .join(seq_id.to_string());
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force", &stale_wt.to_string_lossy()])
+            .current_dir(&root)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["branch", "-D", &format!("task/{}", seq_id)])
+            .current_dir(&root)
+            .output();
+
+        let result: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "claim".into(),
+                id: Some(item_id),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["status"], "acquired");
+        assert!(result.get("worktree_path").is_some());
+        if let Some(path) = result["worktree_path"].as_str() {
+            let branch = format!("task/{}", seq_id);
+            let root = AgentflareMcp::repo_root();
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "remove", path])
+                .current_dir(&root)
+                .output();
+            let _ = std::process::Command::new("git")
+                .args(["branch", "-D", &branch])
+                .current_dir(&root)
+                .output();
+        }
     }
 
     #[test]
