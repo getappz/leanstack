@@ -404,7 +404,10 @@ pub fn list_dependencies(conn: &Connection, item_id: &str) -> Result<Vec<String>
 /// Claims an item so other agents don't duplicate the work: on a fresh
 /// acquire, sets the assignee and moves state into the project's "started"
 /// group (which sets `started_at`, via `update_state`). A live claim held by
-/// someone else returns `Held` and leaves the item untouched.
+/// someone else returns `Held` and leaves the item untouched. Acquisition,
+/// the state transition, and the assignee update are one transaction — a
+/// mid-sequence failure can't leave `item_claims` saying "claimed" while the
+/// item itself never reflects it.
 pub fn claim(
     conn: &Connection,
     item_id: &str,
@@ -412,13 +415,14 @@ pub fn claim(
     now: i64,
     ttl_secs: i64,
 ) -> Result<crate::claim::Acquire> {
-    let outcome = crate::claim::acquire(conn, item_id, owner, now, ttl_secs)?;
+    let tx = conn.unchecked_transaction()?;
+    let outcome = crate::claim::acquire(&tx, item_id, owner, now, ttl_secs)?;
     if outcome == crate::claim::Acquire::Acquired {
-        let item = get(conn, item_id)?;
-        let started_state = crate::state::first_in_group(conn, &item.project_id, "started")?;
-        update_state(conn, item_id, &started_state.id)?;
+        let item = get(&tx, item_id)?;
+        let started_state = crate::state::first_in_group(&tx, &item.project_id, "started")?;
+        update_state(&tx, item_id, &started_state.id)?;
         update(
-            conn,
+            &tx,
             item_id,
             UpdateItem {
                 assignee_agent: Some(owner.to_string()),
@@ -426,19 +430,24 @@ pub fn claim(
             },
         )?;
     }
+    tx.commit()?;
     Ok(outcome)
 }
 
 /// Marks a claimed item done: releases the claim (re-claimable by anyone
 /// afterward) and moves state into the project's "completed" group. Always
-/// "completed", never "cancelled" — those are distinct outcomes.
+/// "completed", never "cancelled" — those are distinct outcomes. The done
+/// transition and the state update are one transaction, same reasoning as
+/// `claim()`.
 pub fn claim_done(conn: &Connection, item_id: &str, owner: &str, now: i64) -> Result<bool> {
-    let done = crate::claim::done(conn, item_id, owner, now)?;
+    let tx = conn.unchecked_transaction()?;
+    let done = crate::claim::done(&tx, item_id, owner, now)?;
     if done {
-        let item = get(conn, item_id)?;
-        let completed_state = crate::state::first_in_group(conn, &item.project_id, "completed")?;
-        update_state(conn, item_id, &completed_state.id)?;
+        let item = get(&tx, item_id)?;
+        let completed_state = crate::state::first_in_group(&tx, &item.project_id, "completed")?;
+        update_state(&tx, item_id, &completed_state.id)?;
     }
+    tx.commit()?;
     Ok(done)
 }
 
