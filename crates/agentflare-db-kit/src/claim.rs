@@ -88,29 +88,48 @@ impl ClaimLedger {
         let now_p = key.len() + 2;
         let stale_p = key.len() + 3;
         let t = self.table;
+        // RETURNING makes the write and the read of its own outcome one atomic
+        // statement, so a concurrent release()/done() on another connection can't
+        // land between "we wrote" and "we read back what we wrote" and turn our
+        // own successful acquire into a misreported Held/NotFound.
         let sql = format!(
             "INSERT INTO {t} ({key_cols}, owner, status, created_at, heartbeat_at)
              VALUES ({placeholders}, ?{owner_p}, 'claimed', ?{now_p}, ?{now_p})
              ON CONFLICT({key_cols}) DO UPDATE SET
                  owner = excluded.owner, status = 'claimed',
                  created_at = excluded.created_at, heartbeat_at = excluded.heartbeat_at
-             WHERE {t}.status = 'done' OR {t}.heartbeat_at < ?{stale_p} OR {t}.owner = excluded.owner"
+             WHERE {t}.status = 'done' OR {t}.heartbeat_at < ?{stale_p} OR {t}.owner = excluded.owner
+             RETURNING owner, heartbeat_at"
         );
         let mut params = self.key_params(key);
         params.push(&owner);
         params.push(&now);
         params.push(&stale_before);
-        conn.execute(&sql, params.as_slice())?;
+        let written = match conn.query_row(&sql, params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        }) {
+            Ok(row) => Some(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        };
 
-        let select_sql = format!(
-            "SELECT owner, heartbeat_at FROM {t} WHERE {}",
-            self.where_pred()
-        );
-        let key_params = self.key_params(key);
-        let (row_owner, heartbeat_at): (String, i64) =
-            conn.query_row(&select_sql, key_params.as_slice(), |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })?;
+        // None means the WHERE clause rejected our write — someone else holds a
+        // live claim. We didn't acquire, so there's nothing of ours a race could
+        // corrupt; a plain follow-up read is fine here (only informs the Held
+        // owner/age_secs reported back, not our own claim state).
+        let (row_owner, heartbeat_at) = match written {
+            Some(row) => row,
+            None => {
+                let select_sql = format!(
+                    "SELECT owner, heartbeat_at FROM {t} WHERE {}",
+                    self.where_pred()
+                );
+                let key_params = self.key_params(key);
+                conn.query_row(&select_sql, key_params.as_slice(), |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+            }
+        };
 
         Ok(if row_owner == owner {
             Acquire::Acquired

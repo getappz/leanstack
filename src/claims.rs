@@ -69,9 +69,11 @@ pub fn acquire(
 ) -> rusqlite::Result<Acquire> {
     let outcome = LEDGER.acquire(conn, &[repo, target], owner, now, ttl_secs)?;
     if outcome == Acquire::Acquired {
+        // Scoped to owner: if another owner steals the lease between LEDGER.acquire()
+        // and this UPDATE, this must not overwrite their row's provenance with ours.
         conn.execute(
-            "UPDATE claims SET git_commit = ?3 WHERE repo = ?1 AND target = ?2",
-            params![repo, target, git_commit],
+            "UPDATE claims SET git_commit = ?3 WHERE repo = ?1 AND target = ?2 AND owner = ?4",
+            params![repo, target, git_commit, owner],
         )?;
     }
     Ok(outcome)

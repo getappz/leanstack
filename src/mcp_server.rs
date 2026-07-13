@@ -2320,6 +2320,12 @@ impl AgentflareMcp {
             BackendItemLabelRequest,
         >,
     ) -> Result<String, ErrorData> {
+        if item_id.trim().is_empty() || label_id.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "item_id and label_id are required",
+                None,
+            ));
+        }
         self.with_backend_db(|conn| {
             agentflare_backend::item::add_label(conn, &item_id, &label_id)
                 .map_err(map_backend_err)?;
@@ -2337,6 +2343,12 @@ impl AgentflareMcp {
             BackendItemLabelRequest,
         >,
     ) -> Result<String, ErrorData> {
+        if item_id.trim().is_empty() || label_id.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "item_id and label_id are required",
+                None,
+            ));
+        }
         self.with_backend_db(|conn| {
             agentflare_backend::item::remove_label(conn, &item_id, &label_id)
                 .map_err(map_backend_err)?;
@@ -2376,7 +2388,16 @@ impl AgentflareMcp {
             };
             let webhook =
                 agentflare_backend::webhook::create(conn, input).map_err(map_backend_err)?;
-            Ok(serde_json::to_string_pretty(&webhook).unwrap_or_default())
+            // Webhook::secret_key is skip_serializing (never leaked back on get/list); this is
+            // the one intentional reveal, at creation time only, matching this tool's contract.
+            let mut value = serde_json::to_value(&webhook).unwrap_or_default();
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "secret_key".to_string(),
+                    serde_json::Value::String(webhook.secret_key.clone()),
+                );
+            }
+            Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
         })?
     }
 

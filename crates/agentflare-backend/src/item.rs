@@ -121,6 +121,14 @@ pub fn create(conn: &Connection, input: CreateItem) -> Result<Item> {
     let priority = input.priority.unwrap_or_else(|| "none".to_string());
     let metadata = input.metadata.unwrap_or_else(|| "{}".to_string());
 
+    let state = crate::state::get(conn, &input.state_id)?;
+    if state.project_id != input.project_id {
+        return Err(crate::error::Error::InvalidTransition(format!(
+            "state {} belongs to a different project than project {}",
+            input.state_id, input.project_id
+        )));
+    }
+
     let tx = conn.unchecked_transaction()?;
     let seq = next_sequence_id(&tx, &input.project_id)?;
     tx.execute(
@@ -847,6 +855,35 @@ mod tests {
         let updated = update_state(&conn, &item.id, &backlog_state).unwrap();
         assert!(updated.started_at.is_none());
         assert!(updated.completed_at.is_none());
+    }
+
+    #[test]
+    fn create_rejects_state_from_a_different_project() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid1, _sid1) = seed_project(&conn, "1");
+        let (_pid2, sid2) = seed_project(&conn, "2");
+        assert!(matches!(
+            create(
+                &conn,
+                CreateItem {
+                    project_id: pid1,
+                    state_id: sid2,
+                    name: "Test".into(),
+                    description: None,
+                    priority: None,
+                    parent_id: None,
+                    assignee_agent: None,
+                    sort_order: None,
+                    external_source: None,
+                    external_id: None,
+                    metadata: None,
+                    label_ids: vec![],
+                    assignee_ids: vec![],
+                    dependency_ids: vec![],
+                },
+            ),
+            Err(crate::error::Error::InvalidTransition(_))
+        ));
     }
 
     #[test]

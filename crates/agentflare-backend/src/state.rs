@@ -193,6 +193,12 @@ pub fn update(conn: &Connection, id: &str, input: UpdateState) -> Result<State> 
 }
 
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
+    let state = get(conn, id)?;
+    if state.is_default {
+        return Err(crate::error::Error::InvalidTransition(
+            "cannot delete the project's default state; items need a state to fall back to".into(),
+        ));
+    }
     let ts = now();
     let changed = conn.execute(
         "UPDATE states SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
@@ -307,11 +313,24 @@ mod tests {
         let conn = db::open_in_memory().unwrap();
         let pid = seed_project(&conn);
         let states = list_by_project(&conn, &pid).unwrap();
-        let sid = states[0].id.clone();
+        let sid = states.iter().find(|s| !s.is_default).unwrap().id.clone();
         delete(&conn, &sid).unwrap();
         assert!(matches!(
             get(&conn, &sid),
             Err(crate::error::Error::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn delete_rejects_the_default_state() {
+        let conn = db::open_in_memory().unwrap();
+        let pid = seed_project(&conn);
+        let states = list_by_project(&conn, &pid).unwrap();
+        let default_id = states.iter().find(|s| s.is_default).unwrap().id.clone();
+        assert!(matches!(
+            delete(&conn, &default_id),
+            Err(crate::error::Error::InvalidTransition(_))
+        ));
+        assert!(get(&conn, &default_id).is_ok());
     }
 }

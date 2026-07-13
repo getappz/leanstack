@@ -2,8 +2,42 @@ use hmac::{Hmac, Mac};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::io::Read;
+use std::sync::OnceLock;
 
 use crate::error::{Error, Result};
+
+/// Delivery response bodies are logged to SQLite (`webhook_logs.response_body`) —
+/// cap what we read/store so a huge or malicious endpoint response can't exhaust
+/// memory or bloat the database.
+const MAX_LOGGED_BODY_BYTES: usize = 8 * 1024;
+
+/// Shared HTTP client with redirects disabled: an SSRF'd webhook target could
+/// otherwise 3xx-redirect delivery to an internal address after the URL itself
+/// passed `validate_webhook_url`. A blocked redirect is returned as an
+/// ordinary (unfollowed) 3xx response, which `deliver()` logs like any other.
+fn http_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().redirects(0).build())
+}
+
+fn capped_body(resp: ureq::Response) -> String {
+    let mut buf = Vec::with_capacity(MAX_LOGGED_BODY_BYTES + 1);
+    let read = resp
+        .into_reader()
+        .take(MAX_LOGGED_BODY_BYTES as u64 + 1)
+        .read_to_end(&mut buf);
+    if read.is_err() {
+        return String::new();
+    }
+    let truncated = buf.len() > MAX_LOGGED_BODY_BYTES;
+    buf.truncate(MAX_LOGGED_BODY_BYTES);
+    let mut s = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        s.push_str("...[truncated]");
+    }
+    s
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Webhook {
@@ -11,6 +45,7 @@ pub struct Webhook {
     pub workspace_id: String,
     pub url: String,
     pub is_active: bool,
+    #[serde(skip_serializing)]
     pub secret_key: String,
     pub on_item: bool,
     pub on_state: bool,
@@ -78,6 +113,30 @@ fn row_to_webhook(row: &rusqlite::Row) -> rusqlite::Result<Webhook> {
     })
 }
 
+/// Blocks loopback, unspecified, multicast, and private/link-local ranges
+/// (RFC1918, 169.254.0.0/16, IPv6 link-local fe80::/10, IPv6 ULA fc00::/7) —
+/// the ranges an SSRF'd webhook could use to reach internal services.
+fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+        }
+        std::net::IpAddr::V6(v6) => {
+            let seg0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg0 & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (seg0 & 0xfe00) == 0xfc00 // unique local fc00::/7
+        }
+    }
+}
+
 fn validate_webhook_url(raw: &str) -> Result<()> {
     let parsed =
         url::Url::parse(raw).map_err(|_| Error::InvalidTransition("invalid webhook URL".into()))?;
@@ -86,15 +145,15 @@ fn validate_webhook_url(raw: &str) -> Result<()> {
             "webhook URL must use http or https scheme".into(),
         ));
     }
-    let host = parsed.host_str().unwrap_or_default();
-    if host == "localhost"
-        || host == "127.0.0.1"
-        || host == "0.0.0.0"
-        || host.starts_with("127.")
-        || matches!(parsed.host(), Some(url::Host::Ipv6(addr)) if addr.is_loopback())
-    {
+    let blocked = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => is_blocked_ip(std::net::IpAddr::V4(v4)),
+        Some(url::Host::Ipv6(v6)) => is_blocked_ip(std::net::IpAddr::V6(v6)),
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        None => true,
+    };
+    if blocked {
         return Err(Error::InvalidTransition(
-            "webhook URL must not target localhost or loopback address".into(),
+            "webhook URL must not target localhost or a private/link-local address".into(),
         ));
     }
     Ok(())
@@ -287,7 +346,8 @@ pub fn deliver(
     let signature = sign(&webhook.secret_key, &body);
     let delivery_id = uuid::Uuid::new_v4().to_string();
 
-    let request = ureq::post(&webhook.url)
+    let request = http_agent()
+        .post(&webhook.url)
         .set("Content-Type", "application/json")
         .set("User-Agent", "agentflare-backend")
         .set("X-Agentflare-Delivery", &delivery_id)
@@ -296,13 +356,8 @@ pub fn deliver(
         .timeout(std::time::Duration::from_secs(5));
 
     let (status, resp_body) = match request.send_bytes(&body) {
-        Ok(resp) => (
-            resp.status().to_string(),
-            resp.into_string().unwrap_or_default(),
-        ),
-        Err(ureq::Error::Status(code, resp)) => {
-            (code.to_string(), resp.into_string().unwrap_or_default())
-        }
+        Ok(resp) => (resp.status().to_string(), capped_body(resp)),
+        Err(ureq::Error::Status(code, resp)) => (code.to_string(), capped_body(resp)),
         Err(e) => ("connection_error".to_string(), e.to_string()),
     };
 
@@ -354,6 +409,16 @@ mod tests {
     fn validate_url_accepts_valid() {
         assert!(validate_webhook_url("https://example.com/hook").is_ok());
         assert!(validate_webhook_url("http://hooks.example.com/path").is_ok());
+    }
+
+    #[test]
+    fn validate_url_rejects_private_and_link_local() {
+        assert!(validate_webhook_url("http://169.254.169.254/").is_err());
+        assert!(validate_webhook_url("http://10.0.0.1/").is_err());
+        assert!(validate_webhook_url("http://172.16.0.5/").is_err());
+        assert!(validate_webhook_url("http://192.168.1.1/").is_err());
+        assert!(validate_webhook_url("http://[fe80::1]/").is_err());
+        assert!(validate_webhook_url("http://[fc00::1]/").is_err());
     }
 
     #[test]

@@ -43,12 +43,30 @@ pub fn storage_path(workspace_id: &str, filename: &str) -> String {
     format!("{}/assets/{}-{}", workspace_id, id, filename)
 }
 
+fn safe_asset_path(
+    base_path: &std::path::Path,
+    storage_path: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let rel = std::path::Path::new(storage_path);
+    let contained = !rel.is_absolute()
+        && rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !contained {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "storage_path escapes asset root",
+        ));
+    }
+    Ok(base_path.join(rel))
+}
+
 pub fn write_file(
     base_path: &std::path::Path,
     storage_path: &str,
     data: &[u8],
 ) -> std::io::Result<()> {
-    let full_path = base_path.join(storage_path);
+    let full_path = safe_asset_path(base_path, storage_path)?;
     if let Some(parent) = full_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -56,11 +74,11 @@ pub fn write_file(
 }
 
 pub fn read_file(base_path: &std::path::Path, storage_path: &str) -> std::io::Result<Vec<u8>> {
-    std::fs::read(base_path.join(storage_path))
+    std::fs::read(safe_asset_path(base_path, storage_path)?)
 }
 
 pub fn delete_file(base_path: &std::path::Path, storage_path: &str) -> std::io::Result<()> {
-    let path = base_path.join(storage_path);
+    let path = safe_asset_path(base_path, storage_path)?;
     if path.exists() {
         std::fs::remove_file(path)?;
     }
@@ -256,6 +274,17 @@ mod tests {
         assert_eq!(data, b"hello world");
         delete_file(&path, &sp).unwrap();
         assert!(!path.join(&sp).exists());
+    }
+
+    #[test]
+    fn write_read_delete_reject_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_traversal");
+        std::fs::create_dir_all(&path).unwrap();
+        let evil = "../../../../etc/passwd";
+        assert!(write_file(&path, evil, b"pwned").is_err());
+        assert!(read_file(&path, evil).is_err());
+        assert!(delete_file(&path, evil).is_err());
     }
 
     #[test]
