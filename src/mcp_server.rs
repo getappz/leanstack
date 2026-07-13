@@ -484,6 +484,10 @@ pub struct AgentflareMcp {
     /// to `git`/reads cwd, both process-global and unsafe to fake by
     /// mutating cwd across parallel test threads.
     backend_repo_key_override: Option<String>,
+    /// Tests inject a temp repo root here so the worktree-on-claim feature
+    /// never runs real git worktree/branch operations against this actual
+    /// repository (worktree add, force-remove, branch -D).
+    worktree_repo_root_override: Option<std::path::PathBuf>,
 }
 
 /// All local artifact backends (flared, another session, or our own
@@ -604,7 +608,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ItemRequest {
     #[schemars(
-        description = "Action: create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label|comment|comment_edit|comment_delete|comment_list"
+        description = "Action: create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label"
     )]
     action: String,
     #[schemars(
@@ -649,10 +653,19 @@ struct ItemRequest {
     )]
     #[serde(default)]
     state_group: Option<String>,
-    #[schemars(description = "Comment ID (required for comment_edit, comment_delete)")]
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct CommentRequest {
+    #[schemars(description = "Action: create|edit|delete|list")]
+    action: String,
+    #[schemars(description = "Item ID to comment on (required for create, list)")]
     #[serde(default)]
-    comment_id: Option<String>,
-    #[schemars(description = "Comment body text (required for comment, comment_edit)")]
+    item_id: Option<String>,
+    #[schemars(description = "Comment ID (required for edit, delete)")]
+    #[serde(default)]
+    id: Option<String>,
+    #[schemars(description = "Comment body text (required for create, edit)")]
     #[serde(default)]
     body: Option<String>,
 }
@@ -1253,6 +1266,15 @@ impl AgentflareMcp {
         }
         let cwd = std::env::current_dir().unwrap_or_default();
         Self::find_root_from(&cwd, &crate::paths::home())
+    }
+
+    /// `repo_root()`, but honoring `worktree_repo_root_override` — used only
+    /// by the worktree-on-claim feature so tests never run real `git
+    /// worktree`/branch operations against this actual repository.
+    fn worktree_repo_root(&self) -> std::path::PathBuf {
+        self.worktree_repo_root_override
+            .clone()
+            .unwrap_or_else(Self::repo_root)
     }
 
     /// Pure walk-up so the non-git fallback path is unit-testable without
@@ -2436,31 +2458,50 @@ impl AgentflareMcp {
                 let owner = crate::claims::owner_id();
                 let now = crate::claims::now();
                 let ttl = backend_claim_ttl_secs();
-                self.with_backend_db(|conn| {
+                let repo_root = self.worktree_repo_root();
+                // Only resolve the item + target branch (DB reads) under the
+                // backend lock; `git worktree add` below is a blocking
+                // filesystem+subprocess operation that has no business
+                // running while the shared DB mutex is held.
+                let (outcome, item, target_branch) = self.with_backend_db(|conn| {
                     let outcome = agentflare_backend::item::claim(conn, &item_id, &owner, now, ttl)
                         .map_err(map_backend_err)?;
-                    Ok(match outcome {
-                        agentflare_backend::claim::Acquire::Acquired => {
+                    let (item, target_branch) =
+                        if outcome == agentflare_backend::claim::Acquire::Acquired {
                             let item = agentflare_backend::item::get(conn, &item_id).ok();
-                            let worktree_path = item.as_ref().and_then(|i| {
-                                crate::worktree::create_for_item(conn, i, &Self::repo_root())
+                            let target_branch = item.as_ref().map(|i| {
+                                crate::worktree::resolve_target_branch(conn, i, &repo_root)
                             });
-                            let mut resp = serde_json::json!({
-                                "status": "acquired",
-                                "item_id": item_id,
-                                "owner": owner,
-                            });
-                            if let Some(ref path) = worktree_path {
-                                resp["worktree_path"] =
-                                    serde_json::Value::String(path.to_string_lossy().to_string());
-                            }
-                            resp
+                            (item, target_branch)
+                        } else {
+                            (None, None)
+                        };
+                    Ok((outcome, item, target_branch))
+                })??;
+                let worktree_path = match (&item, &target_branch) {
+                    (Some(item), Some(target)) => {
+                        crate::worktree::create_worktree(item, &repo_root, target)
+                    }
+                    _ => None,
+                };
+                Ok(match outcome {
+                    agentflare_backend::claim::Acquire::Acquired => {
+                        let mut resp = serde_json::json!({
+                            "status": "acquired",
+                            "item_id": item_id,
+                            "owner": owner,
+                        });
+                        if let Some(ref path) = worktree_path {
+                            resp["worktree_path"] =
+                                serde_json::Value::String(path.to_string_lossy().to_string());
                         }
-                        agentflare_backend::claim::Acquire::Held { owner: holder, age_secs } => {
-                            serde_json::json!({"status": "held", "item_id": item_id, "owner": holder, "age_secs": age_secs})
-                        }
-                    }.to_string())
-                })?
+                        resp.to_string()
+                    }
+                    agentflare_backend::claim::Acquire::Held {
+                        owner: holder,
+                        age_secs,
+                    } => serde_json::json!({"status": "held", "item_id": item_id, "owner": holder, "age_secs": age_secs}).to_string(),
+                })
             }
             "heartbeat" => {
                 let item_id = req.id.ok_or_else(|| {
@@ -2544,15 +2585,39 @@ impl AgentflareMcp {
                     Ok(serde_json::json!({"removed": true, "item_id": item_id, "label_id": label_id}).to_string())
                 })?
             }
-            "comment" => {
-                let item_id = req
-                    .id
-                    .ok_or_else(|| ErrorData::invalid_params("id is required for comment", None))?;
+            other => Err(ErrorData::invalid_params(
+                format!(
+                    "unknown item action: '{other}' — expected create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label"
+                ),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label). See each field's description for when it's required."
+    )]
+    fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
+        self.item_inner(req)
+    }
+
+    #[tool(
+        description = "Create, edit, delete, or list threaded comments on an item. Single consolidated tool with `action` field (create|edit|delete|list). Only the author of a comment may edit/delete it, only the latest comment on an item is editable/deletable, and edit/delete are blocked while another agent holds an active claim on the item."
+    )]
+    fn comment(&self, Parameters(req): Parameters<CommentRequest>) -> Result<String, ErrorData> {
+        match req.action.as_str() {
+            "create" => {
+                let item_id = req.item_id.ok_or_else(|| {
+                    ErrorData::invalid_params("item_id is required for create", None)
+                })?;
                 let body = req.body.ok_or_else(|| {
-                    ErrorData::invalid_params("body is required for comment", None)
+                    ErrorData::invalid_params("body is required for create", None)
                 })?;
                 if item_id.trim().is_empty() || body.trim().is_empty() {
-                    return Err(ErrorData::invalid_params("id and body are required", None));
+                    return Err(ErrorData::invalid_params(
+                        "item_id and body are required",
+                        None,
+                    ));
                 }
                 let author = crate::claims::owner_id();
                 self.with_backend_db(|conn| {
@@ -2562,24 +2627,29 @@ impl AgentflareMcp {
                     Ok(serde_json::to_string_pretty(&comment).unwrap_or_default())
                 })?
             }
-            "comment_edit" => {
-                let comment_id = req.comment_id.ok_or_else(|| {
-                    ErrorData::invalid_params("comment_id is required for comment_edit", None)
-                })?;
-                let body = req.body.ok_or_else(|| {
-                    ErrorData::invalid_params("body is required for comment_edit", None)
-                })?;
+            "edit" => {
+                let comment_id = req
+                    .id
+                    .ok_or_else(|| ErrorData::invalid_params("id is required for edit", None))?;
+                let body = req
+                    .body
+                    .ok_or_else(|| ErrorData::invalid_params("body is required for edit", None))?;
                 if comment_id.trim().is_empty() || body.trim().is_empty() {
-                    return Err(ErrorData::invalid_params(
-                        "comment_id and body are required",
-                        None,
-                    ));
+                    return Err(ErrorData::invalid_params("id and body are required", None));
                 }
                 let owner = crate::claims::owner_id();
                 let now = crate::claims::now();
                 let ttl = backend_claim_ttl_secs();
                 self.with_backend_db(|conn| {
-                    let comment = agentflare_backend::comment::get(conn, &comment_id)
+                    // The author/latest/claim checks and the write must be one
+                    // transaction — otherwise a comment landing between the
+                    // is_latest check and the write (routine under concurrent
+                    // multi-agent access) can silently violate the
+                    // "only the latest comment is editable" invariant.
+                    let tx = conn
+                        .unchecked_transaction()
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                    let comment = agentflare_backend::comment::get(&tx, &comment_id)
                         .map_err(map_backend_err)?;
                     if crate::claims::agent_of(&comment.author_agent)
                         != crate::claims::agent_of(&owner)
@@ -2589,7 +2659,7 @@ impl AgentflareMcp {
                             None,
                         ));
                     }
-                    if !agentflare_backend::comment::is_latest(conn, &comment)
+                    if !agentflare_backend::comment::is_latest(&tx, &comment)
                         .map_err(map_backend_err)?
                     {
                         return Err(ErrorData::invalid_params(
@@ -2598,7 +2668,7 @@ impl AgentflareMcp {
                         ));
                     }
                     if agentflare_backend::claim::has_active_claim_by_other(
-                        conn,
+                        &tx,
                         &comment.item_id,
                         &owner,
                         now,
@@ -2611,23 +2681,30 @@ impl AgentflareMcp {
                             None,
                         ));
                     }
-                    let updated = agentflare_backend::comment::update(conn, &comment_id, &body)
+                    let updated = agentflare_backend::comment::update(&tx, &comment_id, &body)
                         .map_err(map_backend_err)?;
+                    tx.commit()
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                     Ok(serde_json::to_string_pretty(&updated).unwrap_or_default())
                 })?
             }
-            "comment_delete" => {
-                let comment_id = req.comment_id.ok_or_else(|| {
-                    ErrorData::invalid_params("comment_id is required for comment_delete", None)
-                })?;
+            "delete" => {
+                let comment_id = req
+                    .id
+                    .ok_or_else(|| ErrorData::invalid_params("id is required for delete", None))?;
                 if comment_id.trim().is_empty() {
-                    return Err(ErrorData::invalid_params("comment_id is required", None));
+                    return Err(ErrorData::invalid_params("id is required", None));
                 }
                 let owner = crate::claims::owner_id();
                 let now = crate::claims::now();
                 let ttl = backend_claim_ttl_secs();
                 self.with_backend_db(|conn| {
-                    let comment = agentflare_backend::comment::get(conn, &comment_id)
+                    // See "edit" above: checks + write must be one transaction
+                    // to close the same TOCTOU window.
+                    let tx = conn
+                        .unchecked_transaction()
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                    let comment = agentflare_backend::comment::get(&tx, &comment_id)
                         .map_err(map_backend_err)?;
                     if crate::claims::agent_of(&comment.author_agent)
                         != crate::claims::agent_of(&owner)
@@ -2637,7 +2714,7 @@ impl AgentflareMcp {
                             None,
                         ));
                     }
-                    if !agentflare_backend::comment::is_latest(conn, &comment)
+                    if !agentflare_backend::comment::is_latest(&tx, &comment)
                         .map_err(map_backend_err)?
                     {
                         return Err(ErrorData::invalid_params(
@@ -2646,7 +2723,7 @@ impl AgentflareMcp {
                         ));
                     }
                     if agentflare_backend::claim::has_active_claim_by_other(
-                        conn,
+                        &tx,
                         &comment.item_id,
                         &owner,
                         now,
@@ -2659,17 +2736,19 @@ impl AgentflareMcp {
                             None,
                         ));
                     }
-                    agentflare_backend::comment::delete(conn, &comment_id)
+                    agentflare_backend::comment::delete(&tx, &comment_id)
                         .map_err(map_backend_err)?;
-                    Ok(serde_json::json!({"deleted": true, "comment_id": comment_id}).to_string())
+                    tx.commit()
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                    Ok(serde_json::json!({"deleted": true, "id": comment_id}).to_string())
                 })?
             }
-            "comment_list" => {
-                let item_id = req.id.ok_or_else(|| {
-                    ErrorData::invalid_params("id is required for comment_list", None)
+            "list" => {
+                let item_id = req.item_id.ok_or_else(|| {
+                    ErrorData::invalid_params("item_id is required for list", None)
                 })?;
                 if item_id.trim().is_empty() {
-                    return Err(ErrorData::invalid_params("id is required", None));
+                    return Err(ErrorData::invalid_params("item_id is required", None));
                 }
                 self.with_backend_db(|conn| {
                     let comments = agentflare_backend::comment::list_by_item(conn, &item_id)
@@ -2678,19 +2757,10 @@ impl AgentflareMcp {
                 })?
             }
             other => Err(ErrorData::invalid_params(
-                format!(
-                    "unknown item action: '{other}' — expected create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label|comment|comment_edit|comment_delete|comment_list"
-                ),
+                format!("unknown comment action: '{other}' — expected create|edit|delete|list"),
                 None,
             )),
         }
-    }
-
-    #[tool(
-        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label|comment|comment_edit|comment_delete|comment_list). See each field's description for when it's required."
-    )]
-    fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
-        self.item_inner(req)
     }
 
     fn label_inner(&self, req: LabelRequest) -> Result<String, ErrorData> {
@@ -4823,9 +4893,9 @@ mod tests {
         let item_id = created["id"].as_str().unwrap().to_string();
 
         let comment: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment".into(),
-                id: Some(item_id.clone()),
+            &s.comment(Parameters(CommentRequest {
+                action: "create".into(),
+                item_id: Some(item_id.clone()),
                 body: Some("Hello, world!".into()),
                 ..Default::default()
             }))
@@ -4836,9 +4906,9 @@ mod tests {
         assert!(comment["author_agent"].as_str().unwrap().contains(':'));
 
         let comments: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment_list".into(),
-                id: Some(item_id),
+            &s.comment(Parameters(CommentRequest {
+                action: "list".into(),
+                item_id: Some(item_id),
                 ..Default::default()
             }))
             .unwrap(),
@@ -4853,9 +4923,9 @@ mod tests {
     fn item_comment_rejects_empty_body() {
         let (_tmp, s) = harness();
         let err = s
-            .item(Parameters(ItemRequest {
-                action: "comment".into(),
-                id: Some("item-1".into()),
+            .comment(Parameters(CommentRequest {
+                action: "create".into(),
+                item_id: Some("item-1".into()),
                 body: Some("".into()),
                 ..Default::default()
             }))
@@ -4871,9 +4941,9 @@ mod tests {
         let item_id = created["id"].as_str().unwrap().to_string();
 
         let comment: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment".into(),
-                id: Some(item_id.clone()),
+            &s.comment(Parameters(CommentRequest {
+                action: "create".into(),
+                item_id: Some(item_id.clone()),
                 body: Some("original".into()),
                 ..Default::default()
             }))
@@ -4883,9 +4953,9 @@ mod tests {
         let comment_id = comment["id"].as_str().unwrap().to_string();
 
         let updated: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment_edit".into(),
-                comment_id: Some(comment_id.clone()),
+            &s.comment(Parameters(CommentRequest {
+                action: "edit".into(),
+                id: Some(comment_id.clone()),
                 body: Some("edited".into()),
                 ..Default::default()
             }))
@@ -4899,9 +4969,9 @@ mod tests {
     fn item_comment_edit_rejected_when_comment_not_found() {
         let (_tmp, s) = harness();
         let err = s
-            .item(Parameters(ItemRequest {
-                action: "comment_edit".into(),
-                comment_id: Some("nonexistent".into()),
+            .comment(Parameters(CommentRequest {
+                action: "edit".into(),
+                id: Some("nonexistent".into()),
                 body: Some("edited".into()),
                 ..Default::default()
             }))
@@ -4925,9 +4995,9 @@ mod tests {
             .unwrap();
 
         let err = s
-            .item(Parameters(ItemRequest {
-                action: "comment_edit".into(),
-                comment_id: Some(comment_id),
+            .comment(Parameters(CommentRequest {
+                action: "edit".into(),
+                id: Some(comment_id),
                 body: Some("edited".into()),
                 ..Default::default()
             }))
@@ -4962,9 +5032,9 @@ mod tests {
             .unwrap();
 
         let updated: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment_edit".into(),
-                comment_id: Some(comment_id),
+            &s.comment(Parameters(CommentRequest {
+                action: "edit".into(),
+                id: Some(comment_id),
                 body: Some("edited".into()),
                 ..Default::default()
             }))
@@ -4982,9 +5052,9 @@ mod tests {
         let item_id = created["id"].as_str().unwrap().to_string();
 
         let first: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment".into(),
-                id: Some(item_id.clone()),
+            &s.comment(Parameters(CommentRequest {
+                action: "create".into(),
+                item_id: Some(item_id.clone()),
                 body: Some("first".into()),
                 ..Default::default()
             }))
@@ -4994,9 +5064,9 @@ mod tests {
         let first_id = first["id"].as_str().unwrap().to_string();
 
         let second: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment".into(),
-                id: Some(item_id),
+            &s.comment(Parameters(CommentRequest {
+                action: "create".into(),
+                item_id: Some(item_id),
                 body: Some("second".into()),
                 ..Default::default()
             }))
@@ -5018,9 +5088,9 @@ mod tests {
         .unwrap();
 
         let err = s
-            .item(Parameters(ItemRequest {
-                action: "comment_edit".into(),
-                comment_id: Some(first_id),
+            .comment(Parameters(CommentRequest {
+                action: "edit".into(),
+                id: Some(first_id),
                 body: Some("edited".into()),
                 ..Default::default()
             }))
@@ -5028,9 +5098,9 @@ mod tests {
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
         let updated: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment_edit".into(),
-                comment_id: Some(second_id),
+            &s.comment(Parameters(CommentRequest {
+                action: "edit".into(),
+                id: Some(second_id),
                 body: Some("edited".into()),
                 ..Default::default()
             }))
@@ -5048,9 +5118,9 @@ mod tests {
         let item_id = created["id"].as_str().unwrap().to_string();
 
         let comment: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment".into(),
-                id: Some(item_id),
+            &s.comment(Parameters(CommentRequest {
+                action: "create".into(),
+                item_id: Some(item_id),
                 body: Some("delete-me".into()),
                 ..Default::default()
             }))
@@ -5060,9 +5130,9 @@ mod tests {
         let comment_id = comment["id"].as_str().unwrap().to_string();
 
         let result: serde_json::Value = serde_json::from_str(
-            &s.item(Parameters(ItemRequest {
-                action: "comment_delete".into(),
-                comment_id: Some(comment_id),
+            &s.comment(Parameters(CommentRequest {
+                action: "delete".into(),
+                id: Some(comment_id),
                 ..Default::default()
             }))
             .unwrap(),
@@ -5073,25 +5143,34 @@ mod tests {
 
     #[test]
     fn item_claim_response_includes_worktree_path() {
-        let (_tmp, s) = harness();
+        let tmp = tempfile::tempdir().unwrap();
+        // Isolated temp repo — this test must never run real `git
+        // worktree`/branch operations against the actual repository running
+        // the test suite.
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo_root = repo_dir.path().to_path_buf();
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo_root)
+                .output()
+                .unwrap()
+        };
+        run_git(&["init", "-b", "master"]);
+        run_git(&["config", "user.email", "test@test.com"]);
+        run_git(&["config", "user.name", "Test"]);
+        run_git(&["commit", "--allow-empty", "-m", "initial"]);
+
+        let s = AgentflareMcp {
+            backend_db_override: Some(tmp.path().join("backend.db")),
+            backend_project_link_override: Some(tmp.path().join("project.json")),
+            worktree_repo_root_override: Some(repo_root),
+            ..Default::default()
+        };
+
         let created: serde_json::Value =
             serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
         let item_id = created["id"].as_str().unwrap().to_string();
-        let seq_id = created["sequence_id"].as_i64().unwrap();
-        // clean up any stale artifact from prior test runs
-        let root = AgentflareMcp::repo_root();
-        let stale_wt = root
-            .join(".worktrees")
-            .join("task")
-            .join(seq_id.to_string());
-        let _ = std::process::Command::new("git")
-            .args(["worktree", "remove", "--force", &stale_wt.to_string_lossy()])
-            .current_dir(&root)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["branch", "-D", &format!("task/{}", seq_id)])
-            .current_dir(&root)
-            .output();
 
         let result: serde_json::Value = serde_json::from_str(
             &s.item(Parameters(ItemRequest {
@@ -5104,18 +5183,8 @@ mod tests {
         .unwrap();
         assert_eq!(result["status"], "acquired");
         assert!(result.get("worktree_path").is_some());
-        if let Some(path) = result["worktree_path"].as_str() {
-            let branch = format!("task/{}", seq_id);
-            let root = AgentflareMcp::repo_root();
-            let _ = std::process::Command::new("git")
-                .args(["worktree", "remove", path])
-                .current_dir(&root)
-                .output();
-            let _ = std::process::Command::new("git")
-                .args(["branch", "-D", &branch])
-                .current_dir(&root)
-                .output();
-        }
+        let path = result["worktree_path"].as_str().unwrap();
+        assert!(std::path::Path::new(path).exists());
     }
 
     #[test]

@@ -51,7 +51,14 @@ fn resolve_default_branch(repo_root: &Path) -> String {
     if run_git_in_ok(repo_root, &["rev-parse", "--verify", "main"]) {
         return "main".to_string();
     }
-    "master".to_string()
+    if run_git_in_ok(repo_root, &["rev-parse", "--verify", "master"]) {
+        return "master".to_string();
+    }
+    // Last resort: whatever branch is actually checked out here, so repos
+    // using trunk/develop/anything else still get a real branch instead of
+    // a hardcoded guess that may not exist.
+    run_git_in(repo_root, &["symbolic-ref", "--short", "HEAD"])
+        .unwrap_or_else(|_| "master".to_string())
 }
 
 pub fn already_isolated_for(branch: &str, repo_root: &Path) -> bool {
@@ -66,10 +73,15 @@ pub fn already_isolated_for(branch: &str, repo_root: &Path) -> bool {
     if git_dir == common_dir {
         return false;
     }
-    if run_git_in_ok(
+    // Exits 0 with EMPTY stdout in a plain linked worktree (not a git
+    // submodule) — only a non-empty path means we're actually inside a
+    // submodule's own superproject relationship, which is the case this
+    // guard exists to rule out.
+    if let Ok(out) = run_git_in(
         repo_root,
         &["rev-parse", "--show-superproject-working-tree"],
-    ) {
+    ) && !out.is_empty()
+    {
         return false;
     }
     match run_git_in(repo_root, &["branch", "--show-current"]) {
@@ -78,9 +90,17 @@ pub fn already_isolated_for(branch: &str, repo_root: &Path) -> bool {
     }
 }
 
+/// Adds `.worktrees/` to this repo's LOCAL, untracked ignore rules
+/// (`.git/info/exclude`) rather than the tracked `.gitignore` — a claim
+/// should never create a commit in the caller's repository (would sweep up
+/// any unrelated staged files, and any pre-existing uncommitted `.gitignore`
+/// edits, into a commit the agent didn't ask for).
 pub fn ensure_worktrees_ignored(repo_root: &Path) {
-    let gitignore = repo_root.join(".gitignore");
-    if let Ok(existing) = std::fs::read_to_string(&gitignore)
+    let Ok(common_dir) = run_git_in(repo_root, &["rev-parse", "--git-common-dir"]) else {
+        return;
+    };
+    let exclude_path = repo_root.join(common_dir).join("info").join("exclude");
+    if let Ok(existing) = std::fs::read_to_string(&exclude_path)
         && existing
             .lines()
             .any(|l| l.trim() == ".worktrees/" || l.trim() == ".worktrees")
@@ -88,41 +108,43 @@ pub fn ensure_worktrees_ignored(repo_root: &Path) {
         return;
     }
     let mut content = String::new();
-    if let Ok(existing) = std::fs::read_to_string(&gitignore) {
+    if let Ok(existing) = std::fs::read_to_string(&exclude_path) {
         content = existing;
     }
     if !content.ends_with('\n') && !content.is_empty() {
         content.push('\n');
     }
     content.push_str(".worktrees/\n");
-    if std::fs::write(&gitignore, content).is_err() {
-        eprintln!("worktree: failed to write .gitignore");
-        return;
+    if let Some(parent) = exclude_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
-    if !run_git_in_ok(repo_root, &["add", ".gitignore"]) {
-        eprintln!("worktree: failed to git add .gitignore");
-        return;
-    }
-    if !run_git_in_ok(repo_root, &["commit", "-m", "chore: ignore .worktrees/"]) {
-        eprintln!("worktree: failed to commit .gitignore");
+    if std::fs::write(&exclude_path, content).is_err() {
+        eprintln!("worktree: failed to write .git/info/exclude");
     }
 }
 
-pub fn create_for_item(
-    conn: &rusqlite::Connection,
+/// Creates an isolated git worktree for `item` against `target_branch`.
+///
+/// Deliberately takes an already-resolved `target_branch` instead of a
+/// database connection: callers should resolve the branch (`resolve_target_branch`,
+/// above) while still holding whatever lock guards the database, then call
+/// this *after* releasing it. `git worktree add` is a blocking
+/// filesystem+subprocess operation with no business running while a shared
+/// DB lock is held.
+pub fn create_worktree(
     item: &agentflare_backend::item::Item,
     repo_root: &Path,
+    target_branch: &str,
 ) -> Option<PathBuf> {
     let branch = format!("task/{}", item.sequence_id);
-    if already_isolated_for(&branch, repo_root) {
-        return Some(std::env::current_dir().unwrap_or_else(|_| repo_root.to_path_buf()));
-    }
-    let target = resolve_target_branch(conn, item, repo_root);
-    ensure_worktrees_ignored(repo_root);
     let worktree_path = repo_root
         .join(".worktrees")
         .join("task")
         .join(item.sequence_id.to_string());
+    if already_isolated_for(&branch, repo_root) {
+        return Some(worktree_path);
+    }
+    ensure_worktrees_ignored(repo_root);
     if let Some(parent) = worktree_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -134,7 +156,7 @@ pub fn create_for_item(
             &worktree_path.to_string_lossy(),
             "-b",
             &branch,
-            &target,
+            target_branch,
         ],
     ) {
         Ok(_) => Some(worktree_path),
@@ -156,13 +178,41 @@ mod tests {
     }
 
     fn init_repo() -> Repo {
+        init_repo_with_branch("master")
+    }
+
+    fn init_repo_with_branch(branch: &str) -> Repo {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_path_buf();
-        run_git_in(&path, &["init"]).unwrap();
+        run_git_in(&path, &["init", "-b", branch]).unwrap();
         run_git_in(&path, &["config", "user.email", "test@test.com"]).unwrap();
         run_git_in(&path, &["config", "user.name", "Test"]).unwrap();
         run_git_in(&path, &["commit", "--allow-empty", "-m", "initial"]).unwrap();
         Repo { _dir: dir, path }
+    }
+
+    fn test_item(sequence_id: i64) -> agentflare_backend::item::Item {
+        agentflare_backend::item::Item {
+            id: "test-id".into(),
+            project_id: "proj".into(),
+            state_id: "state".into(),
+            name: "test".into(),
+            description: String::new(),
+            priority: "none".into(),
+            parent_id: None,
+            assignee_agent: None,
+            sequence_id,
+            sort_order: 0.0,
+            started_at: None,
+            completed_at: None,
+            archived_at: None,
+            external_source: None,
+            external_id: None,
+            metadata: "{}".into(),
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+        }
     }
 
     #[test]
@@ -172,29 +222,40 @@ mod tests {
     }
 
     #[test]
-    fn resolve_default_branch_falls_back_when_no_remote() {
-        let repo = init_repo();
-        assert_eq!(resolve_default_branch(&repo.path), "master");
+    fn resolve_default_branch_falls_back_to_actual_head_for_nonstandard_names() {
+        // No origin, no "main", no "master" — must not guess "master" when
+        // the repo's real default branch is named something else entirely.
+        let repo = init_repo_with_branch("trunk");
+        assert_eq!(resolve_default_branch(&repo.path), "trunk");
     }
 
     #[test]
     fn ensure_worktrees_ignored_is_noop_when_already_ignored() {
         let repo = init_repo();
-        std::fs::write(repo.path.join(".gitignore"), ".worktrees/\n").unwrap();
-        run_git_in_ok(&repo.path, &["add", ".gitignore"]);
-        run_git_in_ok(&repo.path, &["commit", "-m", "add gitignore"]);
-        let before = std::fs::read_to_string(repo.path.join(".gitignore")).unwrap();
+        let exclude_path = repo.path.join(".git").join("info").join("exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(&exclude_path, ".worktrees/\n").unwrap();
+        let before = std::fs::read_to_string(&exclude_path).unwrap();
         ensure_worktrees_ignored(&repo.path);
-        let after = std::fs::read_to_string(repo.path.join(".gitignore")).unwrap();
+        let after = std::fs::read_to_string(&exclude_path).unwrap();
         assert_eq!(before, after);
     }
 
     #[test]
-    fn ensure_worktrees_ignored_adds_and_commits_when_missing() {
+    fn ensure_worktrees_ignored_adds_to_local_exclude_without_committing() {
         let repo = init_repo();
         ensure_worktrees_ignored(&repo.path);
-        let content = std::fs::read_to_string(repo.path.join(".gitignore")).unwrap();
+        let exclude_path = repo.path.join(".git").join("info").join("exclude");
+        let content = std::fs::read_to_string(&exclude_path).unwrap();
         assert!(content.contains(".worktrees/"));
+        // Must never touch the tracked .gitignore or create a commit.
+        assert!(!repo.path.join(".gitignore").exists());
+        let log = run_git_in(&repo.path, &["log", "--oneline"]).unwrap();
+        assert_eq!(
+            log.lines().count(),
+            1,
+            "no new commit should have been made"
+        );
     }
 
     #[test]
@@ -204,64 +265,32 @@ mod tests {
     }
 
     #[test]
-    fn create_for_item_creates_worktree_and_branch() {
+    fn already_isolated_for_true_inside_the_worktree_it_created() {
+        let repo = init_repo();
+        let item = test_item(1);
+        let target = resolve_default_branch(&repo.path);
+        let worktree_path = create_worktree(&item, &repo.path, &target).unwrap();
+        assert!(already_isolated_for("task/1", &worktree_path));
+    }
+
+    #[test]
+    fn create_worktree_creates_worktree_and_branch() {
         let repo = init_repo();
         let worktree_path = repo.path.join(".worktrees").join("task").join("1");
-        let item = agentflare_backend::item::Item {
-            id: "test-id".into(),
-            project_id: "proj".into(),
-            state_id: "state".into(),
-            name: "test".into(),
-            description: String::new(),
-            priority: "none".into(),
-            parent_id: None,
-            assignee_agent: None,
-            sequence_id: 1,
-            sort_order: 0.0,
-            started_at: None,
-            completed_at: None,
-            archived_at: None,
-            external_source: None,
-            external_id: None,
-            metadata: "{}".into(),
-            created_at: 0,
-            updated_at: 0,
-            deleted_at: None,
-        };
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let result = create_for_item(&conn, &item, &repo.path);
+        let item = test_item(1);
+        let target = resolve_default_branch(&repo.path);
+        let result = create_worktree(&item, &repo.path, &target);
         assert!(result.is_some());
         assert!(worktree_path.exists());
     }
 
     #[test]
-    fn create_for_item_soft_fails_on_bad_git() {
+    fn create_worktree_soft_fails_on_bad_git() {
         let tmp = TempDir::new().unwrap();
         let bad_root = tmp.path().join("not-a-repo");
         std::fs::create_dir_all(&bad_root).unwrap();
-        let item = agentflare_backend::item::Item {
-            id: "test-id".into(),
-            project_id: "proj".into(),
-            state_id: "state".into(),
-            name: "test".into(),
-            description: String::new(),
-            priority: "none".into(),
-            parent_id: None,
-            assignee_agent: None,
-            sequence_id: 1,
-            sort_order: 0.0,
-            started_at: None,
-            completed_at: None,
-            archived_at: None,
-            external_source: None,
-            external_id: None,
-            metadata: "{}".into(),
-            created_at: 0,
-            updated_at: 0,
-            deleted_at: None,
-        };
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let result = create_for_item(&conn, &item, &bad_root);
+        let item = test_item(1);
+        let result = create_worktree(&item, &bad_root, "master");
         assert!(result.is_none());
     }
 }
