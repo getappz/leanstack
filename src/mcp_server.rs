@@ -4471,4 +4471,51 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    fn item_rejects_unknown_action() {
+        let (_tmp, s) = harness();
+        let err = s
+            .item(Parameters(ItemRequest {
+                action: "nonexistent".into(),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn label_rejects_unknown_action() {
+        let (_tmp, s) = harness();
+        let err = s
+            .label(Parameters(LabelRequest {
+                action: "nonexistent".into(),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn webhook_rejects_unknown_action() {
+        let (_tmp, s) = harness();
+        let err = s
+            .webhook(Parameters(WebhookRequest {
+                action: "nonexistent".into(),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn project_rejects_unknown_action() {
+        let (_tmp, s) = harness();
+        let err = s
+            .project(Parameters(ProjectRequest {
+                action: "nonexistent".into(),
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
 }
