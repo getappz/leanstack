@@ -292,7 +292,8 @@ fn write_managed_block(
             end += 1;
         }
         let new_content = content[..start].to_string() + &new_block + &content[end..];
-        std::fs::write(profile, new_content)?;
+        crate::atomic_fs::write_bytes_with_fallback(profile, new_content.as_bytes(), None)
+            .map_err(std::io::Error::other)?;
         return Ok(());
     }
 
@@ -301,7 +302,8 @@ fn write_managed_block(
         new_content.push('\n');
     }
     new_content.push_str(&new_block);
-    std::fs::write(profile, new_content)?;
+    crate::atomic_fs::write_bytes_with_fallback(profile, new_content.as_bytes(), None)
+        .map_err(std::io::Error::other)?;
     Ok(())
 }
 

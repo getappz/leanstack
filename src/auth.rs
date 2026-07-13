@@ -187,7 +187,8 @@ pub fn activate_with(agent: &str, profile: &str, reload_daemon: bool, json: bool
             if auth_crypt::is_encrypted(&data) {
                 if let Some(ref pw) = passphrase {
                     if let Some(decrypted) = auth_crypt::decrypt(&data, pw) {
-                        fs::write(&dest, decrypted).expect("write");
+                        crate::atomic_fs::write_bytes_with_fallback(&dest, &decrypted, None)
+                            .expect("write");
                     } else {
                         eprintln!(
                             "warning: cannot decrypt {} — wrong passphrase",
@@ -203,7 +204,7 @@ pub fn activate_with(agent: &str, profile: &str, reload_daemon: bool, json: bool
                     continue;
                 }
             } else {
-                fs::write(&dest, data).expect("write");
+                crate::atomic_fs::write_bytes_with_fallback(&dest, &data, None).expect("write");
             }
             restored += 1;
         }
@@ -1037,7 +1038,6 @@ fn read_isolate_mode(dir: &std::path::Path) -> Option<String> {
     }
     None
 }
-
 fn activate_into(agent: &str, profile: &str, target_dir: &std::path::Path) {
     let cat = match catalog_for(agent) {
         Some(c) => c,
@@ -1058,7 +1058,8 @@ fn activate_into(agent: &str, profile: &str, target_dir: &std::path::Path) {
             if auth_crypt::is_encrypted(&data) {
                 if let Some(ref pw) = passphrase {
                     if let Some(decrypted) = auth_crypt::decrypt(&data, pw) {
-                        fs::write(&dest, decrypted).expect("write");
+                        crate::atomic_fs::write_bytes_with_fallback(&dest, &decrypted, None)
+                            .expect("write");
                     } else {
                         eprintln!(
                             "warning: cannot decrypt {} — wrong passphrase",
@@ -1074,7 +1075,7 @@ fn activate_into(agent: &str, profile: &str, target_dir: &std::path::Path) {
                     continue;
                 }
             } else {
-                fs::write(&dest, data).expect("write");
+                crate::atomic_fs::write_bytes_with_fallback(&dest, &data, None).expect("write");
             }
         }
     }
