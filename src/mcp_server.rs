@@ -4037,4 +4037,167 @@ mod tests {
     // depend on what markers happen to exist above the OS temp directory on
     // whatever machine runs this — not a property this test can control. The
     // fallback itself is a single trivial `None => return start`.
+
+    #[test]
+    fn asset_attach_get_list_delete_round_trip() {
+        crate::paths::test_support::with_temp_home(|| {
+            let (_tmp, s) = backend_harness();
+            let home = crate::paths::home();
+            let staging = home.join(".agentflare").join("staging");
+            std::fs::create_dir_all(&staging).unwrap();
+
+            let item: serde_json::Value = serde_json::from_str(
+                &s.backend_item_create(Parameters(empty_item_create("asset-test")))
+                    .unwrap(),
+            )
+            .unwrap();
+            let item_id = item["id"].as_str().unwrap().to_string();
+
+            let content = b"hello asset test";
+            std::fs::write(staging.join("test.txt"), content).unwrap();
+
+            let attached: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "attach".into(),
+                    id: None,
+                    item_id: Some(item_id.clone()),
+                    project_id: None,
+                    filename: Some("test.txt".into()),
+                    metadata: Some(r#"{"source":"test"}"#.into()),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(attached["filename"], "test.txt");
+            let asset_id = attached["id"].as_str().unwrap().to_string();
+
+            let got: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "get".into(),
+                    id: Some(asset_id.clone()),
+                    item_id: None,
+                    project_id: None,
+                    filename: None,
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(got["asset"]["filename"], "test.txt");
+            assert!(got["content"].as_str().is_some());
+
+            let list: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "list".into(),
+                    id: None,
+                    item_id: Some(item_id.clone()),
+                    project_id: None,
+                    filename: None,
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(list.as_array().unwrap().len(), 1);
+            assert_eq!(list[0]["id"], asset_id);
+
+            let del: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "delete".into(),
+                    id: Some(asset_id.clone()),
+                    item_id: None,
+                    project_id: None,
+                    filename: None,
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(del["deleted"], true);
+
+            let after: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "list".into(),
+                    id: None,
+                    item_id: Some(item_id),
+                    project_id: None,
+                    filename: None,
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(after.as_array().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn asset_attach_rejects_path_traversal() {
+        crate::paths::test_support::with_temp_home(|| {
+            let (_tmp, s) = backend_harness();
+            let err = s
+                .asset(Parameters(AssetRequest {
+                    action: "attach".into(),
+                    id: None,
+                    item_id: Some("item-1".into()),
+                    project_id: None,
+                    filename: Some("../etc/hosts".into()),
+                    metadata: None,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        });
+    }
+
+    #[test]
+    fn asset_attach_rejects_missing_filename() {
+        crate::paths::test_support::with_temp_home(|| {
+            let (_tmp, s) = backend_harness();
+            let err = s
+                .asset(Parameters(AssetRequest {
+                    action: "attach".into(),
+                    id: None,
+                    item_id: Some("item-1".into()),
+                    project_id: None,
+                    filename: None,
+                    metadata: None,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        });
+    }
+
+    #[test]
+    fn asset_attach_rejects_both_item_and_project() {
+        crate::paths::test_support::with_temp_home(|| {
+            let (_tmp, s) = backend_harness();
+            let err = s
+                .asset(Parameters(AssetRequest {
+                    action: "attach".into(),
+                    id: None,
+                    item_id: Some("item-1".into()),
+                    project_id: Some("proj-1".into()),
+                    filename: Some("anything.txt".into()),
+                    metadata: None,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        });
+    }
+
+    #[test]
+    fn asset_get_rejects_missing_id() {
+        let (_tmp, s) = backend_harness();
+        let err = s
+            .asset(Parameters(AssetRequest {
+                action: "get".into(),
+                id: None,
+                item_id: None,
+                project_id: None,
+                filename: None,
+                metadata: None,
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
 }
