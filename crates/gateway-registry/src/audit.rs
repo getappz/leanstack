@@ -32,13 +32,23 @@ pub fn record(path: &Path, server: &str, tool: &str, args: &Value, outcome: Resu
             "outcome": "err", "error_kind": error_kind,
         }),
     };
-    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         Ok(mut f) => {
             if let Err(e) = writeln!(f, "{line}") {
-                eprintln!("gateway-registry: failed to write audit log entry to {}: {e}", path.display());
+                eprintln!(
+                    "gateway-registry: failed to write audit log entry to {}: {e}",
+                    path.display()
+                );
             }
         }
-        Err(e) => eprintln!("gateway-registry: failed to open audit log {}: {e}", path.display()),
+        Err(e) => eprintln!(
+            "gateway-registry: failed to open audit log {}: {e}",
+            path.display()
+        ),
     }
 }
 
@@ -66,8 +76,8 @@ mod tests {
         let path = tmp.path();
         let args = serde_json::json!({"query": "do-not-leak-me", "limit": 5});
 
-        record(path, "memory_store", "search", &args, Ok(()));
-        record(path, "memory_store", "search", &args, Err("Upstream"));
+        record(path, "acme", "do_thing", &args, Ok(()));
+        record(path, "acme", "do_thing", &args, Err("Upstream"));
 
         let contents = std::fs::read_to_string(path).unwrap();
         assert!(!contents.contains("do-not-leak-me"), "{contents}");
@@ -75,8 +85,8 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let first: Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["server"], "memory_store");
-        assert_eq!(first["tool"], "search");
+        assert_eq!(first["server"], "acme");
+        assert_eq!(first["tool"], "do_thing");
         assert_eq!(first["outcome"], "ok");
         assert!(first["args_hash"].is_string());
 

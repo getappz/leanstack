@@ -2,7 +2,9 @@
 // its official install methods in priority order; the runner detects which
 // required helper (curl, brew, …) is present on this platform and runs the
 // first method that fits. No version manager needed — the tools' own installers
-// fetch prebuilt binaries, verify checksums, and fix PATH themselves.
+// fetch prebuilt binaries, verify checksums, and fix PATH themselves. Tools
+// with no such installer of their own route through mise instead (see
+// mise_install.rs).
 use std::process::{Command, Stdio};
 
 /// One official install method for a tool.
@@ -53,10 +55,10 @@ pub const LEAN_CTX: Tool = Tool {
     ],
     // Post-install steps, run as direct process spawns (not `sh -c`, which
     // lean-ctx's hook also blocks):
-    //   1. allow agentflare + mise in the shell-hook allowlist. agentflare
-    //      installs tools through mise and `agentflare run` launches via it,
-    //      and neither is in lean-ctx's built-in default allowlist, so the
-    //      onboarded gate would otherwise block them under the default enforce.
+    //   1. allow agentflare + mise in the shell-hook allowlist. `agentflare
+    //      run` launches agents via mise, and neither is in lean-ctx's
+    //      built-in default allowlist, so the onboarded gate would otherwise
+    //      block them under the default enforce.
     //   2. set the strongest compression ("power mode") — the reason to run
     //      lean-ctx at all is denser model output.
     post_install: &[
@@ -166,10 +168,12 @@ mod tests {
                 && argv.contains(&"agentflare")
                 && argv.contains(&"mise")
         }));
-        assert!(LEAN_CTX
-            .post_install
-            .iter()
-            .any(|argv| argv.contains(&"compression_level") && argv.contains(&"max")));
+        assert!(
+            LEAN_CTX
+                .post_install
+                .iter()
+                .any(|argv| argv.contains(&"compression_level") && argv.contains(&"max"))
+        );
     }
 
     #[test]

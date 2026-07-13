@@ -17,6 +17,19 @@ unfamiliar code with its composed-context command before exploring.
 npm install -g lean-ctx-bin && lean-ctx onboard
 ```
 
+## Cross-session memory
+
+agentflare ships persistent memory in the binary itself — no separate
+install. Recall relevant context at session start via the CLI (works even
+without MCP support):
+
+```bash
+agentflare memory context
+agentflare memory search "<query>"
+```
+
+Storing new memories (`memory_remember`) is exposed as an MCP tool; if your
+tool has MCP support, prefer it there. Recall-only via the CLI otherwise.
 
 ## Web search
 

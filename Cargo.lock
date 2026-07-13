@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "agentflare"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "aes-gcm",
  "agent-detector",
@@ -79,6 +79,7 @@ dependencies = [
  "dirs",
  "eyre",
  "flate2",
+ "hex",
  "insta",
  "pbkdf2",
  "ponytail",
@@ -102,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "agentflare-agent-registry"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "dirs",
@@ -112,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "agentflare-artifacts"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -122,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "agentflare-caveman"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "regex",
@@ -135,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "agentflare-gateway-registry"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "futures-util",
@@ -156,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "agentflare-skill-registry"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "agentflare-agent-registry",
  "dirs",
@@ -1019,6 +1020,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1606,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "ponytail"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "serde",

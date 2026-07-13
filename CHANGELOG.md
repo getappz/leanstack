@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0](https://github.com/getappz/agentflare/compare/agentflare-v1.2.0...agentflare-v1.3.0) - 2026-07-12
+
+### Added
+
+- *(hooks)* dynamic memory nudge, agentflare: prefix, auto-detect agent
+- *(agents)* headless agent invocation — run a prompt, capture the reply ([#151](https://github.com/getappz/agentflare/pull/151))
+- *(init)* detect GitHub repos and register github-mcp-server behind the gateway
+
+### Fixed
+
+- *(mcp)* register memory tools with the tool_router so they're reachable
+- *(headless)* use kill -s KILL -- <pid> to avoid CLI arg-parsing ambiguity
+- *(run)* reject --print combined with --model/--mode/--env/trailing args instead of silently ignoring them — the headless path never threaded those through, so users had no signal their flags were dropped.
+- *(headless)* kill the whole process tree on timeout, not just the direct child — a descendant holding the stdout pipe open (e.g. a grandchild spawned by claude -p / codex exec) could hang the reader thread forever, defeating the timeout entirely.
+- *(init)* only print gateway follow-up note when registration succeeded
+- *(init)* make gateway register() self-idempotent, not just caller-guarded
+
+### Other
+
+- add clippy, fmt, and cargo-deny gates behind a CI Green aggregator ([#158](https://github.com/getappz/agentflare/pull/158))
+- address CodeRabbit findings on the engram-removal commit
+- remove engram integration — replaced by built-in memory module
+- Merge remote-tracking branch 'origin/master' into refactor/db-consolidate-secrets
+- Merge remote-tracking branch 'origin/master' into feat/review-consensus
+- cap build/test job at 25 min so a hung test fails fast instead of pinning a runner for 6h
+- Merge remote-tracking branch 'origin/master' into feat/claim-ledger
+
 ## [1.2.0](https://github.com/getappz/agentflare/compare/agentflare-v1.1.0...agentflare-v1.2.0) - 2026-07-08
 
 ### Added

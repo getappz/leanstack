@@ -34,8 +34,6 @@ pub const LEANCTX_SUPERSEDED: &[&str] = &[
     "Prefer lean-ctx over native tools: ctx_read > Read/cat, ctx_shell > Bash, ctx_search > Grep, ctx_glob > Glob. Orient with ctx_compose before exploring unfamiliar code — one call instead of a search-read-search chain. ctx_callgraph answers \"who calls X\", not grep. Same rule for every subagent.",
 ];
 
-
-
 pub fn all() -> Vec<&'static str> {
     vec![EXA, GIT, LEANCTX]
 }

@@ -10,13 +10,34 @@ use rmcp::model::{
 };
 
 const SUB_SKILLS: &[(&str, &str)] = &[
-    ("review", "Over-engineering review of the current diff/branch/repo"),
-    ("audit", "Whole-repo over-engineering audit: ranked list of what to delete"),
-    ("debt", "Harvest `ponytail:` shortcut comments into a tracked ledger"),
-    ("gain", "Measured-impact scoreboard: less code, less cost, more speed"),
-    ("help", "Quick-reference card for all ponytail modes, skills, and commands"),
-    ("playbook", "TDD-aware project companion — red-green-refactor enforced"),
-    ("no-hallucination", "Reality-check layer: blocks invented APIs, deprecated methods, undeclared variables"),
+    (
+        "review",
+        "Over-engineering review of the current diff/branch/repo",
+    ),
+    (
+        "audit",
+        "Whole-repo over-engineering audit: ranked list of what to delete",
+    ),
+    (
+        "debt",
+        "Harvest `ponytail:` shortcut comments into a tracked ledger",
+    ),
+    (
+        "gain",
+        "Measured-impact scoreboard: less code, less cost, more speed",
+    ),
+    (
+        "help",
+        "Quick-reference card for all ponytail modes, skills, and commands",
+    ),
+    (
+        "playbook",
+        "TDD-aware project companion — red-green-refactor enforced",
+    ),
+    (
+        "no-hallucination",
+        "Reality-check layer: blocks invented APIs, deprecated methods, undeclared variables",
+    ),
 ];
 
 pub fn list_prompts() -> Vec<Prompt> {
@@ -71,7 +92,10 @@ pub fn get_prompt(
 }
 
 fn assistant_text(msg: impl Into<String>) -> GetPromptResult {
-    GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::Assistant, msg)])
+    GetPromptResult::new(vec![PromptMessage::new_text(
+        PromptMessageRole::Assistant,
+        msg,
+    )])
 }
 
 fn get_ponytail_mode(request: &GetPromptRequestParams) -> GetPromptResult {
@@ -146,10 +170,7 @@ fn get_artifact_command(request: &GetPromptRequestParams) -> GetPromptResult {
     ))
 }
 
-fn get_handoff_command(
-    request: &GetPromptRequestParams,
-    agent: Option<&str>,
-) -> GetPromptResult {
+fn get_handoff_command(request: &GetPromptRequestParams, agent: Option<&str>) -> GetPromptResult {
     // Identity comes from AGENTFLARE_AGENT baked into the MCP entry by
     // `agentflare init --agent <name>`; claude-code is the legacy default.
     let me = agent.unwrap_or("claude-code");
@@ -168,25 +189,27 @@ fn get_handoff_command(
              <recipient> <brief> — hand the relevant work product to that agent (e.g. `codex review the API design above`)\n\
              inbox [me] — list artifacts addressed to an agent (default: {me})\n\
              thread <id> — show a handoff thread's artifacts in order\n\
-             Work products only — facts and decisions belong in memory, not artifacts.",
+             Work products only — facts and decisions belong in memory (memory_remember), not artifacts.",
         ));
     }
 
     assistant_text(format!(
         "Handoff command: `{command}`\n\n\
          Grammar: first word is a subcommand (`inbox`, `thread`) or a recipient; the rest is the brief.\n\
-         - `<recipient> <brief>` → artifact_publish with recipient=<recipient>, sender={me}, \
-         a fresh thread_id (or the current one when continuing an exchange), name from the brief, \
-         and content = the work product the brief points at (the preceding conversation content, \
-         diff, review, or document — ask only if genuinely ambiguous). Prepend the brief to the \
-         content so the recipient knows what is being asked. When answering an item from your \
-         inbox, set reply_to=<that artifact id> and reuse its thread_id.\n\
+         - `<recipient> <brief>` → call the `handoff` tool with recipient=<recipient>, \
+         name from the brief, content = the work product the brief points at (the preceding \
+         conversation content, diff, review, or document — ask only if genuinely ambiguous), \
+         and a thread_id when continuing an exchange. Prepend the brief to the content so the \
+         recipient knows what is being asked (sender is set to your identity, {me}, \
+         automatically). Use the `handoff` tool, not artifact_publish, so recipient can't be \
+         omitted. When answering an item from your inbox, set reply_to=<that artifact id> and \
+         reuse its thread_id.\n\
          - `inbox [me]` → artifact_list with recipient=<me or {me}>; summarize sender, \
          name, and brief for each.\n\
          - `thread <id>` → artifact_list with thread_id=<id>; present in chronological order with \
          reply lineage.\n\
          Report the resulting URL (or listing) afterwards. Work products only — facts/decisions \
-         belong in memory, not artifacts."
+         go to memory (memory_remember), not artifacts."
     ))
 }
 
@@ -259,7 +282,7 @@ mod tests {
         let result = get_prompt(&params, None).unwrap();
         let text = format!("{:?}", result.messages[0].content);
         assert!(text.contains("codex review the API design above"), "{text}");
-        assert!(text.contains("artifact_publish"), "{text}");
+        assert!(text.contains("`handoff` tool"), "{text}");
         assert!(text.contains("recipient"), "{text}");
         assert!(text.contains("reply_to"), "{text}");
     }
@@ -275,7 +298,10 @@ mod tests {
         let params = GetPromptRequestParams::new("artifact").with_arguments(args);
         let result = get_prompt(&params, None).unwrap();
         let text = format!("{:?}", result.messages[0].content);
-        assert!(text.contains("publish --type markdown --favicon 🚀"), "{text}");
+        assert!(
+            text.contains("publish --type markdown --favicon 🚀"),
+            "{text}"
+        );
         assert!(text.contains("artifact_publish"), "{text}");
         assert!(text.contains("artifact_delete"), "{text}");
     }
@@ -288,7 +314,7 @@ mod tests {
         let params = GetPromptRequestParams::new("handoff").with_arguments(args);
         let result = get_prompt(&params, Some("opencode")).unwrap();
         let text = format!("{:?}", result.messages[0].content);
-        assert!(text.contains("sender=opencode"), "{text}");
+        assert!(text.contains("identity, opencode"), "{text}");
         assert!(text.contains("recipient=<me or opencode>"), "{text}");
         assert!(!text.contains("claude-code"), "{text}");
     }
@@ -301,7 +327,7 @@ mod tests {
         let params = GetPromptRequestParams::new("handoff").with_arguments(args);
         let result = get_prompt(&params, None).unwrap();
         let text = format!("{:?}", result.messages[0].content);
-        assert!(text.contains("sender=claude-code"), "{text}");
+        assert!(text.contains("identity, claude-code"), "{text}");
     }
 
     #[test]

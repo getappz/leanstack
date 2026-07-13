@@ -19,10 +19,12 @@ Two non-overlapping layers, plus two Claude-Code-only companions:
 | Layer | What it compresses | Tool |
 |---|---|---|
 | **lean-ctx** | tool I/O *within* a session — reads, shell output, search, up to 99% | [yvgude/lean-ctx](https://github.com/yvgude/lean-ctx) |
+| **memory** (built-in) | knowledge *across* sessions — decisions, facts, preferences that survive a session ending | ships in the binary, SQLite + FTS5, no separate install |
 | **Caveman** (Claude Code only) | conversation verbosity, ~65% | companion plugin |
 | **Ponytail** (Claude Code only) | code-writing over-engineering | companion plugin |
 
-lean-ctx handles token compression within a session.
+lean-ctx and the built-in memory aren't substitutes for each other — one saves
+tokens inside a session, the other saves the re-explaining tax across sessions.
 
 **Why Rust, not Node:** Claude Code doesn't bundle or require Node.js — it's a
 standalone compiled binary. A plugin whose hooks shell out to `node` breaks on
@@ -57,10 +59,11 @@ for a sense of scale. Not a controlled benchmark; one data point, your mileage v
 lean-ctx   34.2M tokens saved   92% compression   $88.45 saved   (lifetime; lean-ctx gain)
 caveman    1.16M tokens saved (~65%)                              (single session; caveman-stats hook)
 ponytail   23 `ponytail:` shortcut markers logged, no token figure (ponytail doesn't measure per-repo savings)
+memory     2 sessions, 11 observations tracked, across 2 projects  (agentflare memory sessions/search)
 ```
 
-Check your own: `lean-ctx gain` · `/caveman-stats` (Claude Code) · `ponytail-debt` skill.
-Don't trust this table blindly either — re-run those commands yourself.
+Check your own: `lean-ctx gain` · `/caveman-stats` (Claude Code) · `ponytail-debt` skill ·
+`agentflare memory context`. Don't trust this table blindly either — re-run those commands yourself.
 
 ---
 
@@ -123,12 +126,14 @@ plugin loader:
 codex plugin marketplace add getappz/agentflare
 codex plugin install agentflare
 ```
-then `agentflare init --agent codex` for rules/lean-ctx setup (Codex's
+then `agentflare init --agent codex` for the rules/lean-ctx setup (Codex's
 hook wiring itself comes from the plugin manifest, not `init`).
 
-Each run: writes rule files (if absent), installs lean-ctx (`curl -fsSL https://raw.githubusercontent.com/yvgude/lean-ctx/main/install.sh | sh` or `brew tap yvgude/lean-ctx && brew install lean-ctx && lean-ctx onboard`) if missing, wires hooks/MCP where the host
-supports it. Detection-first — already-satisfied components are skipped, nothing
-gets clobbered.
+Each run: writes rule files (if absent), installs lean-ctx (native `curl | sh`
+or Homebrew installer) if missing, wires hooks/MCP where the host supports
+it. Detection-first — already-satisfied components are skipped, nothing gets
+clobbered. Persistent memory ships in the binary itself — nothing to install
+for it.
 
 ## Docs-only fallback (Aider, other AGENTS.md readers)
 
@@ -147,6 +152,7 @@ src/
 │                         # Windows, learned the hard way)
 ├── state.rs              # ~/.agentflare/state.json — on/off flag for the hooks
 ├── rule_text.rs           # shared rule copy (Exa, git, lean-ctx usage)
+├── memory/                # built-in persistent memory (SQLite + FTS5)
 ├── components.rs          # registry: each entry checks + fixes itself, host-aware
 ├── init.rs                # `agentflare init --agent X` — runs every component,
 │                           # wires hooks directly for claude-code/cursor
@@ -165,7 +171,7 @@ Adding a new managed component means adding one entry to `components.rs` — nei
 
 ## What Gets Created
 
-**Claude Code**: `~/.claude/rules/{exa,git,lean-ctx}.md`, `~/.claude/settings.json` hooks section, `~/.config/{caveman,ponytail}/config.json`, `~/.agentflare/`.
+**Claude Code**: `~/.claude/rules/{exa,git,lean-ctx}.md`, `~/.claude/settings.json` hooks section, `~/.config/{caveman,ponytail}/config.json`, `~/.agentflare/` (includes the built-in memory database).
 
 **Codex**: project-local `AGENTS.md` (only if absent), `~/.agentflare/`.
 
@@ -183,8 +189,7 @@ Nothing is created if it already exists.
 
 Remove the binary (see Install section above), then remove whatever `init`
 wrote for the hosts you set up — see "What Gets Created" above. Ponytail/
-Caveman plugins themselves stay installed (uninstall separately if
-wanted).
+Caveman plugins themselves stay installed (uninstall separately if wanted).
 
 ---
 

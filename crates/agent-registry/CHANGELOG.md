@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/getappz/agentflare/compare/agentflare-agent-registry-v0.1.0...agentflare-agent-registry-v0.1.1) - 2026-07-12
+
+### Added
+
+- *(agents)* headless agent invocation — run a prompt, capture the reply ([#151](https://github.com/getappz/agentflare/pull/151))
+
+### Other
+
+- add clippy, fmt, and cargo-deny gates behind a CI Green aggregator ([#158](https://github.com/getappz/agentflare/pull/158))
+
 ## [0.1.0](https://github.com/getappz/agentflare/releases/tag/agent-registry-v0.1.0) - 2026-07-08
 
 ### Fixed

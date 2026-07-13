@@ -30,7 +30,7 @@ pub enum Agent {
 }
 
 impl Agent {
-    #[must_use] 
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "claude-code",
@@ -278,12 +278,28 @@ pub static REGISTRY: &[AgentSpec] = &[
 /// Not yet consumed outside tests — wired up by the upcoming agent detection
 /// engine and CLI commands.
 #[allow(dead_code)]
-#[must_use] 
+#[must_use]
 pub fn spec(agent: Agent) -> &'static AgentSpec {
     REGISTRY
         .iter()
         .find(|s| s.id == agent)
         .expect("every Agent variant has exactly one REGISTRY entry")
+}
+
+/// The subcommand/flags that put an agent's CLI into non-interactive "print"
+/// mode, to be followed by the prompt as the final argument (e.g. `claude -p
+/// "<prompt>"`, `codex exec "<prompt>"`). `None` for agents with no headless
+/// invocation (editor-embedded, or simply not yet mapped).
+#[allow(dead_code)]
+#[must_use]
+pub fn headless_args(agent: Agent) -> Option<&'static [&'static str]> {
+    match agent {
+        Agent::ClaudeCode => Some(&["-p"]),
+        Agent::Codex => Some(&["exec"]),
+        Agent::GeminiCli => Some(&["-p"]),
+        Agent::Opencode => Some(&["run"]),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -298,7 +314,10 @@ mod tests {
     #[test]
     fn registry_has_seventeen_cli_tier_and_three_extension_tier() {
         let cli_count = REGISTRY.iter().filter(|s| s.tier == Tier::Cli).count();
-        let ext_count = REGISTRY.iter().filter(|s| s.tier == Tier::Extension).count();
+        let ext_count = REGISTRY
+            .iter()
+            .filter(|s| s.tier == Tier::Extension)
+            .count();
         assert_eq!(cli_count, 17);
         assert_eq!(ext_count, 3);
     }
@@ -337,5 +356,20 @@ mod tests {
         for s in REGISTRY {
             assert_eq!(s.id.as_str(), s.display_name);
         }
+    }
+
+    #[test]
+    fn headless_args_map_known_print_modes() {
+        assert_eq!(headless_args(Agent::ClaudeCode), Some(&["-p"][..]));
+        assert_eq!(headless_args(Agent::Codex), Some(&["exec"][..]));
+        assert_eq!(headless_args(Agent::GeminiCli), Some(&["-p"][..]));
+        assert_eq!(headless_args(Agent::Opencode), Some(&["run"][..]));
+    }
+
+    #[test]
+    fn headless_args_none_for_agents_without_a_print_mode() {
+        // Editor-embedded / unmapped agents have no headless invocation.
+        assert_eq!(headless_args(Agent::Cursor), None);
+        assert_eq!(headless_args(Agent::VscodeCopilot), None);
     }
 }
