@@ -263,12 +263,12 @@ jobs:
   trigger-ppa-publish:
     name: Trigger PPA publish
     needs: release
-    if: secrets.PPA_GPG_KEY != ''
     runs-on: ubuntu-latest
     permissions:
       actions: write # gh workflow run
     steps:
       - name: Dispatch ppa-publish workflow
+        if: secrets.PPA_GPG_KEY != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
