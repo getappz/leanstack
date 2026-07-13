@@ -84,6 +84,7 @@ dependencies = [
  "flate2",
  "hex",
  "insta",
+ "libc",
  "pbkdf2",
  "ponytail",
  "pretty_assertions",
