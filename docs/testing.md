@@ -87,7 +87,7 @@ graph TD
 
 ### Directory Layout
 
-```
+```text
 agentflare/
 ├── tests/
 │   └── auth_integration.rs          # Integration tests (stub — under construction)

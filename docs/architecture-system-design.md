@@ -27,7 +27,7 @@ agentflare is a **single-binary CLI tool** written in Rust with zero runtime dep
 
 The system uses a **layered architecture** with clear separation:
 
-```
+```text
 CLI (clap dispatch) → Handler modules → Domain logic → I/O (filesystem, SQLite, subprocess)
 ```
 
@@ -133,7 +133,7 @@ Five components per host:
 | Component | Consent | What it does |
 |-----------|---------|--------------|
 | `rules` | No | Writes Exa/Git/lean-ctx rule files per host |
-| `leanctx` | Yes | `npm install -g lean-ctx-bin && lean-ctx onboard` |
+| `leanctx` | Yes | Native installer (`curl \| sh`, or brew) + onboard |
 | `ponytail-plugin` | Yes | Claude Code only: installs Ponytail plugin |
 | `ponytail-mode` | No | Pins Ponytail to "ultra" mode (Claude Code only) |
 | `caveman-mode` | No | Pins Caveman to "ultra" mode (Claude Code only) |
@@ -478,7 +478,7 @@ flowchart LR
 
 ## Directory Structure
 
-```
+```text
 agentflare/
 ├── Cargo.toml                  # Package manifest, dependencies, profiles
 ├── build.rs                    # Build-time info (timestamp, target triple)
@@ -530,7 +530,7 @@ agentflare/
 
 ### Module Dependency Map
 
-```
+```text
 main.rs depends on: all modules (dispatch only)
 init.rs depends on: components, paths
 hook.rs depends on: components, state, optimize, coaching

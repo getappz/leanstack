@@ -131,7 +131,7 @@ The CLI is built with `clap` 4 derive macros. All subcommands are defined in `sr
 
 Set up agentflare for one agent. Writes rules, installs lean-ctx (and Ponytail/Caveman on Claude Code), wires hook config directly where possible.
 
-```
+```text
 agentflare init --agent <AGENT>
 ```
 
@@ -168,7 +168,7 @@ agentflare init --agent claude-code
 
 Hook entry points invoked by the agent's hook config. Not meant to be run by hand.
 
-```
+```text
 agentflare hook <EVENT> --agent <AGENT>
 ```
 
@@ -198,7 +198,7 @@ agentflare hook pre-tool-use --agent claude-code
 
 Reads Claude Code session transcripts (`~/.claude/projects/*/` JSONL files) and prints token usage with estimated dollar cost.
 
-```
+```text
 agentflare cost [--days <N>] [--by-project]
 ```
 
@@ -215,7 +215,7 @@ agentflare cost [--days <N>] [--by-project]
 5. Handles long-context tiered pricing (above 200k tokens) per-call
 
 **Output format:**
-```
+```text
 agentflare cost — 2026-07-06
 
   model-name                       in  tokens  out  tokens  cache-r  tokens  cache-w  tokens   $0.1234
@@ -234,7 +234,7 @@ agentflare cost --days 30 --by-project
 
 Manage user-defined coaching rules surfaced at session start via `hook session-start`.
 
-```
+```text
 agentflare coaching list
 agentflare coaching apply <ID> --title <TITLE> --body <BODY>
 agentflare coaching remove <ID>
@@ -261,7 +261,7 @@ agentflare coaching remove hygiene
 
 Starts a Model Context Protocol server over stdio (JSON-RPC 2.0). Exposes optimization state as resources and tools.
 
-```
+```text
 agentflare mcp
 ```
 
@@ -271,7 +271,7 @@ No arguments. Runs until stdin closes. See [MCP Server](#mcp-server) for the ful
 
 Detect, manage, and launch AI coding agents.
 
-```
+```text
 agentflare agents list [--json]
 agentflare agents doctor [--json]
 agentflare agents install <AGENT> [--dry-run]
@@ -304,7 +304,7 @@ agentflare agents launch claude-code --model claude-haiku-4-5 -- --dangerously-s
 
 Auth profile vault for AI coding agents — backup, switch, rotate, and manage OAuth tokens. Implementation across `src/auth.rs`, `src/auth_db.rs`, `src/auth_crypt.rs`, `src/auth_runner.rs`.
 
-```
+```text
 agentflare auth catalog [--json]
 agentflare auth backup <AGENT> <PROFILE> [--json]
 agentflare auth activate <AGENT> <PROFILE> [--json] [--reload-daemon]
@@ -417,7 +417,7 @@ agentflare auth project set claude-code personal
 
 Set up a shell alias for agentflare with collision detection and managed-block persistence.
 
-```
+```text
 agentflare alias [<PREFERRED>] [--force] [--print] [--yes] [--shell <SHELL>] [--profile <FILE>] [--json]
 ```
 
@@ -456,7 +456,7 @@ agentflare alias --json
 
 Self-update agentflare from GitHub Releases.
 
-```
+```text
 agentflare update [<VERSION>] [--check] [--quiet]
 ```
 
@@ -483,7 +483,7 @@ agentflare update v1.0.0 --quiet
 
 Surgical removal of everything `agentflare init` wrote, plus the binary.
 
-```
+```text
 agentflare uninstall [--dry-run] [--keep-config] [--keep-binary]
 ```
 
@@ -551,7 +551,7 @@ sequenceDiagram
 4. Surfaces active coaching rule bodies
 5. Prints activation banner:
 
-```
+```text
 AGENTFLARE ACTIVE — lean-ctx tools, Exa search, clean git commits. Off: /agentflare off.
 ```
 
@@ -582,7 +582,7 @@ AGENTFLARE ACTIVE — lean-ctx tools, Exa search, clean git commits. Off: /agent
 7. Injects standard instructions
 
 **Context injected:**
-```
+```text
 AGENTFLARE ACTIVE. Prefer lean-ctx ctx_* tools over native Read/Grep/Bash/Glob. Exa is the only web search tool. Clean git commits, no AI signature.
 ```
 
@@ -792,7 +792,7 @@ Embedded at compile time via `include_str!` in `src/pricing.rs`. Contains:
 
 Canonical registry at `src/agent_registry.rs`. The `Agent` enum defines 20 variants with `kebab-case` serialization:
 
-```
+```text
 claude-code, codex, cursor, windsurf, vscode-copilot, cline, continue,
 opencode, gemini-cli, github-copilot-cli, aider, cody, goose, amp, kiro,
 antigravity, grok, kimi, openclaw, droid
@@ -814,7 +814,7 @@ Each agent spec defines:
 ### Auth Vault (`~/.local/share/agentflare/vault/`)
 
 Directory structure:
-```
+```text
  ~/.local/share/agentflare/vault/
    <agent>/                    # e.g. claude-code/
      <profile>/                # e.g. personal/

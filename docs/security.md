@@ -240,7 +240,7 @@ fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
 
 The encrypted wire format (`src/auth_crypt.rs:7-9`):
 
-```
+```text
 MAGIC (4 bytes: "AFVE") ‖ salt (16 bytes) ‖ nonce (12 bytes) ‖ ciphertext (N bytes)
 ```
 
@@ -297,7 +297,7 @@ pub fn get_passphrase() -> Option<String> {
 
 ### Vault Storage Lifecycle
 
-```
+```text
 Vault file written → MAGIC prefix allows format detection → is_encrypted() gates decryption
 ```
 
@@ -312,7 +312,7 @@ When activating a profile, each file in the vault is checked for the MAGIC prefi
 3. **Fetch `SHA256SUMS`** for the release tag
 4. **Compute SHA-256** of the downloaded asset using `sha2` crate
 5. **Compare** against the published checksum — mismatch causes immediate exit with both values printed:
-   ```
+   ```text
    checksum mismatch!
      expected: <published>
      actual:   <computed>

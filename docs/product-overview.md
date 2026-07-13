@@ -226,7 +226,7 @@ flowchart TB
 
 ## Project Structure
 
-```
+```text
 agentflare/
 ├── src/
 │   ├── main.rs              # clap CLI entry point, all subcommands dispatched here

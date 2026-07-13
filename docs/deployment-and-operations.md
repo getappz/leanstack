@@ -559,7 +559,7 @@ agentflare agents doctor --json     # Machine-readable JSON
 
 Example output:
 
-```
+```text
   AGENT          VERSION  STATUS
   Claude Code    1.2.3    ready
   Cursor         0.48.0   ready
@@ -681,7 +681,7 @@ pub fn load_runtime() -> RuntimeState {
 
 ### Auth Vault Backup & Restore
 
-The auth vault (`~/.agentflare/vault/`) stores encrypted profiles (AES-256-GCM, PBKDF2 key derivation via `aes-gcm` + `pbkdf2` crates).
+The auth vault (`~/.local/share/agentflare/vault/`) stores encrypted profiles (AES-256-GCM, PBKDF2 key derivation via `aes-gcm` + `pbkdf2` crates).
 
 ```bash
 agentflare auth backup <agent> <profile>     # Save current auth to vault
@@ -732,7 +732,7 @@ curl -fsSL https://raw.githubusercontent.com/getappz/agentflare/master/install.s
 | `~/.agentflare/state.json` | Global state, version cache | Yes (auto-recreated) |
 | `~/.agentflare/runtime-state.json` | Session tracking data | Yes (auto-recreated) |
 | `~/.local/share/agentflare/vault/` | Auth profile files (encrypted) | **No** — backup first |
-| `~/.agentflare/auth.db` | Auth state SQLite (cooldowns, aliases) | **No** — backup first |
+| `~/.local/share/agentflare/auth.db` | Auth state SQLite (cooldowns, aliases) | **No** — backup first |
 | `~/.agentflare/` (entire dir) | All state files (excl. vault) | Yes (after vault+auth.db backup) |
 | `~/.claude/rules/{exa,git,lean-ctx}.md` | Agent rules | Yes (agentflare-authored) |
 | `~/.claude/settings.json` (hooks section) | Hook configuration | Remove entries containing `"agentflare"` |
