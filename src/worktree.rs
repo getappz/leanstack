@@ -2,6 +2,7 @@ use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::progress::ProgressSender;
 
