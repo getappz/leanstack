@@ -3,15 +3,16 @@
 //! dependency, not ported code; no /NOTICE entry needed).
 
 use crate::optimize;
+use crate::progress::{PROGRESS_SENDER, ProgressSender};
 use base64::Engine as _;
 use rmcp::{
     ServerHandler, ServiceExt,
-    handler::server::wrapper::Parameters,
+    handler::server::{tool::ToolCallContext, wrapper::Parameters},
     model::{
-        AnnotateAble, ErrorData, GetPromptRequestParams, GetPromptResult, Implementation,
-        ListPromptsResult, ListResourcesResult, PaginatedRequestParams, RawResource,
-        ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-        ServerInfo,
+        AnnotateAble, CallToolRequestParams, CallToolResult, ErrorData, GetPromptRequestParams,
+        GetPromptResult, Implementation, ListPromptsResult, ListResourcesResult, Meta,
+        PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
+        ResourceContents, ServerCapabilities, ServerInfo,
     },
     schemars,
     service::{RequestContext, RoleServer},
@@ -2567,9 +2568,13 @@ impl AgentflareMcp {
                     Ok::<_, ErrorData>((outcome, item, target_branch))
                 })??;
                 let worktree_path = match (&item, &target_branch) {
-                    (Some(item), Some(target)) => {
-                        crate::worktree::create_worktree(item, &repo_root, target)
-                    }
+                    (Some(item), Some(target)) => PROGRESS_SENDER
+                        .try_with(|ps| {
+                            crate::worktree::create_worktree(item, &repo_root, target, ps.as_ref())
+                        })
+                        .unwrap_or_else(|_| {
+                            crate::worktree::create_worktree(item, &repo_root, target, None)
+                        }),
                     _ => None,
                 };
                 Ok(match outcome {
@@ -2582,10 +2587,6 @@ impl AgentflareMcp {
                         if let Some(ref path) = worktree_path {
                             resp["worktree_path"] =
                                 serde_json::Value::String(path.to_string_lossy().to_string());
-                            resp["next"] = serde_json::Value::String(
-                                "cd into worktree_path — do all work for this item there"
-                                    .to_string(),
-                            );
                         }
                         resp.to_string()
                     }
@@ -2653,17 +2654,18 @@ impl AgentflareMcp {
                     Ok::<_, ErrorData>((done, item, target_branch))
                 })??;
                 let pr_url = match (&item, &target_branch) {
-                    (Some(item), Some(target)) => {
-                        crate::worktree::push_and_open_pr(item, &repo_root, target)
-                    }
+                    (Some(item), Some(target)) => PROGRESS_SENDER
+                        .try_with(|ps| {
+                            crate::worktree::push_and_open_pr(item, &repo_root, target, ps.as_ref())
+                        })
+                        .unwrap_or_else(|_| {
+                            crate::worktree::push_and_open_pr(item, &repo_root, target, None)
+                        }),
                     _ => None,
                 };
                 let mut resp = serde_json::json!({"done": done, "item_id": item_id});
                 if let Some(url) = pr_url {
                     resp["pr_url"] = serde_json::Value::String(url.clone());
-                    resp["next"] = serde_json::Value::String(format!(
-                        "PR opened at {url} — wait for review/merge before removing the worktree"
-                    ));
                 }
                 Ok(resp.to_string())
             }
@@ -3359,8 +3361,60 @@ impl AgentflareMcp {
     }
 }
 
+/// Central hint table: (tool_name, result_json) → optional `next` hint.
+/// Post-processed after every tool call so no individual tool action needs
+/// to remember to inject a hint inline.
+fn next_hint(tool_name: &str, json: &serde_json::Value) -> Option<String> {
+    let obj = json.as_object()?;
+    match tool_name {
+        "item" => {
+            if obj.contains_key("worktree_path") {
+                Some("cd into worktree_path — do all work for this item there".into())
+            } else {
+                obj.get("pr_url").and_then(|v| v.as_str()).map(|url| {
+                    format!(
+                        "PR opened at {url} — wait for review/merge before removing the worktree"
+                    )
+                })
+            }
+        }
+        "handoff" => Some("Run /handoff inbox to check for replies".into()),
+        _ => None,
+    }
+}
+
 #[tool_handler]
 impl ServerHandler for AgentflareMcp {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let tool_name = request.name.to_string();
+        let progress_token = request.meta.as_ref().and_then(Meta::get_progress_token);
+        let progress_sender =
+            progress_token.map(|token| ProgressSender::new(context.peer.clone(), token));
+        let tcc = ToolCallContext::new(self, request, context);
+        let mut result = PROGRESS_SENDER
+            .scope(progress_sender, Self::tool_router().call(tcc))
+            .await?;
+        let mut content_json =
+            serde_json::to_value(&result.content).unwrap_or(serde_json::Value::Null);
+        if let Some(arr) = content_json.as_array_mut()
+            && let Some(first) = arr.first_mut()
+            && let Some(text) = first.get("text").and_then(|v| v.as_str())
+            && let Ok(mut json) = serde_json::from_str::<serde_json::Value>(text)
+            && let Some(hint) = next_hint(&tool_name, &json)
+            && let serde_json::Value::Object(ref mut map) = json
+        {
+            map.insert("next".into(), serde_json::Value::String(hint));
+            let new_text = serde_json::to_string_pretty(&map).unwrap_or_else(|_| text.into());
+            first["text"] = serde_json::Value::String(new_text);
+            result.content = serde_json::from_value(content_json).unwrap_or(result.content);
+        }
+        Ok(result)
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
@@ -5562,10 +5616,9 @@ mod tests {
         assert!(result.get("worktree_path").is_some());
         let path = result["worktree_path"].as_str().unwrap();
         assert!(std::path::Path::new(path).exists());
-        assert!(
-            result["next"].as_str().unwrap().contains("worktree_path"),
-            "{result}"
-        );
+        // `next` is now a protocol-level decoration injected by
+        // `call_tool`, not in the direct method output.
+        assert!(result.get("next").is_none());
     }
 
     #[test]
@@ -5665,5 +5718,43 @@ mod tests {
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn next_hint_claim_with_worktree_path() {
+        let json = serde_json::json!({"status": "acquired", "worktree_path": "/tmp/wt"});
+        let hint = next_hint("item", &json).unwrap();
+        assert!(hint.contains("worktree_path"), "{}", hint);
+    }
+
+    #[test]
+    fn next_hint_done_with_pr_url() {
+        let json = serde_json::json!({"done": true, "pr_url": "https://github.com/x/pull/1"});
+        let hint = next_hint("item", &json).unwrap();
+        assert!(hint.contains("review/merge"), "{}", hint);
+    }
+
+    #[test]
+    fn next_hint_handoff_always_returns_hint() {
+        let json = serde_json::json!({"item_id": "abc", "recipient": "x"});
+        let hint = next_hint("handoff", &json).unwrap();
+        assert!(hint.contains("inbox"), "{}", hint);
+    }
+
+    #[test]
+    fn next_hint_unknown_tool_returns_none() {
+        let json = serde_json::json!({"result": "ok"});
+        assert!(next_hint("asset", &json).is_none());
+    }
+
+    #[test]
+    fn next_hint_item_without_trigger_fields_returns_none() {
+        let json = serde_json::json!({"done": true});
+        assert!(next_hint("item", &json).is_none());
+    }
+
+    #[test]
+    fn next_hint_non_object_input_returns_none() {
+        assert!(next_hint("item", &serde_json::Value::String("text".into())).is_none());
     }
 }
