@@ -2,6 +2,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::progress::ProgressSender;
+
 fn run_git_in(repo_root: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
         .args(args)
@@ -135,6 +137,7 @@ pub fn create_worktree(
     item: &agentflare_backend::item::Item,
     repo_root: &Path,
     target_branch: &str,
+    progress: Option<&ProgressSender>,
 ) -> Option<PathBuf> {
     let branch = format!("task/{}", item.sequence_id);
     let worktree_path = repo_root
@@ -148,6 +151,16 @@ pub fn create_worktree(
     if let Some(parent) = worktree_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    if let Some(p) = progress {
+        p.send(
+            0.0,
+            Some(1.0),
+            Some(format!(
+                "Creating isolated worktree for item {}...",
+                item.sequence_id
+            )),
+        );
+    }
     match run_git_in(
         repo_root,
         &[
@@ -159,7 +172,12 @@ pub fn create_worktree(
             target_branch,
         ],
     ) {
-        Ok(_) => Some(worktree_path),
+        Ok(_) => {
+            if let Some(p) = progress {
+                p.send(1.0, Some(1.0), Some("Worktree created".into()));
+            }
+            Some(worktree_path)
+        }
         Err(e) => {
             eprintln!("worktree: creation skipped for item {}: {}", item.id, e);
             None
@@ -179,6 +197,7 @@ pub fn push_and_open_pr(
     item: &agentflare_backend::item::Item,
     repo_root: &Path,
     target_branch: &str,
+    progress: Option<&ProgressSender>,
 ) -> Option<String> {
     let branch = format!("task/{}", item.sequence_id);
     let worktree_path = repo_root
@@ -197,9 +216,15 @@ pub fn push_and_open_pr(
         Ok(count) if count != "0" => {}
         _ => return None,
     }
+    if let Some(p) = progress {
+        p.send(0.0, Some(1.0), Some(format!("Pushing branch {branch}...")));
+    }
     if let Err(e) = run_git_in(repo_root, &["push", "-u", "origin", &branch]) {
         eprintln!("worktree: push skipped for item {}: {e}", item.id);
         return None;
+    }
+    if let Some(p) = progress {
+        p.send(0.5, Some(1.0), Some("Creating PR...".into()));
     }
     let body = format!("Auto-opened on `item done` for {}.", item.id);
     match Command::new("gh")
@@ -220,7 +245,14 @@ pub fn push_and_open_pr(
     {
         Ok(out) if out.status.success() => {
             let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if url.is_empty() { None } else { Some(url) }
+            if url.is_empty() {
+                None
+            } else {
+                if let Some(p) = progress {
+                    p.send(1.0, Some(1.0), Some("PR created".into()));
+                }
+                Some(url)
+            }
         }
         Ok(out) => {
             eprintln!(
@@ -342,7 +374,7 @@ mod tests {
         let repo = init_repo();
         let item = test_item(1);
         let target = resolve_default_branch(&repo.path);
-        let worktree_path = create_worktree(&item, &repo.path, &target).unwrap();
+        let worktree_path = create_worktree(&item, &repo.path, &target, None).unwrap();
         assert!(already_isolated_for("task/1", &worktree_path));
     }
 
@@ -352,7 +384,7 @@ mod tests {
         let worktree_path = repo.path.join(".worktrees").join("task").join("1");
         let item = test_item(1);
         let target = resolve_default_branch(&repo.path);
-        let result = create_worktree(&item, &repo.path, &target);
+        let result = create_worktree(&item, &repo.path, &target, None);
         assert!(result.is_some());
         assert!(worktree_path.exists());
     }
@@ -363,7 +395,7 @@ mod tests {
         let bad_root = tmp.path().join("not-a-repo");
         std::fs::create_dir_all(&bad_root).unwrap();
         let item = test_item(1);
-        let result = create_worktree(&item, &bad_root, "master");
+        let result = create_worktree(&item, &bad_root, "master", None);
         assert!(result.is_none());
     }
 
@@ -371,7 +403,7 @@ mod tests {
     fn push_and_open_pr_returns_none_when_no_worktree_exists() {
         let repo = init_repo();
         let item = test_item(1);
-        assert!(push_and_open_pr(&item, &repo.path, "master").is_none());
+        assert!(push_and_open_pr(&item, &repo.path, "master", None).is_none());
     }
 
     #[test]
@@ -379,10 +411,10 @@ mod tests {
         let repo = init_repo();
         let item = test_item(1);
         let target = resolve_default_branch(&repo.path);
-        create_worktree(&item, &repo.path, &target).unwrap();
+        create_worktree(&item, &repo.path, &target, None).unwrap();
         // No commits were made in the worktree — nothing to push, so this
         // must return early without attempting a real `git push`/`gh pr
         // create` (which would fail anyway: no remote configured here).
-        assert!(push_and_open_pr(&item, &repo.path, &target).is_none());
+        assert!(push_and_open_pr(&item, &repo.path, &target, None).is_none());
     }
 }
