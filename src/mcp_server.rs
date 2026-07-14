@@ -2412,66 +2412,78 @@ impl AgentflareMcp {
                     Ok(serde_json::to_string_pretty(&item).unwrap_or_default())
                 })?
             }
-            "list" => self.with_backend_db(|conn| {
-                let project = self.resolve_project(conn)?;
-                let mut items = agentflare_backend::item::list_by_project(conn, &project.id)
-                    .map_err(map_backend_err)?;
-                let states = agentflare_backend::state::list_by_project(conn, &project.id)
-                    .map_err(map_backend_err)?;
-                let state_by_id: std::collections::HashMap<
-                    &str,
-                    &agentflare_backend::state::State,
-                > = states.iter().map(|s| (s.id.as_str(), s)).collect();
-
-                if let Some(group) = &req.state_group {
-                    items.retain(|i| {
-                        state_by_id
-                            .get(i.state_id.as_str())
-                            .map(|s| &s.group_name == group)
-                            .unwrap_or(false)
-                    });
+            "list" => {
+                if req.limit.is_some_and(|l| l < 0) || req.offset.is_some_and(|o| o < 0) {
+                    return Err(ErrorData::invalid_params(
+                        "limit and offset must be non-negative",
+                        None,
+                    ));
                 }
-                if let Some(agent) = &req.assignee_agent {
-                    items.retain(|i| {
-                        i.assignee_agent.as_deref() == Some(agent.as_str())
-                            || i.assignee_agent.is_none()
-                    });
-                    items.sort_by_key(|i| {
-                        let is_open = state_by_id
-                            .get(i.state_id.as_str())
-                            .map(|s| !matches!(s.group_name.as_str(), "completed" | "cancelled"))
-                            .unwrap_or(true);
-                        let is_mine = i.assignee_agent.as_deref() == Some(agent.as_str());
-                        (!is_open, !is_mine)
-                    });
-                }
+                self.with_backend_db(|conn| {
+                    let project = self.resolve_project(conn)?;
+                    let mut items = agentflare_backend::item::list_by_project(conn, &project.id)
+                        .map_err(map_backend_err)?;
+                    let states = agentflare_backend::state::list_by_project(conn, &project.id)
+                        .map_err(map_backend_err)?;
+                    let state_by_id: std::collections::HashMap<
+                        &str,
+                        &agentflare_backend::state::State,
+                    > = states.iter().map(|s| (s.id.as_str(), s)).collect();
 
-                let offset = req.offset.unwrap_or(0).max(0) as usize;
-                let items = items.into_iter().skip(offset);
-                let items: Vec<_> = match req.limit {
-                    Some(limit) => items.take(limit.max(0) as usize).collect(),
-                    None => items.collect(),
-                };
+                    if let Some(group) = &req.state_group {
+                        items.retain(|i| {
+                            state_by_id
+                                .get(i.state_id.as_str())
+                                .map(|s| &s.group_name == group)
+                                .unwrap_or(false)
+                        });
+                    }
+                    if let Some(agent) = &req.assignee_agent {
+                        items.retain(|i| {
+                            i.assignee_agent.as_deref() == Some(agent.as_str())
+                                || i.assignee_agent.is_none()
+                        });
+                        items.sort_by_key(|i| {
+                            let is_open = state_by_id
+                                .get(i.state_id.as_str())
+                                .map(|s| {
+                                    !matches!(s.group_name.as_str(), "completed" | "cancelled")
+                                })
+                                .unwrap_or(true);
+                            let is_mine = i.assignee_agent.as_deref() == Some(agent.as_str());
+                            (!is_open, !is_mine)
+                        });
+                    }
 
-                let summaries: Vec<ItemSummary> = items
-                    .into_iter()
-                    .map(|i| {
-                        let state = state_by_id.get(i.state_id.as_str());
-                        ItemSummary {
-                            id: i.id,
-                            name: i.name,
-                            state: state.map(|s| s.name.clone()).unwrap_or_default(),
-                            state_group: state.map(|s| s.group_name.clone()).unwrap_or_default(),
-                            priority: i.priority,
-                            assignee_agent: i.assignee_agent,
-                            parent_id: i.parent_id,
-                            sequence_id: i.sequence_id,
-                            updated_at: i.updated_at,
-                        }
-                    })
-                    .collect();
-                Ok(serde_json::to_string_pretty(&summaries).unwrap_or_default())
-            })?,
+                    let offset = req.offset.unwrap_or(0) as usize;
+                    let items = items.into_iter().skip(offset);
+                    let items: Vec<_> = match req.limit {
+                        Some(limit) => items.take(limit as usize).collect(),
+                        None => items.collect(),
+                    };
+
+                    let summaries: Vec<ItemSummary> = items
+                        .into_iter()
+                        .map(|i| {
+                            let state = state_by_id.get(i.state_id.as_str());
+                            ItemSummary {
+                                id: i.id,
+                                name: i.name,
+                                state: state.map(|s| s.name.clone()).unwrap_or_default(),
+                                state_group: state
+                                    .map(|s| s.group_name.clone())
+                                    .unwrap_or_default(),
+                                priority: i.priority,
+                                assignee_agent: i.assignee_agent,
+                                parent_id: i.parent_id,
+                                sequence_id: i.sequence_id,
+                                updated_at: i.updated_at,
+                            }
+                        })
+                        .collect();
+                    Ok(serde_json::to_string_pretty(&summaries).unwrap_or_default())
+                })?
+            }
             "update" => {
                 let id = req
                     .id
@@ -2630,6 +2642,7 @@ impl AgentflareMcp {
                 if item_id.trim().is_empty() {
                     return Err(ErrorData::invalid_params("id is required", None));
                 }
+                let owner = crate::claims::owner_id();
                 self.with_backend_db(|conn| {
                     let project = self.resolve_project(conn)?;
                     let cancelled =
@@ -2638,6 +2651,12 @@ impl AgentflareMcp {
                     let item =
                         agentflare_backend::item::update_state(conn, &item_id, &cancelled.id)
                             .map_err(map_backend_err)?;
+                    // Best-effort: release this caller's own claim lease on
+                    // the item, if any, so a cancelled item isn't stuck
+                    // "held" until the TTL expires (mirrors `done`'s
+                    // claim_done release). No-ops if someone else holds it
+                    // or nobody does — `release` is owner-scoped.
+                    let _ = agentflare_backend::claim::release(conn, &item_id, &owner);
                     Ok(serde_json::to_string_pretty(&item).unwrap_or_default())
                 })?
             }
@@ -2681,7 +2700,7 @@ impl AgentflareMcp {
             }
             other => Err(ErrorData::invalid_params(
                 format!(
-                    "unknown item action: '{other}' — expected create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label"
+                    "unknown item action: '{other}' — expected create|get|list|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
                 ),
                 None,
             )),
@@ -2689,7 +2708,7 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label). See each field's description for when it's required."
+        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label). See each field's description for when it's required."
     )]
     fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
         self.item_inner(req)
@@ -4352,6 +4371,89 @@ mod tests {
             .unwrap()
             .group_name;
         assert_eq!(group, "cancelled");
+    }
+
+    #[test]
+    fn item_cancel_releases_the_callers_own_claim() {
+        // `claim` always resolves a worktree_repo_root and may run real `git
+        // worktree` commands against it — every test that calls `claim` must
+        // override this to an isolated throwaway repo, never the repo
+        // `cargo test` itself is running in. Same scaffolding as
+        // `item_claim_response_includes_worktree_path`.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo_root = repo_dir.path().to_path_buf();
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo_root)
+                .output()
+                .unwrap()
+        };
+        run_git(&["init", "-b", "master"]);
+        run_git(&["config", "user.email", "test@test.com"]);
+        run_git(&["config", "user.name", "Test"]);
+        run_git(&["commit", "--allow-empty", "-m", "initial"]);
+
+        let s = AgentflareMcp {
+            backend_db_override: Some(tmp.path().join("backend.db")),
+            backend_project_link_override: Some(tmp.path().join("project.json")),
+            worktree_repo_root_override: Some(repo_root),
+            ..Default::default()
+        };
+
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+
+        s.item(Parameters(ItemRequest {
+            action: "claim".into(),
+            id: Some(item_id.clone()),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        s.item(Parameters(ItemRequest {
+            action: "cancel".into(),
+            id: Some(item_id.clone()),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        // The claim must be released — re-claiming should succeed
+        // immediately instead of coming back "held".
+        let reclaimed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "claim".into(),
+                id: Some(item_id),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reclaimed["status"], "acquired");
+    }
+
+    #[test]
+    fn item_list_rejects_negative_limit_and_offset() {
+        let (_tmp, s) = harness();
+        let err = s
+            .item(Parameters(ItemRequest {
+                action: "list".into(),
+                limit: Some(-1),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        let err = s
+            .item(Parameters(ItemRequest {
+                action: "list".into(),
+                offset: Some(-1),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
 
     #[test]
