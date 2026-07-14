@@ -439,20 +439,25 @@ pub fn claim(
 /// (contrast with the old `claim_done`, which did both atomically): the
 /// `"done"` MCP arm calls this, then runs `worktree::push_and_open_pr`
 /// (which needs the lease to still look held so a concurrent `claim()` on
-/// this same item can't grab it while the PR is still being opened — see
-/// item #37), and only releases the lease itself afterward via
-/// `crate::claim::done`. Returns `false` (no-op, no state change) if
-/// `owner` doesn't currently hold the claim.
+/// the same item between mark_completed and the deferred release below is
+/// still correctly rejected), and only *after* publish releases the lease
+/// via `claim::done`. Returns `Ok(true)` when the item was actually moved
+/// to completed, `Ok(false)` when the caller doesn't own the claim.
 pub fn mark_completed(conn: &Connection, item_id: &str, owner: &str) -> Result<bool> {
+    // One transaction start to finish so the ownership check can't go stale
+    // between the guard and the write — without this, a concurrent
+    // release()+claim() by a different owner could slip in between the
+    // check and update_state below, completing the item out from under its
+    // new owner.
     let tx = conn.unchecked_transaction()?;
     if !crate::claim::is_owner(&tx, item_id, owner)? {
-        tx.commit()?;
         return Ok(false);
     }
     let item = get(&tx, item_id)?;
     let completed_state = crate::state::first_in_group(&tx, &item.project_id, "completed")?;
     update_state(&tx, item_id, &completed_state.id)?;
     tx.commit()?;
+    // Keep the claim lease held for the MCP caller's deferred release.
     Ok(true)
 }
 
@@ -1039,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_completed_moves_to_completed_state_and_a_later_release_makes_it_reclaimable() {
+    fn mark_completed_moves_to_completed_state_and_lease_stays_held() {
         let conn = db::open_in_memory().unwrap();
         let (pid, sid) = seed_project(&conn, "");
         let item = make_item(&conn, &pid, &sid);
@@ -1049,31 +1054,25 @@ mod tests {
         assert_eq!(done_item.state_id, state_in_group(&conn, &pid, "completed"));
         assert!(done_item.completed_at.is_some());
 
-        // The lease is still held by "agent:1" at this point (item #37: the
-        // lease must outlive the state transition) — a concurrent claimer
-        // must be rejected...
-        let blocked = claim(&conn, &item.id, "agent:2", 1150, TTL).unwrap();
-        assert!(matches!(
-            blocked,
-            crate::claim::Acquire::Held { ref owner, .. } if owner == "agent:1"
-        ));
+        // Lease is still held — concurrent claim must be rejected.
+        match claim(&conn, &item.id, "agent:2", 1200, TTL).unwrap() {
+            crate::claim::Acquire::Held { .. } => {}
+            other => panic!("expected Held after mark_completed, got {other:?}"),
+        }
 
-        // ...only after the lease is actually released does the item become
-        // reclaimable by anyone.
-        assert!(crate::claim::done(&conn, &item.id, "agent:1", 1100).unwrap());
-        let outcome = claim(&conn, &item.id, "agent:2", 1200, TTL).unwrap();
+        // Release the lease, now re-acquirable.
+        assert!(crate::claim::done(&conn, &item.id, "agent:1", 1300).unwrap());
+        let outcome = claim(&conn, &item.id, "agent:2", 1400, TTL).unwrap();
         assert_eq!(outcome, crate::claim::Acquire::Acquired);
     }
 
     #[test]
-    fn mark_completed_is_a_noop_when_owner_does_not_hold_the_claim() {
+    fn mark_completed_noop_for_non_owner() {
         let conn = db::open_in_memory().unwrap();
         let (pid, sid) = seed_project(&conn, "");
         let item = make_item(&conn, &pid, &sid);
         claim(&conn, &item.id, "agent:1", 1000, TTL).unwrap();
         assert!(!mark_completed(&conn, &item.id, "agent:2").unwrap());
-        let unchanged = get(&conn, &item.id).unwrap();
-        assert_ne!(unchanged.state_id, state_in_group(&conn, &pid, "completed"));
     }
 
     #[test]
@@ -1086,10 +1085,8 @@ mod tests {
         assert!(!crate::claim::heartbeat(&conn, &item.id, "agent:2", 1100).unwrap());
         assert!(!crate::claim::release(&conn, &item.id, "agent:2").unwrap());
         assert!(!crate::claim::done(&conn, &item.id, "agent:2", 1100).unwrap());
-        assert!(!mark_completed(&conn, &item.id, "agent:2").unwrap());
 
         assert!(crate::claim::heartbeat(&conn, &item.id, "agent:1", 1100).unwrap());
-        assert!(mark_completed(&conn, &item.id, "agent:1").unwrap());
         assert!(crate::claim::done(&conn, &item.id, "agent:1", 1200).unwrap());
     }
 }

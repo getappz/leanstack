@@ -360,7 +360,7 @@ pub fn get_components(host: &str) -> Vec<Component> {
             // (`gateway_integrations::LEANCTX`) and, for claude-code, strip
             // whatever native entry the upstream onboarder already created so
             // the same ~80 ctx_* tools aren't declared twice.
-            describe: "lean-ctx (context compression) — native installer (curl | sh, or brew), registered behind the agentflare gateway (tool_search/tool_execute), not the host's native tool list".to_string(),
+            describe: "lean-ctx (context compression) — native installer (curl | sh, or brew), registered behind the agentflare gateway (the `tool` action-dispatch), not the host's native tool list".to_string(),
             check: Box::new(|| {
                 crate::tool_install::installed(&crate::tool_install::LEAN_CTX)
                     && crate::gateway_integrations::already_registered("leanctx")

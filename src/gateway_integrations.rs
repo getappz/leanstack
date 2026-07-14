@@ -1,8 +1,8 @@
 // During `init`, detect project context (e.g. a GitHub remote) and, with the
 // user's OK, register the matching MCP server BEHIND agentflare's own gateway
-// (`~/.agentflare/gateway.toml`) — so its tools stay reachable through
-// `tool_search`/`tool_execute` instead of bloating the host's always-on
-// tool list. Adding another gateway-fronted MCP later is one more entry in
+// (`~/.agentflare/gateway.toml`) — so its tools stay reachable through the
+// `tool` action-dispatch (search/execute) instead of bloating the host's
+// always-on tool list. Adding another gateway-fronted MCP later is one more entry in
 // `INTEGRATIONS`; the plumbing (detect → consent → idempotent append) is shared.
 use crate::paths::home;
 use std::fs;
@@ -29,7 +29,7 @@ pub const INTEGRATIONS: &[GatewayIntegration] = &[GITHUB, LEANCTX];
 const GITHUB: GatewayIntegration = GatewayIntegration {
     name: "github",
     detect: git_remote_is_github,
-    prompt: "⚑ GitHub repo detected. github-mcp-server can sit behind the agentflare gateway\n  (its tools stay under tool_search/tool_execute, not the host's tool list).",
+    prompt: "⚑ GitHub repo detected. github-mcp-server can sit behind the agentflare gateway\n  (its tools stay under the `tool` action-dispatch, not the host's tool list).",
     // Remote HTTP backend — zero-install (no docker/binary). The gateway
     // sends `auth_header` verbatim, so the stored secret is the full header
     // value (`Bearer <token>`), see `post_note`.
@@ -54,7 +54,7 @@ fn github_post_note() -> Vec<String> {
 pub const LEANCTX: GatewayIntegration = GatewayIntegration {
     name: "leanctx",
     detect: leanctx_installed,
-    prompt: "⚑ lean-ctx detected. Its ~80 ctx_* tools can sit behind the agentflare gateway\n  (reachable via tool_search/tool_execute) instead of bloating the host's tool list.",
+    prompt: "⚑ lean-ctx detected. Its ~80 ctx_* tools can sit behind the agentflare gateway\n  (reachable via the `tool` action-dispatch) instead of bloating the host's tool list.",
     // Local stdio backend — same binary lean-ctx's own installer already put
     // on PATH; the gateway just spawns it instead of the host declaring it
     // natively. No auth needed (local process).
@@ -68,7 +68,7 @@ fn leanctx_installed() -> bool {
 
 fn leanctx_post_note() -> Vec<String> {
     vec![
-        "  next  its ctx_* tools are now reached via tool_search/tool_execute, not called natively"
+        "  next  its ctx_* tools are now reached via the `tool` action-dispatch, not called natively"
             .to_string(),
     ]
 }
