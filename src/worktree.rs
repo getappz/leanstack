@@ -163,6 +163,24 @@ pub fn create_worktree(
             )),
         );
     }
+    // Branch off the freshly-fetched remote ref when reachable, so a stale
+    // local checkout (e.g. hasn't pulled a just-merged PR) doesn't silently
+    // seed new work from old code. Soft-fails to today's local-ref behavior
+    // when there's no remote, we're offline, or the branch was never pushed
+    // (common for a parent item's task/N branch) — never blocks a claim on
+    // network reachability, matching every other soft-fail in this file.
+    let start_point = if run_git_in(repo_root, &["fetch", "origin", target_branch]).is_ok()
+        && run_git_in_ok(
+            repo_root,
+            &["rev-parse", "--verify", &format!("origin/{target_branch}")],
+        ) {
+        format!("origin/{target_branch}")
+    } else {
+        eprintln!(
+            "worktree: could not fetch '{target_branch}' from origin, branching off the local ref instead"
+        );
+        target_branch.to_string()
+    };
     match run_git_in(
         repo_root,
         &[
@@ -171,7 +189,7 @@ pub fn create_worktree(
             &worktree_path.to_string_lossy(),
             "-b",
             &branch,
-            target_branch,
+            &start_point,
         ],
     ) {
         Ok(_) => {
@@ -480,6 +498,45 @@ mod tests {
         let item = test_item(1);
         let result = create_worktree(&item, &bad_root, "master", None);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn create_worktree_fetches_target_branch_and_includes_remote_only_commits() {
+        // "remote" — plays the role of `origin`.
+        let remote = init_repo();
+        // "local" — a clone that will go stale the moment `remote` gets a
+        // new commit; this is what `create_worktree` actually operates on.
+        let local_container = TempDir::new().unwrap();
+        let local_path = local_container.path().join("local");
+        run_git_in(
+            local_container.path(),
+            &[
+                "clone",
+                remote.path.to_str().unwrap(),
+                local_path.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        run_git_in(&local_path, &["config", "user.email", "test@test.com"]).unwrap();
+        run_git_in(&local_path, &["config", "user.name", "Test"]).unwrap();
+
+        // Lands on the remote *after* the clone — local's own `master` and
+        // `origin/master` are both stale relative to this.
+        run_git_in(
+            &remote.path,
+            &["commit", "--allow-empty", "-m", "remote-only commit"],
+        )
+        .unwrap();
+        let remote_head = run_git_in(&remote.path, &["rev-parse", "HEAD"]).unwrap();
+
+        let item = test_item(1);
+        let worktree_path = create_worktree(&item, &local_path, "master", None).unwrap();
+        let worktree_head = run_git_in(&worktree_path, &["rev-parse", "HEAD"]).unwrap();
+
+        assert_eq!(
+            worktree_head, remote_head,
+            "worktree must be based on the freshly-fetched remote commit, not the stale local ref"
+        );
     }
 
     #[test]
