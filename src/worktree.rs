@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
 
 use crate::progress::ProgressSender;
 
@@ -182,39 +181,6 @@ pub fn create_worktree(
         Err(e) => {
             eprintln!("worktree: creation skipped for item {}: {}", item.id, e);
             None
-        }
-    }
-}
-
-/// Runs `program` with a deadline, returning its output. Spawns the
-/// child, waits on a background thread, and returns a timeout error
-/// if it doesn't finish in time. The spawned thread eventually cleans
-/// up — no orphaned processes, just a late reaping.
-fn run_output_timeout(
-    program: &str,
-    args: &[&str],
-    cwd: &Path,
-    timeout_secs: u64,
-) -> Result<std::process::Output, String> {
-    let child = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{program}: spawn failed: {e}"))?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = child.wait_with_output();
-        let _ = tx.send(result);
-    });
-    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            Err(format!("{program} timed out after {timeout_secs}s"))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err("child thread panicked".into())
         }
     }
 }
