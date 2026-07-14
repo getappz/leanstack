@@ -2640,7 +2640,7 @@ impl AgentflareMcp {
                 // it — `git push`/`gh pr create` have no business running
                 // while the shared DB mutex is held.
                 let (done, item, target_branch) = self.with_backend_db(|conn| {
-                    let done = agentflare_backend::item::claim_done(conn, &item_id, &owner, now)
+                    let done = agentflare_backend::item::mark_completed(conn, &item_id, &owner)
                         .map_err(map_backend_err)?;
                     let (item, target_branch) = if done {
                         let item = agentflare_backend::item::get(conn, &item_id).ok();
@@ -2663,6 +2663,16 @@ impl AgentflareMcp {
                         }),
                     _ => None,
                 };
+                // Only now — after push_and_open_pr has been attempted
+                // (success or soft-fail, it never blocks) — actually release
+                // the claim lease. Keeping it held until this point closes
+                // the race where a concurrent claim() could grab the item
+                // while its PR was still being opened (item #37).
+                if done {
+                    let _ = self.with_backend_db(|conn| {
+                        agentflare_backend::claim::done(conn, &item_id, &owner, now)
+                    });
+                }
                 let mut resp = serde_json::json!({"done": done, "item_id": item_id});
                 if let Some(url) = pr_url {
                     resp["pr_url"] = serde_json::Value::String(url.clone());
