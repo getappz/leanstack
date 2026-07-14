@@ -188,16 +188,14 @@ fn get_handoff_command(request: &GetPromptRequestParams, agent: Option<&str>) ->
         .unwrap_or("")
         .trim()
         .to_string();
-
-    if command.is_empty() {
-        return assistant_text(format!(
-            "Handoff — agent-to-agent work exchange via items and assets. Pass as this command's argument:\n\
-             <recipient> <brief> — hand the relevant work product to that agent (e.g. `codex review the API design above`)\n\
-             inbox [me] — list this project's tasks assigned to (or unclaimed for) an agent (default: {me})\n\
-             thread <id> — show a handoff thread's items in order\n\
-             Work products only — facts and decisions belong in memory (memory_remember), not items.",
-        ));
-    }
+    // Bare `/handoff` checks your own inbox rather than printing a usage
+    // card — that's the common case, and the grammar below already covers
+    // `inbox` alongside the other subcommands.
+    let command = if command.is_empty() {
+        "inbox".to_string()
+    } else {
+        command
+    };
 
     assistant_text(format!(
         "Handoff command: `{command}`\n\n\
@@ -347,10 +345,25 @@ mod tests {
     }
 
     #[test]
-    fn bare_handoff_usage_names_agent_identity() {
+    fn bare_handoff_defaults_to_inbox_for_the_calling_agent() {
         let result = get_prompt(&GetPromptRequestParams::new("handoff"), Some("opencode")).unwrap();
         let text = format!("{:?}", result.messages[0].content);
-        assert!(text.contains("default: opencode"), "{text}");
+        assert!(text.contains("Handoff command: `inbox`"), "{text}");
+        assert!(text.contains("identity, opencode"), "{text}");
+    }
+
+    #[test]
+    fn bare_handoff_command_matches_explicit_inbox_command() {
+        use rmcp::model::JsonObject;
+        let bare = get_prompt(&GetPromptRequestParams::new("handoff"), Some("codex")).unwrap();
+        let mut args = JsonObject::new();
+        args.insert("command".to_string(), serde_json::json!("inbox"));
+        let params = GetPromptRequestParams::new("handoff").with_arguments(args);
+        let explicit = get_prompt(&params, Some("codex")).unwrap();
+        assert_eq!(
+            format!("{:?}", bare.messages[0].content),
+            format!("{:?}", explicit.messages[0].content),
+        );
     }
 
     #[test]
