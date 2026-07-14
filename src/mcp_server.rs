@@ -34,79 +34,69 @@ struct CheckSessionHealthRequest {
     session_id: String,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct SkillSearchRequest {
-    #[schemars(description = "What you need to do; keyword-style works best")]
-    query: String,
-    #[schemars(description = "Max results (default 5)")]
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct SkillRequest {
+    #[schemars(description = "Action: search|load")]
+    action: String,
+    #[schemars(description = "What you need to do; keyword-style works best (search)")]
+    #[serde(default)]
+    query: Option<String>,
+    #[schemars(description = "Skill name; qualify as 'source:name' if ambiguous (load)")]
+    #[serde(default)]
+    name: Option<String>,
+    #[schemars(description = "Max results (default 5) (search)")]
     #[serde(default)]
     limit: Option<usize>,
     #[schemars(
-        description = "'all' = every word must match (default); 'any' = broader recall for retries"
+        description = "'all' = every word must match (default); 'any' = broader recall for retries (search)"
     )]
     #[serde(default)]
     mode: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct SkillLoadRequest {
-    #[schemars(
-        description = "Skill name from skill_search; qualify as 'source:name' if ambiguous"
-    )]
-    name: String,
-    #[schemars(description = "true = load the original even when a compressed copy exists")]
+    #[schemars(description = "true = load the original even when a compressed copy exists (load)")]
     #[serde(default)]
     original: bool,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct GatewaySearchRequest {
-    #[schemars(description = "What tool you need; keyword-style works best")]
-    query: String,
-    #[schemars(description = "Max results (default 5)")]
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct GatewayRequest {
+    #[schemars(description = "Action: search|execute")]
+    action: String,
+    #[schemars(description = "What tool you need; keyword-style works best (search)")]
+    #[serde(default)]
+    query: Option<String>,
+    #[schemars(description = "Max results (default 5) (search)")]
     #[serde(default)]
     limit: Option<usize>,
     #[schemars(
-        description = "'all' = every word must match (default); 'any' = broader recall for retries"
+        description = "'all' = every word must match (default); 'any' = broader recall for retries (search)"
     )]
     #[serde(default)]
     mode: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct GatewayExecuteRequest {
-    #[schemars(description = "Server name from gateway_search")]
-    server: String,
-    #[schemars(description = "Tool name from gateway_search")]
-    tool: String,
-    // A bare `serde_json::Value` here made schemars emit a typeless schema
-    // (Value can be anything), so callers had no signal to send a nested
-    // JSON object rather than a stringified one — gateway_execute couldn't
-    // actually be invoked with arguments. `Map` renders as `{"type":
-    // ["object", "null"]}`, a real hint.
-    #[schemars(description = "Arguments object matching the tool's input_schema")]
+    #[schemars(description = "Server name from gateway_search (execute)")]
+    #[serde(default)]
+    server: Option<String>,
+    #[schemars(description = "Tool name from gateway_search (execute)")]
+    #[serde(default)]
+    tool: Option<String>,
+    #[schemars(description = "Arguments object matching the tool's input_schema (execute)")]
     #[serde(default)]
     args: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ClaimTargetRequest {
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct ClaimRequest {
+    #[schemars(description = "Action: acquire|done|heartbeat|list|release")]
+    action: String,
     #[schemars(description = "Target to claim, e.g. \"issue#42\" or \"pr#7\"")]
-    target: String,
+    #[serde(default)]
+    target: Option<String>,
     #[schemars(description = "Repo key owner/name (default: normalized origin remote)")]
     #[serde(default)]
     repo: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ClaimListRequest {
-    #[schemars(description = "Repo key owner/name (default: current repo)")]
-    #[serde(default)]
-    repo: Option<String>,
-    #[schemars(description = "Include stale and done claims (default false)")]
+    #[schemars(description = "Include stale and done claims (default false) (list)")]
     #[serde(default)]
     all: bool,
-    #[schemars(description = "List across every repo in the ledger (default false)")]
+    #[schemars(description = "List across every repo in the ledger (default false) (list)")]
     #[serde(default)]
     all_repos: bool,
 }
@@ -121,110 +111,31 @@ struct ChannelSendRequest {
     message: String,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ReviewSubmitRequest {
-    #[schemars(description = "Findings, each {file, line, message, severity?, category?}")]
-    findings: Vec<serde_json::Value>,
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct ReviewRequest {
+    #[schemars(description = "Action: clear|consensus|list|record|scores|submit")]
+    action: String,
+    #[schemars(description = "Findings, each {file, line, message, severity?, category?} (submit)")]
+    #[serde(default)]
+    findings: Option<Vec<serde_json::Value>>,
     #[schemars(description = "Review round id (default: current branch)")]
     #[serde(default)]
     pr: Option<String>,
-    #[schemars(description = "Finder name (default: detected agent)")]
+    #[schemars(description = "Finder name (default: detected agent) (submit)")]
     #[serde(default)]
     agent: Option<String>,
-    #[schemars(description = "Repo key owner/name (default: origin remote)")]
-    #[serde(default)]
-    repo: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ReviewConsensusRequest {
-    #[schemars(description = "Review round id (default: current branch)")]
-    #[serde(default)]
-    pr: Option<String>,
-    #[schemars(description = "Diff base ref (default: master)")]
+    #[schemars(description = "Diff base ref (default: master) (consensus, record)")]
     #[serde(default)]
     base: Option<String>,
-    #[schemars(description = "Diff head ref (default: HEAD)")]
+    #[schemars(description = "Diff head ref (default: HEAD) (consensus, record)")]
     #[serde(default)]
     head: Option<String>,
     #[schemars(description = "Repo key owner/name (default: origin remote)")]
     #[serde(default)]
     repo: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ReviewRoundRequest {
-    #[schemars(description = "Review round id (default: current branch)")]
-    #[serde(default)]
-    pr: Option<String>,
-    #[schemars(description = "Repo key owner/name (default: origin remote)")]
-    #[serde(default)]
-    repo: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ReviewScoresRequest {
-    #[schemars(description = "Scope to one repo owner/name (default: current repo)")]
-    #[serde(default)]
-    repo: Option<String>,
-    #[schemars(description = "Aggregate across every repo (default false)")]
+    #[schemars(description = "Aggregate across every repo (default false) (scores)")]
     #[serde(default)]
     all_repos: bool,
-}
-
-#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
-struct ArtifactPublishRequest {
-    #[schemars(description = "Display name of the artifact")]
-    name: String,
-    #[schemars(description = "html | markdown | mermaid | diagram | text (default: text)")]
-    #[serde(default)]
-    r#type: Option<String>,
-    #[schemars(
-        description = "Full artifact content (HTML document, markdown source, plain text, ...)"
-    )]
-    content: String,
-    #[schemars(description = "Session ID for grouping artifacts (optional)")]
-    #[serde(default)]
-    session_id: Option<String>,
-    #[schemars(
-        description = "Existing artifact id to update in place — keeps the same URL and live-reloads open viewers"
-    )]
-    #[serde(default)]
-    update_id: Option<String>,
-    #[schemars(
-        description = "Short label for this version, shown in history (e.g. \"draft\", \"final\")"
-    )]
-    #[serde(default)]
-    label: Option<String>,
-    #[schemars(description = "One-line description shown in the gallery")]
-    #[serde(default)]
-    description: Option<String>,
-    #[schemars(description = "One or two emoji used as the page icon")]
-    #[serde(default)]
-    favicon: Option<String>,
-    #[schemars(
-        description = "Optimistic-concurrency guard: update only applies if the artifact's current version equals this; otherwise a version-conflict error is returned"
-    )]
-    #[serde(default)]
-    base_version: Option<u32>,
-    #[schemars(
-        description = "Handoff envelope: which agent/runtime is publishing (e.g. claude-code, codex)"
-    )]
-    #[serde(default)]
-    sender: Option<String>,
-    #[schemars(
-        description = "Handoff envelope: agent/runtime this artifact is addressed to — for WORK PRODUCTS only; facts and decisions belong in memory (memory_remember), not artifacts"
-    )]
-    #[serde(default)]
-    recipient: Option<String>,
-    #[schemars(
-        description = "Handoff envelope: thread this belongs to; replies reuse the sender's thread_id"
-    )]
-    #[serde(default)]
-    thread_id: Option<String>,
-    #[schemars(description = "Handoff envelope: artifact id this replies to")]
-    #[serde(default)]
-    reply_to: Option<String>,
 }
 
 /// A handoff assigns an item to another agent and attaches the work product
@@ -276,160 +187,149 @@ struct HandoffRequest {
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
-struct ArtifactListRequest {
-    #[schemars(description = "Only artifacts from this session (omit for all)")]
+struct ArtifactRequest {
+    #[schemars(description = "Action: delete|diff|get|list|publish|search")]
+    action: String,
+    #[schemars(description = "Artifact id")]
+    #[serde(default)]
+    id: Option<String>,
+    #[schemars(description = "Display name of the artifact (publish)")]
+    #[serde(default)]
+    name: Option<String>,
+    #[schemars(description = "html | markdown | mermaid | diagram | text (default: text) (publish)")]
+    #[serde(default)]
+    r#type: Option<String>,
+    #[schemars(
+        description = "Full artifact content (HTML document, markdown source, plain text, ...) (publish)"
+    )]
+    #[serde(default)]
+    content: Option<String>,
+    #[schemars(description = "Session ID for grouping artifacts (optional)")]
     #[serde(default)]
     session_id: Option<String>,
-    #[schemars(description = "Inbox filter: only artifacts addressed to this agent/runtime")]
+    #[schemars(
+        description = "Existing artifact id to update in place — keeps the same URL and live-reloads open viewers (publish)"
+    )]
+    #[serde(default)]
+    update_id: Option<String>,
+    #[schemars(
+        description = "Short label for this version, shown in history (e.g. \"draft\", \"final\") (publish)"
+    )]
+    #[serde(default)]
+    label: Option<String>,
+    #[schemars(description = "One-line description shown in the gallery (publish)")]
+    #[serde(default)]
+    description: Option<String>,
+    #[schemars(description = "One or two emoji used as the page icon (publish)")]
+    #[serde(default)]
+    favicon: Option<String>,
+    #[schemars(
+        description = "Optimistic-concurrency guard: update only applies if the artifact's current version equals this; otherwise a version-conflict error is returned (publish)"
+    )]
+    #[serde(default)]
+    base_version: Option<u32>,
+    #[schemars(
+        description = "Handoff envelope: which agent/runtime is publishing (e.g. claude-code, codex) (publish)"
+    )]
+    #[serde(default)]
+    sender: Option<String>,
+    #[schemars(
+        description = "Handoff envelope: agent/runtime this artifact is addressed to — for WORK PRODUCTS only; facts and decisions belong in memory (memory_remember), not artifacts (publish)"
+    )]
     #[serde(default)]
     recipient: Option<String>,
-    #[schemars(description = "Only artifacts in this handoff thread")]
+    #[schemars(
+        description = "Handoff envelope: thread this belongs to; replies reuse the sender's thread_id (publish)"
+    )]
     #[serde(default)]
     thread_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ArtifactDiffRequest {
-    #[schemars(description = "Artifact id")]
-    id: String,
-    #[schemars(description = "Older version number to diff from")]
-    from_version: u32,
-    #[schemars(description = "Newer version number (omit for latest)")]
+    #[schemars(description = "Handoff envelope: artifact id this replies to (publish)")]
+    #[serde(default)]
+    reply_to: Option<String>,
+    #[schemars(description = "Older version number to diff from (diff)")]
+    #[serde(default)]
+    from_version: Option<u32>,
+    #[schemars(description = "Newer version number (omit for latest) (diff)")]
     #[serde(default)]
     to_version: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ArtifactSearchRequest {
-    #[schemars(description = "Case-insensitive text to find in names, descriptions, or content")]
-    query: String,
-    #[schemars(description = "Restrict to this session (omit for all)")]
+    #[schemars(description = "Case-insensitive text to find in names, descriptions, or content (search)")]
     #[serde(default)]
-    session_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ArtifactGetRequest {
-    #[schemars(description = "Artifact id from artifact_publish or artifact_list")]
-    id: String,
-    #[schemars(description = "Specific version to fetch (omit for latest)")]
+    query: Option<String>,
+    #[schemars(description = "Specific version to fetch (omit for latest) (get)")]
     #[serde(default)]
     version: Option<u32>,
+    #[schemars(description = "Inbox filter: only artifacts addressed to this agent/runtime (list)")]
+    #[serde(default)]
+    inbox_recipient: Option<String>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ArtifactDeleteRequest {
-    #[schemars(description = "Artifact id to delete (removes all versions)")]
-    id: String,
-}
-
-// --- Memory tool request types ---
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct MemoryRememberRequest {
-    #[schemars(description = "Title of the observation")]
-    title: String,
-    #[schemars(description = "Content body of the observation")]
-    content: String,
-    #[schemars(description = "Type: decision|bugfix|discovery|pattern|learning|manual")]
-    r#type: String,
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct MemoryRequest {
+    #[schemars(description = "Action: context|curate|handoff|recall|relate|remember")]
+    action: String,
+    #[schemars(description = "Title of the observation (remember)")]
+    #[serde(default)]
+    title: Option<String>,
+    #[schemars(description = "Content body of the observation (remember, curate)")]
+    #[serde(default)]
+    content: Option<String>,
+    #[schemars(description = "Type: decision|bugfix|discovery|pattern|learning|manual (remember, recall)")]
+    #[serde(default)]
+    r#type: Option<String>,
     #[schemars(description = "Session ID to associate with")]
     #[serde(default)]
     session_id: Option<String>,
     #[schemars(description = "Project name")]
     #[serde(default)]
     project: Option<String>,
-    #[schemars(description = "Stable topic key for upsert dedup")]
+    #[schemars(description = "Stable topic key for upsert dedup (remember)")]
     #[serde(default)]
     topic_key: Option<String>,
-    #[schemars(description = "Scope: project (default) or personal")]
+    #[schemars(description = "Scope: project (default) or personal (remember)")]
     #[serde(default)]
     scope: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct MemoryRecallRequest {
-    #[schemars(description = "Search query (FTS5 BM25); omit for recent listing")]
+    #[schemars(description = "Search query (FTS5 BM25); omit for recent listing (recall)")]
     #[serde(default)]
     query: Option<String>,
-    #[schemars(description = "Direct lookup by ID")]
+    #[schemars(description = "Direct lookup by ID (recall)")]
     #[serde(default)]
     id: Option<i64>,
-    #[schemars(description = "Filter by type: decision|bugfix|discovery|pattern|learning")]
-    #[serde(default)]
-    r#type: Option<String>,
-    #[schemars(description = "Filter by project")]
-    #[serde(default)]
-    project: Option<String>,
-    #[schemars(description = "Max results (default 10, max 50)")]
+    #[schemars(description = "Max results (default 10, max 50) (recall)")]
     #[serde(default)]
     limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct MemoryContextRequest {
-    #[schemars(description = "Session ID to focus on")]
+    #[schemars(description = "Session summary (handoff)")]
     #[serde(default)]
-    session_id: Option<String>,
-    #[schemars(description = "Filter by project")]
-    #[serde(default)]
-    project: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct MemoryHandoffRequest {
-    #[schemars(description = "Session ID to close")]
-    session_id: String,
-    #[schemars(description = "Session summary")]
-    summary: String,
-    #[schemars(description = "Findings array [{file, line?, summary}]")]
+    summary: Option<String>,
+    #[schemars(description = "Findings array [{file, line?, summary}] (handoff)")]
     #[serde(default)]
     findings: Option<Vec<serde_json::Value>>,
-    #[schemars(description = "Decisions array [{summary, rationale?}]")]
+    #[schemars(description = "Decisions array [{summary, rationale?}] (handoff)")]
     #[serde(default)]
     decisions: Option<Vec<serde_json::Value>>,
-    #[schemars(description = "Files touched array [{path, modified?, tokens}]")]
+    #[schemars(description = "Files touched array [{path, modified?, tokens}] (handoff)")]
     #[serde(default)]
     files_touched: Option<Vec<serde_json::Value>>,
-    #[schemars(description = "Evidence array [{kind, action, detail}]")]
+    #[schemars(description = "Evidence array [{kind, action, detail}] (handoff)")]
     #[serde(default)]
     evidence: Option<Vec<serde_json::Value>>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct MemoryRelateRequest {
-    #[schemars(description = "Source observation ID")]
-    source_id: i64,
-    #[schemars(description = "Target observation ID")]
-    target_id: i64,
+    #[schemars(description = "Source observation ID (relate)")]
+    #[serde(default)]
+    source_id: Option<i64>,
+    #[schemars(description = "Target observation ID (relate)")]
+    #[serde(default)]
+    target_id: Option<i64>,
     #[schemars(
-        description = "Relation: related|compatible|scoped|conflicts_with|supersedes|not_conflict"
+        description = "Relation: related|compatible|scoped|conflicts_with|supersedes|not_conflict (relate)"
     )]
-    relation: String,
-    #[schemars(description = "Reason for the relation")]
+    #[serde(default)]
+    relation: Option<String>,
+    #[schemars(description = "Reason for the relation (relate)")]
     #[serde(default)]
     reason: Option<String>,
-    #[schemars(description = "Confidence score 0.0..1.0")]
+    #[schemars(description = "Confidence score 0.0..1.0 (relate)")]
     #[serde(default)]
     confidence: Option<f64>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct MemoryCurateRequest {
-    #[schemars(description = "Action: update|delete|pin|unpin")]
-    action: String,
-    #[schemars(description = "Observation ID")]
-    id: i64,
-    #[schemars(description = "New title (update only)")]
-    #[serde(default)]
-    title: Option<String>,
-    #[schemars(description = "New content (update only)")]
-    #[serde(default)]
-    content: Option<String>,
-    #[schemars(description = "New type (update only)")]
-    #[serde(default)]
-    r#type: Option<String>,
-    #[schemars(description = "Pin status (pin/unpin actions)")]
+    #[schemars(description = "Pin status (curate pin/unpin actions)")]
     #[serde(default)]
     pinned: Option<bool>,
 }
@@ -849,55 +749,38 @@ impl AgentflareMcp {
         reg.ensure_fresh()?;
         Ok(f(reg))
     }
-
     #[tool(
-        description = "Search installed skills (all agents' skill dirs) by task description. Returns name, source, description, and estimated token cost; call skill_load to fetch one."
+        description = "Skill operations — search installed skills or load one by name. Single consolidated tool with `action` field (search|load)."
     )]
-    fn skill_search(
+    fn skill(
         &self,
-        Parameters(SkillSearchRequest { query, limit, mode }): Parameters<SkillSearchRequest>,
+        Parameters(req): Parameters<SkillRequest>,
     ) -> Result<String, ErrorData> {
-        if query.trim().is_empty() {
-            return Err(ErrorData::invalid_params("query is required", None));
-        }
-        let mode = match mode.as_deref() {
-            None | Some("all") => skill_registry::MatchMode::All,
-            Some("any") => skill_registry::MatchMode::Any,
-            Some(other) => {
-                return Err(ErrorData::invalid_params(
-                    format!("mode must be 'all' or 'any', got '{other}'"),
-                    None,
-                ));
+        match req.action.as_str() {
+            "search" => {
+                let query = req.query.ok_or_else(|| ErrorData::invalid_params("query is required", None))?;
+                if query.trim().is_empty() { return Err(ErrorData::invalid_params("query is required", None)); }
+                let mode = match req.mode.as_deref() {
+                    None | Some("all") => skill_registry::MatchMode::All,
+                    Some("any") => skill_registry::MatchMode::Any,
+                    Some(other) => return Err(ErrorData::invalid_params(format!("mode must be 'all' or 'any', got '{other}'"), None)),
+                };
+                let hits = self.with_fresh_registry(|reg| reg.search(&query, req.limit.unwrap_or(5), mode))?.map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
             }
-        };
-        let hits = self
-            .with_fresh_registry(|reg| reg.search(&query, limit.unwrap_or(5), mode))?
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
-    }
-
-    #[tool(
-        description = "Load a skill's full instructions by name. Serves the compressed copy when one exists (original=true for the source). Sibling reference files are listed, not inlined."
-    )]
-    fn skill_load(
-        &self,
-        Parameters(SkillLoadRequest { name, original }): Parameters<SkillLoadRequest>,
-    ) -> Result<String, ErrorData> {
-        if name.trim().is_empty() {
-            return Err(ErrorData::invalid_params("name is required", None));
-        }
-        let result = self.with_fresh_registry(|reg| reg.load(&name, original))?;
-        match result {
-            Ok(s) => Ok(serde_json::to_string_pretty(&s).unwrap_or_default()),
-            Err(e @ skill_registry::LoadError::NotFound(_))
-            | Err(e @ skill_registry::LoadError::Ambiguous(_)) => {
-                Err(ErrorData::invalid_params(e.to_string(), None))
+            "load" => {
+                let name = req.name.ok_or_else(|| ErrorData::invalid_params("name is required", None))?;
+                if name.trim().is_empty() { return Err(ErrorData::invalid_params("name is required", None)); }
+                let result = self.with_fresh_registry(|reg| reg.load(&name, req.original))?;
+                match result {
+                    Ok(s) => Ok(serde_json::to_string_pretty(&s).unwrap_or_default()),
+                    Err(e @ skill_registry::LoadError::NotFound(_)) | Err(e @ skill_registry::LoadError::Ambiguous(_)) => Err(ErrorData::invalid_params(e.to_string(), None)),
+                    Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
+                }
             }
-            Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
+            other => Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
         }
-    }
-
-    /// Filesystem/URL-safe stem derived from a display name — lowercased,
+    }    /// Filesystem/URL-safe stem derived from a display name — lowercased,
     /// non-alphanumerics collapsed to `-`, falling back to "handoff" if that
     /// leaves nothing.
     fn slugify(name: &str) -> String {
@@ -1046,64 +929,58 @@ impl AgentflareMcp {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None)),
         }
     }
-
     #[tool(
-        description = "Publish a live-shareable artifact page (HTML, markdown, mermaid, text, ...) and return its local URL. Pass update_id to update in place — same URL, open viewers live-reload; every publish snapshots a version. Pass base_version to fail on concurrent edits instead of clobbering."
+        description = "Artifact operations — publish, list, get, diff, search, or delete. Single consolidated tool with `action` field (delete|diff|get|list|publish|search)."
     )]
-    fn artifact_publish(
+    fn artifact(
         &self,
-        Parameters(ArtifactPublishRequest {
-            name,
-            r#type,
-            content,
-            session_id,
-            update_id,
-            label,
-            description,
-            favicon,
-            base_version,
-            sender,
-            recipient,
-            thread_id,
-            reply_to,
-        }): Parameters<ArtifactPublishRequest>,
+        Parameters(req): Parameters<ArtifactRequest>,
     ) -> Result<String, ErrorData> {
-        if name.trim().is_empty() {
-            return Err(ErrorData::invalid_params("name is required", None));
+        match req.action.as_str() {
+            "publish" => {
+                let name = req.name.ok_or_else(|| ErrorData::invalid_params("name is required", None))?;
+                if name.trim().is_empty() { return Err(ErrorData::invalid_params("name is required", None)); }
+                let content = req.content.ok_or_else(|| ErrorData::invalid_params("content is required", None))?;
+                if content.is_empty() { return Err(ErrorData::invalid_params("content is required", None)); }
+                let (store, base) = self.ensure_artifact_server()?;
+                let req2 = agentflare_artifacts::PublishRequest { name, artifact_type: agentflare_artifacts::ArtifactType::from(req.r#type.as_deref().unwrap_or("text")), content, session_id: req.session_id.unwrap_or_default(), update_id: req.update_id, label: req.label, description: req.description, favicon: req.favicon, base_version: req.base_version, sender: req.sender.or_else(|| self.agent.clone()), recipient: req.recipient, thread_id: req.thread_id, reply_to: req.reply_to, git: Self::git_provenance() };
+                let resp = store.publish(&req2).map_err(Self::artifact_error)?;
+                Ok(serde_json::to_string_pretty(&serde_json::json!({ "id": resp.id, "version": resp.version, "url": format!("{base}/{}", resp.id), "index": format!("{base}/") })).unwrap_or_default())
+            }
+            "list" => {
+                let (store, base) = self.ensure_artifact_server()?;
+                let summaries = store.list(req.session_id.as_deref()).map_err(Self::artifact_error)?;
+                let items: Vec<serde_json::Value> = summaries.iter().filter(|s| { req.inbox_recipient.as_deref().is_none_or(|r| s.recipient.as_deref() == Some(r)) && req.thread_id.as_deref().is_none_or(|t| s.thread_id.as_deref() == Some(t)) }).map(|s| { let mut v = serde_json::to_value(s).unwrap_or_default(); if let Some(obj) = v.as_object_mut() { obj.insert("url".into(), serde_json::json!(format!("{base}/{}", s.id))); } v }).collect();
+                Ok(serde_json::to_string_pretty(&items).unwrap_or_default())
+            }
+            "get" => {
+                let id = req.id.ok_or_else(|| ErrorData::invalid_params("id is required", None))?;
+                let (store, _) = self.ensure_artifact_server()?;
+                let artifact = store.get(&id, req.version).map_err(Self::artifact_error)?;
+                Ok(serde_json::to_string_pretty(&artifact).unwrap_or_default())
+            }
+            "diff" => {
+                let id = req.id.ok_or_else(|| ErrorData::invalid_params("id is required", None))?;
+                let from_version = req.from_version.ok_or_else(|| ErrorData::invalid_params("from_version is required", None))?;
+                let (store, _) = self.ensure_artifact_server()?;
+                let diff = store.diff(&id, from_version, req.to_version).map_err(Self::artifact_error)?;
+                Ok(serde_json::to_string_pretty(&diff).unwrap_or_default())
+            }
+            "search" => {
+                let query = req.query.ok_or_else(|| ErrorData::invalid_params("query is required", None))?;
+                let (store, _) = self.ensure_artifact_server()?;
+                let results = store.search(&query, req.session_id.as_deref()).map_err(Self::artifact_error)?;
+                Ok(serde_json::to_string_pretty(&results).unwrap_or_default())
+            }
+            "delete" => {
+                let id = req.id.ok_or_else(|| ErrorData::invalid_params("id is required", None))?;
+                let (store, _) = self.ensure_artifact_server()?;
+                store.delete(&id).map_err(Self::artifact_error)?;
+                Ok(serde_json::json!({"deleted": id}).to_string())
+            }
+            other => Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
         }
-        if content.is_empty() {
-            return Err(ErrorData::invalid_params("content is required", None));
-        }
-        let (store, base) = self.ensure_artifact_server()?;
-        let req = agentflare_artifacts::PublishRequest {
-            name,
-            artifact_type: agentflare_artifacts::ArtifactType::from(
-                r#type.as_deref().unwrap_or("text"),
-            ),
-            content,
-            session_id: session_id.unwrap_or_default(),
-            update_id,
-            label,
-            description,
-            favicon,
-            base_version,
-            sender: sender.or_else(|| self.agent.clone()),
-            recipient,
-            thread_id,
-            reply_to,
-            git: Self::git_provenance(),
-        };
-        let resp = store.publish(&req).map_err(Self::artifact_error)?;
-        let result = serde_json::json!({
-            "id": resp.id,
-            "version": resp.version,
-            "url": format!("{base}/{}", resp.id),
-            "index": format!("{base}/"),
-        });
-        Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
-    }
-
-    #[tool(
+    }    #[tool(
         description = "Hand a work product to another agent: assigns/creates an item for the recipient (in the repo's linked project) and attaches the content to it as an asset. Re-attaching under the same item_id creates the next asset version, not a duplicate. Sender is this runtime's own identity."
     )]
     fn handoff(
@@ -1553,154 +1430,6 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "List published artifacts (id, name, type, version, description, session, handoff envelope) with their local URLs. Filter by session_id, recipient (inbox), or thread_id."
-    )]
-    fn artifact_list(
-        &self,
-        Parameters(ArtifactListRequest {
-            session_id,
-            recipient,
-            thread_id,
-        }): Parameters<ArtifactListRequest>,
-    ) -> Result<String, ErrorData> {
-        let (store, base) = self.ensure_artifact_server()?;
-        let summaries = store
-            .list(session_id.as_deref())
-            .map_err(Self::artifact_error)?;
-        let items: Vec<serde_json::Value> = summaries
-            .iter()
-            .filter(|s| {
-                recipient
-                    .as_deref()
-                    .is_none_or(|r| s.recipient.as_deref() == Some(r))
-                    && thread_id
-                        .as_deref()
-                        .is_none_or(|t| s.thread_id.as_deref() == Some(t))
-            })
-            .map(|s| {
-                let mut v = serde_json::to_value(s).unwrap_or_default();
-                if let Some(obj) = v.as_object_mut() {
-                    obj.insert("url".into(), serde_json::json!(format!("{base}/{}", s.id)));
-                }
-                v
-            })
-            .collect();
-        Ok(serde_json::to_string_pretty(&items).unwrap_or_default())
-    }
-
-    #[tool(
-        description = "Fetch an artifact's full content and metadata by id; pass version to read an older snapshot. Version history itself is at GET /{id}/versions."
-    )]
-    fn artifact_get(
-        &self,
-        Parameters(ArtifactGetRequest { id, version }): Parameters<ArtifactGetRequest>,
-    ) -> Result<String, ErrorData> {
-        if id.trim().is_empty() {
-            return Err(ErrorData::invalid_params("id is required", None));
-        }
-        let (store, _base) = self.ensure_artifact_server()?;
-        let artifact = match version {
-            Some(n) => store.get_version(&id, n),
-            None => store.get(&id),
-        }
-        .map_err(Self::artifact_error)?;
-        Ok(serde_json::to_string_pretty(&artifact).unwrap_or_default())
-    }
-
-    #[tool(
-        description = "Unified diff between two versions of an artifact; to_version defaults to the latest. Use after an update to see what changed."
-    )]
-    fn artifact_diff(
-        &self,
-        Parameters(ArtifactDiffRequest {
-            id,
-            from_version,
-            to_version,
-        }): Parameters<ArtifactDiffRequest>,
-    ) -> Result<String, ErrorData> {
-        if id.trim().is_empty() {
-            return Err(ErrorData::invalid_params("id is required", None));
-        }
-        let (store, _base) = self.ensure_artifact_server()?;
-        let to = match to_version {
-            Some(v) => v,
-            None => store.get(&id).map_err(Self::artifact_error)?.version,
-        };
-        store
-            .diff(&id, from_version, to)
-            .map_err(Self::artifact_error)
-    }
-
-    #[tool(
-        description = "Case-insensitive search across artifact names, descriptions, and content; returns matching summaries with a snippet around the first content match."
-    )]
-    fn artifact_search(
-        &self,
-        Parameters(ArtifactSearchRequest { query, session_id }): Parameters<ArtifactSearchRequest>,
-    ) -> Result<String, ErrorData> {
-        if query.trim().is_empty() {
-            return Err(ErrorData::invalid_params("query is required", None));
-        }
-        let (store, base) = self.ensure_artifact_server()?;
-        let needle = query.to_lowercase();
-        let mut hits = Vec::new();
-        for summary in store
-            .list(session_id.as_deref())
-            .map_err(Self::artifact_error)?
-        {
-            let name_hit = summary.name.to_lowercase().contains(&needle);
-            let desc_hit = summary
-                .description
-                .as_deref()
-                .is_some_and(|d| d.to_lowercase().contains(&needle));
-            let content = store
-                .get(&summary.id)
-                .map(|a| a.content)
-                .unwrap_or_default();
-            let content_pos = content.to_lowercase().find(&needle);
-            if !(name_hit || desc_hit || content_pos.is_some()) {
-                continue;
-            }
-            let snippet = content_pos.map(|pos| {
-                let mut start = pos.saturating_sub(40);
-                while !content.is_char_boundary(start) {
-                    start -= 1;
-                }
-                let mut end = (pos + needle.len() + 40).min(content.len());
-                while !content.is_char_boundary(end) {
-                    end += 1;
-                }
-                content[start..end].to_string()
-            });
-            let mut v = serde_json::to_value(&summary).unwrap_or_default();
-            if let Some(obj) = v.as_object_mut() {
-                obj.insert(
-                    "url".into(),
-                    serde_json::json!(format!("{base}/{}", summary.id)),
-                );
-                if let Some(snippet) = snippet {
-                    obj.insert("snippet".into(), serde_json::json!(snippet));
-                }
-            }
-            hits.push(v);
-        }
-        Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
-    }
-
-    #[tool(description = "Delete an artifact and all its versions by id.")]
-    fn artifact_delete(
-        &self,
-        Parameters(ArtifactDeleteRequest { id }): Parameters<ArtifactDeleteRequest>,
-    ) -> Result<String, ErrorData> {
-        if id.trim().is_empty() {
-            return Err(ErrorData::invalid_params("id is required", None));
-        }
-        let (store, _base) = self.ensure_artifact_server()?;
-        let deleted = store.delete(&id).map_err(Self::artifact_error)?;
-        Ok(serde_json::json!({ "deleted": deleted }).to_string())
-    }
-
-    #[tool(
         description = "Send a text message out to a chat platform (telegram, slack, or discord). The bot token must already be stored as the gateway secret '<platform>_bot_token'. target is the Telegram chat_id or Slack/Discord channel id."
     )]
     fn channel_send(
@@ -1723,121 +1452,57 @@ impl AgentflareMcp {
             .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(serde_json::json!({ "sent": true, "platform": platform, "target": target }).to_string())
     }
-
     #[tool(
-        description = "Claim a GitHub issue/PR so other agents don't duplicate the work. Returns 'acquired' if you now own it, or 'held' with the current owner if a live claim exists. Only stale (past-TTL) or done claims are stolen. Re-heartbeat periodically to keep it."
+        description = "Manage work claims — acquire, heartbeat, release, done, or list. Single consolidated tool with `action` field (acquire|done|heartbeat|list|release)."
     )]
-    fn claim_acquire(
+    fn claim(
         &self,
-        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
+        Parameters(req): Parameters<ClaimRequest>,
     ) -> Result<String, ErrorData> {
-        // Only capture the current checkout's commit when the repo is
-        // auto-resolved from it; an explicit repo may name a different one.
-        let repo_overridden = repo.as_ref().is_some_and(|r| !r.is_empty());
-        let (conn, repo) = Self::claim_ctx(&target, repo)?;
-        let owner = crate::claims::owner_id();
-        let commit = if repo_overridden {
-            None
-        } else {
-            Self::git_provenance().and_then(|g| g.commit)
-        };
-        let outcome = crate::claims::acquire(
-            &conn,
-            &repo,
-            &target,
-            &owner,
-            commit.as_deref(),
-            crate::claims::now(),
-            crate::claims::ttl_secs(),
-        )
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(match outcome {
-            crate::claims::Acquire::Acquired => {
-                serde_json::json!({ "status": "acquired", "repo": repo, "target": target, "owner": owner })
+        match req.action.as_str() {
+            "acquire" => {
+                let target = req.target.ok_or_else(|| ErrorData::invalid_params("target is required", None))?;
+                let repo_opt = req.repo;
+                let repo_overridden = repo_opt.as_ref().is_some_and(|r| !r.is_empty());
+                let (conn, repo) = Self::claim_ctx(&target, repo_opt)?;
+                let owner = crate::claims::owner_id();
+                let commit = if repo_overridden { None } else { Self::git_provenance().and_then(|g| g.commit) };
+                let outcome = crate::claims::acquire(&conn, &repo, &target, &owner, commit.as_deref(), crate::claims::now(), crate::claims::ttl_secs()).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(match outcome {
+                    crate::claims::Acquire::Acquired => serde_json::json!({ "status": "acquired", "repo": repo, "target": target, "owner": owner }),
+                    crate::claims::Acquire::Held { owner: holder, age_secs } => serde_json::json!({ "status": "held", "repo": repo, "target": target, "owner": holder, "age_secs": age_secs }),
+                }.to_string())
             }
-            crate::claims::Acquire::Held { owner: holder, age_secs } => {
-                serde_json::json!({ "status": "held", "repo": repo, "target": target, "owner": holder, "age_secs": age_secs })
+            "heartbeat" => {
+                let target = req.target.ok_or_else(|| ErrorData::invalid_params("target is required", None))?;
+                let (conn, repo) = Self::claim_ctx(&target, req.repo)?;
+                let owner = crate::claims::owner_id();
+                let ok = crate::claims::heartbeat(&conn, &repo, &target, &owner, crate::claims::now()).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::json!({ "refreshed": ok, "repo": repo, "target": target }).to_string())
             }
+            "release" => {
+                let target = req.target.ok_or_else(|| ErrorData::invalid_params("target is required", None))?;
+                let (conn, repo) = Self::claim_ctx(&target, req.repo)?;
+                let owner = crate::claims::owner_id();
+                let ok = crate::claims::release(&conn, &repo, &target, &owner).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::json!({ "released": ok, "repo": repo, "target": target }).to_string())
+            }
+            "done" => {
+                let target = req.target.ok_or_else(|| ErrorData::invalid_params("target is required", None))?;
+                let (conn, repo) = Self::claim_ctx(&target, req.repo)?;
+                let owner = crate::claims::owner_id();
+                let ok = crate::claims::done(&conn, &repo, &target, &owner, crate::claims::now()).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::json!({ "done": ok, "repo": repo, "target": target }).to_string())
+            }
+            "list" => {
+                let conn = Self::claim_db()?;
+                let scope = if req.all_repos { None } else { Some(crate::claims::resolve_repo(req.repo).ok_or_else(|| ErrorData::invalid_params("could not determine repo — run in a git repo or pass repo=owner/name (or all_repos=true)", None))?) };
+                let claims = crate::claims::list(&conn, scope.as_deref(), req.all, crate::claims::now(), crate::claims::ttl_secs()).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::to_string_pretty(&claims).unwrap_or_default())
+            }
+            other => Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
         }
-        .to_string())
-    }
-
-    #[tool(
-        description = "Refresh the lease on a claim you own, so it isn't reclaimed as stale. Returns refreshed=false if the claim is gone or owned by someone else."
-    )]
-    fn claim_heartbeat(
-        &self,
-        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
-    ) -> Result<String, ErrorData> {
-        let (conn, repo) = Self::claim_ctx(&target, repo)?;
-        let owner = crate::claims::owner_id();
-        let ok = crate::claims::heartbeat(&conn, &repo, &target, &owner, crate::claims::now())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::json!({ "refreshed": ok, "repo": repo, "target": target }).to_string())
-    }
-
-    #[tool(
-        description = "Release a claim you own, freeing the target for other agents. Returns released=false if it wasn't yours."
-    )]
-    fn claim_release(
-        &self,
-        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
-    ) -> Result<String, ErrorData> {
-        let (conn, repo) = Self::claim_ctx(&target, repo)?;
-        let owner = crate::claims::owner_id();
-        let ok = crate::claims::release(&conn, &repo, &target, &owner)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::json!({ "released": ok, "repo": repo, "target": target }).to_string())
-    }
-
-    #[tool(
-        description = "Mark a claim you own as done — keeps the audit row (unlike release, which deletes it) while freeing the target for re-acquisition. Returns done=false if it wasn't yours."
-    )]
-    fn claim_done(
-        &self,
-        Parameters(ClaimTargetRequest { target, repo }): Parameters<ClaimTargetRequest>,
-    ) -> Result<String, ErrorData> {
-        let (conn, repo) = Self::claim_ctx(&target, repo)?;
-        let owner = crate::claims::owner_id();
-        let ok = crate::claims::done(&conn, &repo, &target, &owner, crate::claims::now())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::json!({ "done": ok, "repo": repo, "target": target }).to_string())
-    }
-
-    #[tool(
-        description = "List work claims. Defaults to live claims for the current repo; set all=true to include stale/done, all_repos=true to span every repo."
-    )]
-    fn claim_list(
-        &self,
-        Parameters(ClaimListRequest {
-            repo,
-            all,
-            all_repos,
-        }): Parameters<ClaimListRequest>,
-    ) -> Result<String, ErrorData> {
-        let conn = Self::claim_db()?;
-        let scope = if all_repos {
-            None
-        } else {
-            Some(crate::claims::resolve_repo(repo).ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "could not determine repo — run in a git repo or pass repo=owner/name (or all_repos=true)",
-                    None,
-                )
-            })?)
-        };
-        let claims = crate::claims::list(
-            &conn,
-            scope.as_deref(),
-            all,
-            crate::claims::now(),
-            crate::claims::ttl_secs(),
-        )
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::to_string_pretty(&claims).unwrap_or_default())
-    }
-
-    /// Opens the ledger db.
+    }    /// Opens the ledger db.
     fn claim_db() -> crate::errors::Result<rusqlite::Connection> {
         Ok(crate::db::open()?)
     }
@@ -1860,149 +1525,71 @@ impl AgentflareMcp {
         })?;
         Ok((conn, repo))
     }
-
     #[tool(
-        description = "Submit a finder's review findings for a round (each finding is {file, line, message, severity?, category?}). Replaces this finder's prior findings for the round. Call from each reviewing agent, then call review_consensus to verify + dedup + tag."
+        description = "Review operations — submit findings, run consensus, list/clear/record rounds, check scores. Single consolidated tool with `action` field (clear|consensus|list|record|scores|submit)."
     )]
-    fn review_submit(
+    fn review(
         &self,
-        Parameters(ReviewSubmitRequest {
-            findings,
-            pr,
-            agent,
-            repo,
-        }): Parameters<ReviewSubmitRequest>,
+        Parameters(req): Parameters<ReviewRequest>,
     ) -> Result<String, ErrorData> {
-        let conn = Self::claim_db()?;
-        let repo = Self::resolve_repo_or_err(repo)?;
-        let pr = Self::resolve_round(pr)?;
-        let agent = agent
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(crate::review::submitter_name);
-        let parsed: Vec<crate::review::Finding> = findings
-            .into_iter()
-            .map(serde_json::from_value)
-            .collect::<Result<_, _>>()
-            .map_err(|e| ErrorData::invalid_params(format!("invalid finding: {e}"), None))?;
-        let n = crate::review::submit(&conn, &repo, &pr, &agent, &parsed, crate::claims::now())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(
-            serde_json::json!({ "submitted": n, "repo": repo, "pr": pr, "agent": agent })
-                .to_string(),
-        )
-    }
-
-    #[tool(
-        description = "Verify all submitted findings for a round against the git diff (base...head), dedup overlapping ones, and tag each CONFIRMED/UNIQUE/DISPUTED/UNVERIFIED. Returns the ranked consensus items."
-    )]
-    fn review_consensus(
-        &self,
-        Parameters(ReviewConsensusRequest {
-            pr,
-            base,
-            head,
-            repo,
-        }): Parameters<ReviewConsensusRequest>,
-    ) -> Result<String, ErrorData> {
-        let conn = Self::claim_db()?;
-        let repo = Self::resolve_repo_or_err(repo)?;
-        let pr = Self::resolve_round(pr)?;
-        let findings = crate::review::load(&conn, &repo, &pr)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let diff = crate::review::compute_diff(base.as_deref(), head.as_deref())
-            .map_err(|e| ErrorData::invalid_params(e, None))?;
-        let changed = crate::review::changed_lines(&diff);
-        let items = crate::review::consensus(&findings, &changed);
-        Ok(serde_json::json!({
-            "repo": repo,
-            "pr": pr,
-            "items": items,
-            "markdown": crate::review::render_markdown(&items),
-        })
-        .to_string())
-    }
-
-    #[tool(description = "List the raw submitted findings for a review round (before consensus).")]
-    fn review_list(
-        &self,
-        Parameters(ReviewRoundRequest { pr, repo }): Parameters<ReviewRoundRequest>,
-    ) -> Result<String, ErrorData> {
-        let conn = Self::claim_db()?;
-        let repo = Self::resolve_repo_or_err(repo)?;
-        let pr = Self::resolve_round(pr)?;
-        let findings = crate::review::load(&conn, &repo, &pr)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let rows: Vec<serde_json::Value> = findings
-            .iter()
-            .map(|sf| serde_json::json!({ "agent": sf.agent, "file": sf.finding.file, "line": sf.finding.line, "message": sf.finding.message, "severity": sf.finding.severity }))
-            .collect();
-        Ok(serde_json::to_string_pretty(&rows).unwrap_or_default())
-    }
-
-    #[tool(description = "Drop all submitted findings for a review round.")]
-    fn review_clear(
-        &self,
-        Parameters(ReviewRoundRequest { pr, repo }): Parameters<ReviewRoundRequest>,
-    ) -> Result<String, ErrorData> {
-        let conn = Self::claim_db()?;
-        let repo = Self::resolve_repo_or_err(repo)?;
-        let pr = Self::resolve_round(pr)?;
-        let n = crate::review::clear(&conn, &repo, &pr)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::json!({ "cleared": n, "repo": repo, "pr": pr }).to_string())
-    }
-
-    #[tool(
-        description = "Record this round's per-agent accuracy: how many of each finder's findings cited a real changed line (verified) vs total. Idempotent per round. Feeds review_scores."
-    )]
-    fn review_record(
-        &self,
-        Parameters(ReviewConsensusRequest {
-            pr,
-            base,
-            head,
-            repo,
-        }): Parameters<ReviewConsensusRequest>,
-    ) -> Result<String, ErrorData> {
-        let conn = Self::claim_db()?;
-        let repo = Self::resolve_repo_or_err(repo)?;
-        let pr = Self::resolve_round(pr)?;
-        let findings = crate::review::load(&conn, &repo, &pr)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let diff = crate::review::compute_diff(base.as_deref(), head.as_deref())
-            .map_err(|e| ErrorData::invalid_params(e, None))?;
-        let changed = crate::review::changed_lines(&diff);
-        let n = crate::review::record_round(
-            &conn,
-            &repo,
-            &pr,
-            &findings,
-            &changed,
-            crate::claims::now(),
-        )
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::json!({ "recorded_agents": n, "repo": repo, "pr": pr }).to_string())
-    }
-
-    #[tool(
-        description = "Per-agent accuracy across recorded rounds: verified/total citation rate, ranked. Use to weight which finders to trust or dispatch."
-    )]
-    fn review_scores(
-        &self,
-        Parameters(ReviewScoresRequest { repo, all_repos }): Parameters<ReviewScoresRequest>,
-    ) -> Result<String, ErrorData> {
-        let conn = Self::claim_db()?;
-        let scope = if all_repos {
-            None
-        } else {
-            Some(Self::resolve_repo_or_err(repo)?)
-        };
-        let scores = crate::review::scores(&conn, scope.as_deref())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::to_string_pretty(&scores).unwrap_or_default())
-    }
-
-    fn resolve_repo_or_err(repo: Option<String>) -> Result<String, ErrorData> {
+        match req.action.as_str() {
+            "submit" => {
+                let findings = req.findings.ok_or_else(|| ErrorData::invalid_params("findings is required", None))?;
+                let conn = Self::claim_db()?;
+                let repo = Self::resolve_repo_or_err(req.repo)?;
+                let pr = Self::resolve_round(req.pr)?;
+                let agent = req.agent.filter(|s| !s.is_empty()).unwrap_or_else(crate::review::submitter_name);
+                let parsed: Vec<crate::review::Finding> = findings.into_iter().map(serde_json::from_value).collect::<Result<_, _>>().map_err(|e| ErrorData::invalid_params(format!("invalid finding: {e}"), None))?;
+                let n = crate::review::submit(&conn, &repo, &pr, &agent, &parsed, crate::claims::now()).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::json!({ "submitted": n, "repo": repo, "pr": pr, "agent": agent }).to_string())
+            }
+            "consensus" => {
+                let conn = Self::claim_db()?;
+                let repo = Self::resolve_repo_or_err(req.repo)?;
+                let pr = Self::resolve_round(req.pr)?;
+                let base = req.base.unwrap_or_else(|| "master".into());
+                let head = req.head.unwrap_or_else(|| "HEAD".into());
+                let result = crate::review::consensus(&conn, &repo, &pr, &base, &head).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
+            }
+            "list" => {
+                let conn = Self::claim_db()?;
+                let repo = Self::resolve_repo_or_err(req.repo)?;
+                let pr = Self::resolve_round(req.pr)?;
+                let findings = crate::review::load(&conn, &repo, &pr).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let rows: Vec<serde_json::Value> = findings.iter().map(|sf| serde_json::json!({ "agent": sf.agent, "file": sf.finding.file, "line": sf.finding.line, "message": sf.finding.message, "severity": sf.finding.severity })).collect();
+                Ok(serde_json::to_string_pretty(&rows).unwrap_or_default())
+            }
+            "clear" => {
+                let conn = Self::claim_db()?;
+                let repo = Self::resolve_repo_or_err(req.repo)?;
+                let pr = Self::resolve_round(req.pr)?;
+                crate::review::clear(&conn, &repo, &pr).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::json!({"cleared": true}).to_string())
+            }
+            "record" => {
+                let conn = Self::claim_db()?;
+                let repo = Self::resolve_repo_or_err(req.repo)?;
+                let pr = Self::resolve_round(req.pr)?;
+                let base = req.base.unwrap_or_else(|| "master".into());
+                let head = req.head.unwrap_or_else(|| "HEAD".into());
+                let findings = crate::review::load(&conn, &repo, &pr).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let diff = crate::review::compute_diff(req.base.as_deref(), req.head.as_deref()).map_err(|e| ErrorData::invalid_params(e, None))?;
+                let changed = crate::review::changed_lines(&diff);
+                let n = crate::review::record_round(&conn, &repo, &pr, &findings, &changed, crate::claims::now()).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::json!({ "recorded_agents": n, "repo": repo, "pr": pr }).to_string())
+            }
+            "scores" => {
+                let conn = Self::claim_db()?;
+                let repo = req.repo;
+                let all_repos = req.all_repos;
+                let scope = if all_repos { None } else { Some(Self::resolve_repo_or_err(repo)?) };
+                let scores = crate::review::scores(&conn, scope.as_deref()).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::to_string_pretty(&scores).unwrap_or_default())
+            }
+            other => Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
+        }
+    }    fn resolve_repo_or_err(repo: Option<String>) -> Result<String, ErrorData> {
         crate::claims::resolve_repo(repo).ok_or_else(|| {
             ErrorData::invalid_params(
                 "could not determine repo — run in a git repo or pass repo=owner/name",
@@ -2132,231 +1719,87 @@ impl AgentflareMcp {
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(guard)
     }
-
     #[tool(
-        description = "Search downstream MCP servers' tools by task description. Returns server, tool, description, and input_schema; call gateway_execute to run one."
+        description = "Gateway operations — search downstream MCP servers' tools or execute one. Single consolidated tool with `action` field (search|execute)."
     )]
-    async fn gateway_search(
+    async fn gateway(
         &self,
-        Parameters(GatewaySearchRequest { query, limit, mode }): Parameters<GatewaySearchRequest>,
+        Parameters(req): Parameters<GatewayRequest>,
     ) -> Result<String, ErrorData> {
-        if query.trim().is_empty() {
-            return Err(ErrorData::invalid_params("query is required", None));
-        }
-        let mode = match mode.as_deref() {
-            None | Some("all") => gateway_registry::MatchMode::All,
-            Some("any") => gateway_registry::MatchMode::Any,
-            Some(other) => {
-                return Err(ErrorData::invalid_params(
-                    format!("mode must be 'all' or 'any', got '{other}'"),
-                    None,
-                ));
+        match req.action.as_str() {
+            "search" => {
+                let query = req.query.ok_or_else(|| ErrorData::invalid_params("query is required", None))?;
+                if query.trim().is_empty() { return Err(ErrorData::invalid_params("query is required", None)); }
+                let mode = match req.mode.as_deref() {
+                    None | Some("all") => gateway_registry::MatchMode::All,
+                    Some("any") => gateway_registry::MatchMode::Any,
+                    Some(other) => return Err(ErrorData::invalid_params(format!("mode must be 'all' or 'any', got '{other}'"), None)),
+                };
+                let guard = self.ensure_gateway_registry().await?;
+                let reg = guard.as_ref().expect("ensured above");
+                let hits = reg.search(&query, req.limit.unwrap_or(5), mode).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
             }
-        };
-        let guard = self.ensure_gateway_registry().await?;
-        let reg = guard.as_ref().expect("ensured above");
-        let hits = reg
-            .search(&query, limit.unwrap_or(5), mode)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
-    }
-
-    #[tool(
-        description = "Execute a tool on a downstream MCP server found via gateway_search. args must match that tool's input_schema."
-    )]
-    async fn gateway_execute(
-        &self,
-        Parameters(GatewayExecuteRequest { server, tool, args }): Parameters<GatewayExecuteRequest>,
-    ) -> Result<String, ErrorData> {
-        if server.trim().is_empty() || tool.trim().is_empty() {
-            return Err(ErrorData::invalid_params(
-                "server and tool are required",
-                None,
-            ));
-        }
-        let args = args
-            .map(serde_json::Value::Object)
-            .unwrap_or(serde_json::Value::Null);
-        let guard = self.ensure_gateway_registry().await?;
-        let reg = guard.as_ref().expect("ensured above");
-        match reg.execute(&server, &tool, args).await {
-            Ok(value) => {
-                let capped = gateway_registry::truncate_if_needed(
-                    &value,
-                    gateway_registry::DEFAULT_MAX_CHARS,
-                );
-                Ok(serde_json::to_string_pretty(&capped).unwrap_or_default())
+            "execute" => {
+                let server = req.server.ok_or_else(|| ErrorData::invalid_params("server is required", None))?;
+                let tool = req.tool.ok_or_else(|| ErrorData::invalid_params("tool is required", None))?;
+                if server.trim().is_empty() || tool.trim().is_empty() { return Err(ErrorData::invalid_params("server and tool are required", None)); }
+                let args = req.args.map(serde_json::Value::Object).unwrap_or(serde_json::Value::Null);
+                let guard = self.ensure_gateway_registry().await?;
+                let reg = guard.as_ref().expect("ensured above");
+                match reg.execute(&server, &tool, args).await {
+                    Ok(value) => { let capped = gateway_registry::truncate_if_needed(&value, gateway_registry::DEFAULT_MAX_CHARS); Ok(serde_json::to_string_pretty(&capped).unwrap_or_default()) }
+                    Err(e @ gateway_registry::GatewayError::ServerNotFound(_)) | Err(e @ gateway_registry::GatewayError::ToolNotFound(_)) | Err(e @ gateway_registry::GatewayError::InvalidArgument(_)) => Err(ErrorData::invalid_params(e.to_string(), None)),
+                    Err(e) => Err(ErrorData::internal_error(gateway_registry::redact_error_for_llm(&e.to_string()), None)),
+                }
             }
-            Err(e @ gateway_registry::GatewayError::ServerNotFound(_))
-            | Err(e @ gateway_registry::GatewayError::ToolNotFound(_))
-            | Err(e @ gateway_registry::GatewayError::InvalidArgument(_)) => {
-                Err(ErrorData::invalid_params(e.to_string(), None))
-            }
-            // Every other variant (Upstream, Connection, Timeout, ...)
-            // carries the downstream server's or OS's own error text
-            // verbatim — unlike the three above, which are our own
-            // controlled messages. Redact before it reaches the LLM: a
-            // downstream server's raw error could otherwise leak a file
-            // path, connection string, or an echoed credential.
-            Err(e) => Err(ErrorData::internal_error(
-                gateway_registry::redact_error_for_llm(&e.to_string()),
-                None,
-            )),
+            other => Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
         }
-    }
-
-    // --- Memory tools ---
-    //
-    // Must live in this impl block, not a separate one — #[tool_router]
-    // (on this block's `impl` line) is what rmcp's macro uses to collect
-    // #[tool]-annotated methods into the router that get_tools/call_tool
-    // actually dispatch through. A #[tool] method in an untagged impl
-    // block compiles fine and is directly callable as a plain Rust
-    // method (which is why unit tests calling e.g. `s.memory_remember(...)`
-    // passed), but is never registered as an MCP tool and is invisible to
-    // every real MCP client — silently dead on arrival.
-
+    }    // --- Memory tools ---
     #[tool(
-        description = "Save an observation to persistent memory. Creates, updates (by topic_key), or deduplicates. Returns status: created|updated|duplicate."
+        description = "Memory operations — remember, recall, context, curate, handoff, or relate observations. Single consolidated tool with `action` field (context|curate|handoff|recall|relate|remember)."
     )]
-    fn memory_remember(
+    fn memory(
         &self,
-        Parameters(MemoryRememberRequest {
-            title,
-            content,
-            r#type,
-            session_id,
-            project,
-            topic_key,
-            scope,
-        }): Parameters<MemoryRememberRequest>,
+        Parameters(req): Parameters<MemoryRequest>,
     ) -> Result<String, ErrorData> {
-        let input = crate::memory::mcp::RememberInput {
-            title,
-            content,
-            r#type,
-            session_id,
-            project,
-            topic_key,
-            scope,
-        };
-        crate::memory::mcp::handle_remember(input).map_err(|e| ErrorData::internal_error(e, None))
-    }
-
-    #[tool(
-        description = "Search or retrieve observations. Pass id for direct lookup, query for FTS5 BM25 search, omit query for recent listing. Filters by type/project."
-    )]
-    fn memory_recall(
-        &self,
-        Parameters(MemoryRecallRequest {
-            query,
-            id,
-            r#type,
-            project,
-            limit,
-        }): Parameters<MemoryRecallRequest>,
-    ) -> Result<String, ErrorData> {
-        let input = crate::memory::mcp::RecallInput {
-            query,
-            id,
-            r#type,
-            project,
-            limit,
-        };
-        crate::memory::mcp::handle_recall(input).map_err(|e| ErrorData::internal_error(e, None))
-    }
-
-    #[tool(
-        description = "Return session context: active session (findings/decisions/files_touched), recent sessions, recent observations, and recent session summaries."
-    )]
-    fn memory_context(
-        &self,
-        Parameters(MemoryContextRequest {
-            session_id,
-            project,
-        }): Parameters<MemoryContextRequest>,
-    ) -> Result<String, ErrorData> {
-        let input = crate::memory::mcp::ContextInput {
-            session_id,
-            project,
-        };
-        crate::memory::mcp::handle_context(input).map_err(|e| ErrorData::internal_error(e, None))
-    }
-
-    #[tool(
-        description = "Close a session with a handoff summary. Enriches the session with findings/decisions/files_touched/evidence, builds a compaction snapshot, appends to session_summaries, and marks the session closed."
-    )]
-    fn memory_handoff(
-        &self,
-        Parameters(MemoryHandoffRequest {
-            session_id,
-            summary,
-            findings,
-            decisions,
-            files_touched,
-            evidence,
-        }): Parameters<MemoryHandoffRequest>,
-    ) -> Result<String, ErrorData> {
-        let input = crate::memory::mcp::HandoffInput {
-            session_id,
-            summary,
-            findings,
-            decisions,
-            files_touched,
-            evidence,
-        };
-        crate::memory::mcp::handle_handoff(input).map_err(|e| ErrorData::internal_error(e, None))
-    }
-
-    #[tool(
-        description = "Record a semantic relation verdict between two observations. Relation: related|compatible|scoped|conflicts_with|supersedes|not_conflict."
-    )]
-    fn memory_relate(
-        &self,
-        Parameters(MemoryRelateRequest {
-            source_id,
-            target_id,
-            relation,
-            reason,
-            confidence,
-        }): Parameters<MemoryRelateRequest>,
-    ) -> Result<String, ErrorData> {
-        let input = crate::memory::mcp::RelateInput {
-            source_id,
-            target_id,
-            relation,
-            reason,
-            confidence,
-        };
-        crate::memory::mcp::handle_relate(input).map_err(|e| ErrorData::internal_error(e, None))
-    }
-
-    #[tool(
-        description = "Update, soft-delete, pin, or unpin an observation by ID. Actions: update (title/content/type/pinned), delete, pin, unpin."
-    )]
-    fn memory_curate(
-        &self,
-        Parameters(MemoryCurateRequest {
-            action,
-            id,
-            title,
-            content,
-            r#type,
-            pinned,
-        }): Parameters<MemoryCurateRequest>,
-    ) -> Result<String, ErrorData> {
-        let input = crate::memory::mcp::CurateInput {
-            action,
-            id,
-            title,
-            content,
-            r#type,
-            pinned,
-        };
-        crate::memory::mcp::handle_curate(input).map_err(|e| ErrorData::internal_error(e, None))
-    }
-
-    fn item_inner(&self, req: ItemRequest) -> Result<String, ErrorData> {
+        match req.action.as_str() {
+            "remember" => {
+                let title = req.title.ok_or_else(|| ErrorData::invalid_params("title is required", None))?;
+                let content = req.content.ok_or_else(|| ErrorData::invalid_params("content is required", None))?;
+                let r#type = req.r#type.ok_or_else(|| ErrorData::invalid_params("type is required", None))?;
+                let input = crate::memory::mcp::RememberInput { title, content, r#type, session_id: req.session_id, project: req.project, topic_key: req.topic_key, scope: req.scope };
+                crate::memory::mcp::handle_remember(input).map_err(|e| ErrorData::internal_error(e, None))
+            }
+            "recall" => {
+                let input = crate::memory::mcp::RecallInput { query: req.query, id: req.id, r#type: req.r#type, project: req.project, limit: req.limit };
+                crate::memory::mcp::handle_recall(input).map_err(|e| ErrorData::internal_error(e, None))
+            }
+            "context" => {
+                let input = crate::memory::mcp::ContextInput { session_id: req.session_id, project: req.project };
+                crate::memory::mcp::handle_context(input).map_err(|e| ErrorData::internal_error(e, None))
+            }
+            "handoff" => {
+                let session_id = req.session_id.ok_or_else(|| ErrorData::invalid_params("session_id is required", None))?;
+                let summary = req.summary.ok_or_else(|| ErrorData::invalid_params("summary is required", None))?;
+                let input = crate::memory::mcp::HandoffInput { session_id, summary, findings: req.findings, decisions: req.decisions, files_touched: req.files_touched, evidence: req.evidence };
+                crate::memory::mcp::handle_handoff(input).map_err(|e| ErrorData::internal_error(e, None))
+            }
+            "relate" => {
+                let source_id = req.source_id.ok_or_else(|| ErrorData::invalid_params("source_id is required", None))?;
+                let target_id = req.target_id.ok_or_else(|| ErrorData::invalid_params("target_id is required", None))?;
+                let relation = req.relation.ok_or_else(|| ErrorData::invalid_params("relation is required", None))?;
+                let input = crate::memory::mcp::RelateInput { source_id, target_id, relation, reason: req.reason, confidence: req.confidence };
+                crate::memory::mcp::handle_relate(input).map_err(|e| ErrorData::internal_error(e, None))
+            }
+            "curate" => {
+                let id = req.id.ok_or_else(|| ErrorData::invalid_params("id is required", None))?;
+                let input = crate::memory::mcp::CurateInput { action: req.action.clone(), id, title: req.title, content: req.content, r#type: req.r#type, pinned: req.pinned };
+                crate::memory::mcp::handle_curate(input).map_err(|e| ErrorData::internal_error(e, None))
+            }
+            other => Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
+        }
+    }    fn item_inner(&self, req: ItemRequest) -> Result<String, ErrorData> {
         match req.action.as_str() {
             "create" => {
                 let name = req.name.ok_or_else(|| {

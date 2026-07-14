@@ -176,15 +176,20 @@ impl ClaimLedger {
         Ok(conn.execute(&sql, params.as_slice())? > 0)
     }
 
-    /// True if `owner` currently holds the claim record for this key
-    /// (regardless of status) — lets a caller gate a follow-up action on
-    /// still owning the lease without mutating anything.
-    pub fn is_owner(&self, conn: &Connection, key: &[&str], owner: &str) -> rusqlite::Result<bool> {
-        let owner_p = key.len() + 1;
+    /// Ownership check without mutation — used by the `mark_completed` +
+    /// deferred-release split to verify the caller still holds the claim
+    /// before advancing the item's state.
+    pub fn is_owner(
+        &self,
+        conn: &Connection,
+        key: &[&str],
+        owner: &str,
+    ) -> rusqlite::Result<bool> {
         let sql = format!(
-            "SELECT 1 FROM {t} WHERE {pred} AND owner = ?{owner_p} LIMIT 1",
+            "SELECT 1 FROM {t} WHERE {pred} AND owner = ?{owner_p} AND status = 'claimed'",
             t = self.table,
-            pred = self.where_pred()
+            pred = self.where_pred(),
+            owner_p = key.len() + 1
         );
         let mut params = self.key_params(key);
         params.push(&owner);
