@@ -621,7 +621,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ItemRequest {
     #[schemars(
-        description = "Action: create|get|list|update|update_state|delete|claim|heartbeat|release|done|add_label|remove_label"
+        description = "Action: create|get|list|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
     )]
     action: String,
     #[schemars(
@@ -646,7 +646,9 @@ struct ItemRequest {
     #[schemars(description = "Parent item ID, for sub-items (create)")]
     #[serde(default)]
     parent_id: Option<String>,
-    #[schemars(description = "Agent ID to assign (create, update)")]
+    #[schemars(
+        description = "Agent ID to assign (create, update), or to filter by (list — matches items assigned to this agent plus unassigned ones, sorted open+assigned-to-you first)"
+    )]
     #[serde(default)]
     assignee_agent: Option<String>,
     #[schemars(description = "Domain-specific fields as a JSON object (create)")]
@@ -666,6 +668,28 @@ struct ItemRequest {
     )]
     #[serde(default)]
     state_group: Option<String>,
+    #[schemars(description = "Max items to return (list); omit for no limit")]
+    #[serde(default)]
+    limit: Option<i64>,
+    #[schemars(description = "Items to skip before applying limit (list); default 0")]
+    #[serde(default)]
+    offset: Option<i64>,
+}
+
+/// Lean per-item projection for `item(list)` — the raw 19-field `Item` (full
+/// description/metadata/timestamps) is what `get` returns; `list` only needs
+/// enough to triage, and resolves the opaque `state_id` into a readable name.
+#[derive(Debug, serde::Serialize)]
+struct ItemSummary {
+    id: String,
+    name: String,
+    state: String,
+    state_group: String,
+    priority: String,
+    assignee_agent: Option<String>,
+    parent_id: Option<String>,
+    sequence_id: i64,
+    updated_at: i64,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -2392,17 +2416,61 @@ impl AgentflareMcp {
                 let project = self.resolve_project(conn)?;
                 let mut items = agentflare_backend::item::list_by_project(conn, &project.id)
                     .map_err(map_backend_err)?;
-                if let Some(group) = req.state_group {
-                    let matching: std::collections::HashSet<String> =
-                        agentflare_backend::state::list_by_project(conn, &project.id)
-                            .map_err(map_backend_err)?
-                            .into_iter()
-                            .filter(|s| s.group_name == group)
-                            .map(|s| s.id)
-                            .collect();
-                    items.retain(|i| matching.contains(&i.state_id));
+                let states = agentflare_backend::state::list_by_project(conn, &project.id)
+                    .map_err(map_backend_err)?;
+                let state_by_id: std::collections::HashMap<
+                    &str,
+                    &agentflare_backend::state::State,
+                > = states.iter().map(|s| (s.id.as_str(), s)).collect();
+
+                if let Some(group) = &req.state_group {
+                    items.retain(|i| {
+                        state_by_id
+                            .get(i.state_id.as_str())
+                            .map(|s| &s.group_name == group)
+                            .unwrap_or(false)
+                    });
                 }
-                Ok(serde_json::to_string_pretty(&items).unwrap_or_default())
+                if let Some(agent) = &req.assignee_agent {
+                    items.retain(|i| {
+                        i.assignee_agent.as_deref() == Some(agent.as_str())
+                            || i.assignee_agent.is_none()
+                    });
+                    items.sort_by_key(|i| {
+                        let is_open = state_by_id
+                            .get(i.state_id.as_str())
+                            .map(|s| !matches!(s.group_name.as_str(), "completed" | "cancelled"))
+                            .unwrap_or(true);
+                        let is_mine = i.assignee_agent.as_deref() == Some(agent.as_str());
+                        (!is_open, !is_mine)
+                    });
+                }
+
+                let offset = req.offset.unwrap_or(0).max(0) as usize;
+                let items = items.into_iter().skip(offset);
+                let items: Vec<_> = match req.limit {
+                    Some(limit) => items.take(limit.max(0) as usize).collect(),
+                    None => items.collect(),
+                };
+
+                let summaries: Vec<ItemSummary> = items
+                    .into_iter()
+                    .map(|i| {
+                        let state = state_by_id.get(i.state_id.as_str());
+                        ItemSummary {
+                            id: i.id,
+                            name: i.name,
+                            state: state.map(|s| s.name.clone()).unwrap_or_default(),
+                            state_group: state.map(|s| s.group_name.clone()).unwrap_or_default(),
+                            priority: i.priority,
+                            assignee_agent: i.assignee_agent,
+                            parent_id: i.parent_id,
+                            sequence_id: i.sequence_id,
+                            updated_at: i.updated_at,
+                        }
+                    })
+                    .collect();
+                Ok(serde_json::to_string_pretty(&summaries).unwrap_or_default())
             })?,
             "update" => {
                 let id = req
@@ -2553,6 +2621,24 @@ impl AgentflareMcp {
                     let done = agentflare_backend::item::claim_done(conn, &item_id, &owner, now)
                         .map_err(map_backend_err)?;
                     Ok(serde_json::json!({"done": done, "item_id": item_id}).to_string())
+                })?
+            }
+            "cancel" => {
+                let item_id = req
+                    .id
+                    .ok_or_else(|| ErrorData::invalid_params("id is required for cancel", None))?;
+                if item_id.trim().is_empty() {
+                    return Err(ErrorData::invalid_params("id is required", None));
+                }
+                self.with_backend_db(|conn| {
+                    let project = self.resolve_project(conn)?;
+                    let cancelled =
+                        agentflare_backend::state::first_in_group(conn, &project.id, "cancelled")
+                            .map_err(map_backend_err)?;
+                    let item =
+                        agentflare_backend::item::update_state(conn, &item_id, &cancelled.id)
+                            .map_err(map_backend_err)?;
+                    Ok(serde_json::to_string_pretty(&item).unwrap_or_default())
                 })?
             }
             "add_label" => {
@@ -4237,6 +4323,155 @@ mod tests {
         .unwrap();
         assert!(updated["started_at"].is_number());
         assert!(updated["completed_at"].is_null());
+    }
+
+    #[test]
+    fn item_cancel_moves_to_cancelled_state() {
+        let (tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Test"))).unwrap()).unwrap();
+        let item_id = created["id"].as_str().unwrap().to_string();
+        let project_id = created["project_id"].as_str().unwrap().to_string();
+
+        let cancelled: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "cancel".into(),
+                id: Some(item_id),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let state_id = cancelled["state_id"].as_str().unwrap().to_string();
+
+        let conn = backend_conn(&tmp);
+        let group = agentflare_backend::state::list_by_project(&conn, &project_id)
+            .unwrap()
+            .into_iter()
+            .find(|st| st.id == state_id)
+            .unwrap()
+            .group_name;
+        assert_eq!(group, "cancelled");
+    }
+
+    #[test]
+    fn item_list_filters_by_assignee_or_unassigned_and_sorts_open_first() {
+        let (tmp, s) = harness();
+        let mine_open: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Mine open"))).unwrap())
+                .unwrap();
+        let project_id = mine_open["project_id"].as_str().unwrap().to_string();
+        s.item(Parameters(ItemRequest {
+            action: "update".into(),
+            id: Some(mine_open["id"].as_str().unwrap().to_string()),
+            assignee_agent: Some("me".into()),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        serde_json::from_str::<serde_json::Value>(
+            &s.item(Parameters(empty_item_create("Unassigned"))).unwrap(),
+        )
+        .unwrap();
+
+        let others: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Others"))).unwrap())
+                .unwrap();
+        s.item(Parameters(ItemRequest {
+            action: "update".into(),
+            id: Some(others["id"].as_str().unwrap().to_string()),
+            assignee_agent: Some("someone-else".into()),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let mine_done: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Mine done"))).unwrap())
+                .unwrap();
+        s.item(Parameters(ItemRequest {
+            action: "update".into(),
+            id: Some(mine_done["id"].as_str().unwrap().to_string()),
+            assignee_agent: Some("me".into()),
+            ..Default::default()
+        }))
+        .unwrap();
+        let done_state_id = {
+            let conn = backend_conn(&tmp);
+            agentflare_backend::state::list_by_project(&conn, &project_id)
+                .unwrap()
+                .into_iter()
+                .find(|st| st.group_name == "completed")
+                .unwrap()
+                .id
+        };
+        s.item(Parameters(ItemRequest {
+            action: "update_state".into(),
+            id: Some(mine_done["id"].as_str().unwrap().to_string()),
+            state_id: Some(done_state_id),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let listed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "list".into(),
+                assignee_agent: Some("me".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let names: Vec<&str> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["Mine open", "Unassigned", "Mine done"]);
+    }
+
+    #[test]
+    fn item_list_respects_limit_and_offset() {
+        let (_tmp, s) = harness();
+        for name in ["A", "B", "C"] {
+            s.item(Parameters(empty_item_create(name))).unwrap();
+        }
+        let listed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "list".into(),
+                limit: Some(1),
+                offset: Some(1),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let names: Vec<&str> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["B"]);
+    }
+
+    #[test]
+    fn item_list_returns_lean_projection_with_readable_state() {
+        let (_tmp, s) = harness();
+        s.item(Parameters(empty_item_create("Test"))).unwrap();
+        let listed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "list".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let first = &listed.as_array().unwrap()[0];
+        assert_eq!(first["state"], "Backlog");
+        assert_eq!(first["state_group"], "backlog");
+        assert!(first.get("description").is_none());
+        assert!(first.get("metadata").is_none());
     }
 
     #[test]
