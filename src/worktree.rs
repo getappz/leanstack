@@ -204,6 +204,7 @@ fn run_output_timeout(
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(unix)]
