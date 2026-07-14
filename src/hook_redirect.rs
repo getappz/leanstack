@@ -63,8 +63,13 @@ fn default_branch() -> Option<String> {
 /// repo) — never blocked, since "on the default branch" doesn't apply.
 fn branch_guard_reason_for(branch: Option<&str>, default: Option<&str>) -> Option<String> {
     let branch = branch?;
-    let default = default.unwrap_or("main");
-    let is_protected = branch == default || branch == "main" || branch == "master";
+    let is_protected = match default {
+        Some(default) => branch == default,
+        // Resolution failed entirely (no git, no remote, no main/master
+        // branch found) — fall back to guessing against the two
+        // conventional names instead of comparing against nothing.
+        None => branch == "main" || branch == "master",
+    };
     is_protected.then(|| {
         format!(
             "'{branch}' is this repo's default branch — direct edits are blocked. Create an isolated worktree first (e.g. `git worktree add ../<dir> -b <branch-name>`) and retry the edit there; a plain `git checkout -b <branch-name>` works too if a full worktree isn't needed."
@@ -110,8 +115,15 @@ pub fn redirect_decision(tool_name: &str, tool_input: Option<&Value>) -> Option<
     let tool_name = tool_name.to_string();
     let tool_input = tool_input.cloned();
     decide_with_timeout(GATING_TIMEOUT, move || {
-        let current = current_branch();
-        let default = default_branch();
+        // Only mutating tools ever consult the branch guard (see
+        // `classify`) — resolving it unconditionally would spawn several
+        // git subprocesses on every single tool call (Read, Bash, Grep,
+        // ...), not just the handful that actually need it.
+        let (current, default) = if MUTATING_TOOLS.contains(&tool_name.as_str()) {
+            (current_branch(), default_branch())
+        } else {
+            (None, None)
+        };
         let reason = classify(
             &tool_name,
             tool_input.as_ref(),
