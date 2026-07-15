@@ -71,32 +71,32 @@ fn session_start_message(agent: &str) -> String {
     }
 
     // Pending item queue: items assigned to this agent that are still open.
+    // Resolves the SAME project this repo's other agentflare features
+    // (item/artifact/comment, ...) auto-link to -- NOT just "whichever
+    // project happens to be oldest in backend.db", which is a single
+    // shared database across every repo agentflare has ever touched on
+    // this machine.
     let db_path = crate::paths::home().join(".agentflare").join("backend.db");
-    if db_path.exists() {
-        if let Ok(conn) = agentflare_backend::db::open_db(&db_path) {
-            let project_id = conn
-                .query_row(
-                    "SELECT id FROM projects WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1",
-                    [],
-                    |r| r.get::<_, String>(0),
-                )
-                .ok();
-            if let Some(pid) = project_id {
-                if let Ok(items) =
-                    agentflare_backend::item::list_by_assignee_agent(&conn, &pid, agent)
-                {
-                    if !items.is_empty() {
-                        lines.push(String::new());
-                        lines.push(format!(
-                            "Pending items assigned to you ({agent}, {} open):",
-                            items.len()
-                        ));
-                        for item in &items {
-                            lines.push(format!("  #{} {}", item.sequence_id, item.name));
-                        }
-                    }
-                }
-            }
+    if db_path.exists()
+        && let Ok(conn) = agentflare_backend::db::open_db(&db_path)
+        && let Some(pid) = crate::mcp_server::AgentflareMcp::default()
+            .resolve_project(&conn)
+            .ok()
+            .map(|p| p.id)
+        && let Ok(items) = agentflare_backend::item::list_by_assignee_agent(&conn, &pid, agent)
+        && !items.is_empty()
+    {
+        lines.push(String::new());
+        lines.push(format!(
+            "Pending items assigned to you ({agent}, {} open):",
+            items.len()
+        ));
+        const MAX_SHOWN: usize = 10;
+        for item in items.iter().take(MAX_SHOWN) {
+            lines.push(format!("  #{} {}", item.sequence_id, item.name));
+        }
+        if items.len() > MAX_SHOWN {
+            lines.push(format!("  ... and {} more", items.len() - MAX_SHOWN));
         }
     }
 
@@ -458,8 +458,6 @@ mod tests {
     fn session_start_message_shows_pending_items_from_backend_db() {
         use crate::paths::test_support::with_temp_home;
         use agentflare_backend::item;
-        use agentflare_backend::project;
-        use agentflare_backend::workspace;
 
         with_temp_home(|| {
             let home = crate::paths::home();
@@ -467,35 +465,18 @@ mod tests {
             let db_path = home.join(".agentflare").join("backend.db");
             let conn = agentflare_backend::db::open_db(&db_path).unwrap();
 
-            let ws = workspace::create(
-                &conn,
-                workspace::CreateWorkspace {
-                    name: "test".into(),
-                    slug: "test".into(),
-                    owner_agent: None,
-                    item_label: None,
-                },
-            )
-            .unwrap();
-            let proj = project::create(
-                &conn,
-                project::CreateProject {
-                    workspace_id: ws.id,
-                    name: "default".into(),
-                    identifier: "DEF".into(),
-                    external_source: None,
-                    external_id: None,
-                },
-            )
-            .unwrap();
+            // Resolve the project through the SAME unconfigured
+            // AgentflareMcp::default().resolve_project() path
+            // session_start_message uses internally, so this test's items
+            // land in the exact project the hook will actually look up --
+            // proving the fix for the "picks an arbitrary project out of
+            // every repo's items sharing this one backend.db" bug.
+            let proj = crate::mcp_server::AgentflareMcp::default()
+                .resolve_project(&conn)
+                .unwrap();
             let sid = {
                 let states = agentflare_backend::state::list_by_project(&conn, &proj.id).unwrap();
-                states
-                    .iter()
-                    .find(|s| s.is_default)
-                    .unwrap()
-                    .id
-                    .clone()
+                states.iter().find(|s| s.is_default).unwrap().id.clone()
             };
 
             // Item assigned to the agent — should appear.
@@ -545,11 +526,13 @@ mod tests {
             let msg = session_start_message("claude-code");
             assert!(
                 msg.contains("Review PR #42"),
-                "expected pending item in message, got:\n{msg}"
+                "expected pending item in message, got:
+{msg}"
             );
             assert!(
                 msg.contains("Pending items assigned to you"),
-                "expected pending section header in message, got:\n{msg}"
+                "expected pending section header in message, got:
+{msg}"
             );
             assert!(
                 !msg.contains("Secret task"),
