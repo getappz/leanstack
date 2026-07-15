@@ -2,7 +2,7 @@
 //! `flare-search-kit` for query sanitization.
 
 pub use flare_search_kit::MatchMode;
-use flare_search_kit::fts_query;
+use flare_search_kit::{clamped_limit, fts_query};
 use rusqlite::Connection;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -34,7 +34,7 @@ pub fn search(
          ORDER BY score
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(rusqlite::params![fts, limit as i64], |r| {
+    let rows = stmt.query_map(rusqlite::params![fts, clamped_limit(limit)], |r| {
         Ok(SkillHit {
             name: r.get(0)?,
             source: r.get(1)?,
@@ -150,6 +150,15 @@ mod tests {
     fn empty_query_returns_empty() {
         let conn = seed();
         assert!(search(&conn, "  ", 5, MatchMode::All).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_with_a_huge_limit_does_not_panic_and_still_returns_results() {
+        // usize::MAX cast straight to i64 would be -1 -- SQLite treats a
+        // negative LIMIT as "no limit", silently defeating clamped_limit's cap.
+        let conn = seed();
+        let hits = search(&conn, "usage", usize::MAX, MatchMode::Any).unwrap();
+        assert!(!hits.is_empty());
     }
 
     #[test]
