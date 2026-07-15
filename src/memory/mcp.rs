@@ -251,6 +251,8 @@ pub struct CompactInput {
     pub query: Option<String>,
     pub compression_ratio: Option<f64>,
     pub preserve_recent: Option<usize>,
+    /// Reserved for a future selectable scorer backend (fts5|keyword);
+    #[allow(dead_code)]
     pub scorer: Option<String>,
 }
 
@@ -276,10 +278,7 @@ pub fn handle_compact(input: CompactInput) -> Result<String, String> {
 
     let scored = crate::compact::score_lines(&entries, &query);
 
-    let target = input
-        .compression_ratio
-        .unwrap_or(0.5)
-        .clamp(0.0, 1.0);
+    let target = input.compression_ratio.unwrap_or(0.5).clamp(0.0, 1.0);
     let preserve = input.preserve_recent.unwrap_or(3);
 
     // Keep top scored lines up to target ratio, but protect recent ones.
@@ -287,15 +286,17 @@ pub fn handle_compact(input: CompactInput) -> Result<String, String> {
     let mut keep: Vec<bool> = vec![false; entries.len()];
 
     // Mark most recent N for unconditional keep.
-    for i in entries.len().saturating_sub(preserve)..entries.len() {
-        keep[i] = true;
+    let recent_start = entries.len().saturating_sub(preserve);
+    for k in &mut keep[recent_start..] {
+        *k = true;
     }
 
-    // Fill remaining keep quota with highest-scored (lowest BM25 score).
-    let mut by_relevance: Vec<usize> = scored.iter().map(|s| s.index).collect();
-    // Deduplicate — a line might be both recent and high-scored.
-    by_relevance.sort();
-    by_relevance.dedup();
+    // Fill remaining keep quota with highest-scored (lowest BM25 score)
+    // lines first, in the relevance order `score_lines` already returned --
+    // do NOT re-sort by index, that would silently fall back to earliest-
+    // in-transcript instead of most-relevant whenever there are more
+    // matches than room to keep them.
+    let by_relevance: Vec<usize> = scored.iter().map(|s| s.index).collect();
     let mut filled: usize = keep.iter().filter(|&&k| k).count();
     for idx in by_relevance {
         if filled >= keep_count {
@@ -490,5 +491,43 @@ mod tests {
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["type"], "decision");
+    }
+    #[test]
+    fn handle_compact_fills_quota_by_relevance_not_transcript_order() {
+        let lines = [
+            "mentions cache just once here",
+            "filler filler filler one",
+            "filler filler filler two",
+            "filler filler filler three",
+            "filler filler filler four",
+            "cache cache cache invalidation logic here",
+            "filler filler filler five",
+        ]
+        .join(
+            "
+",
+        );
+        let input = CompactInput {
+            lines,
+            query: Some("cache".to_string()),
+            compression_ratio: Some(0.1),
+            preserve_recent: Some(0),
+            scorer: None,
+        };
+        let out = handle_compact(input).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["kept"], 1, "expected exactly one line kept, got {v}");
+        let kept_indices: Vec<i64> = v["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["keep"] == true)
+            .map(|l| l["index"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            kept_indices,
+            vec![5],
+            "expected the more-relevant line (index 5, 3 mentions) to be kept over the earlier weaker match (index 0, 1 mention)"
+        );
     }
 }

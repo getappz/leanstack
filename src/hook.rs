@@ -216,6 +216,21 @@ fn parse_pre_compact(input: &str) -> Option<PreCompactInput> {
     })
 }
 
+/// `session_id` is a UUID, not natural-language text -- FTS5-matching it
+/// against transcript content would essentially never hit, making
+/// relevance scoring a no-op. Use the transcript's own last non-empty
+/// line (the most recent turn) as a proxy for what the user is currently
+/// focused on, so older lines get ranked by relevance to that instead of
+/// to an opaque session identifier. Falls back to `session_id` only when
+/// the whole transcript is empty.
+fn relevance_query<'a>(content: &'a str, session_id: &'a str) -> &'a str {
+    content
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or(session_id)
+}
+
 /// Handles PreCompact hook. Reads transcript from `transcript_path` and
 /// scores lines by relevance using FTS5/BM25. Outputs scored lines as JSON
 /// so Claude Code's compaction can prioritise keeping relevant context.
@@ -244,7 +259,8 @@ pub fn pre_compact(_agent: &str) {
             text: text.to_string(),
         })
         .collect();
-    let scored = crate::compact::score_lines(&entries, &parsed.session_id);
+    let query = relevance_query(&content, &parsed.session_id);
+    let scored = crate::compact::score_lines(&entries, query);
     if let Ok(json) = serde_json::to_string(&scored) {
         println!("{json}");
     }
@@ -458,6 +474,32 @@ mod tests {
     fn parse_pre_compact_rejects_missing_session() {
         let input = r#"{"trigger": "manual"}"#;
         assert!(parse_pre_compact(input).is_none());
+    }
+
+    #[test]
+    fn relevance_query_uses_last_non_empty_transcript_line() {
+        let content = "first line
+second line
+
+";
+        assert_eq!(relevance_query(content, "some-session-uuid"), "second line");
+    }
+
+    #[test]
+    fn relevance_query_falls_back_to_session_id_when_transcript_empty() {
+        assert_eq!(
+            relevance_query("", "some-session-uuid"),
+            "some-session-uuid"
+        );
+        assert_eq!(
+            relevance_query(
+                "   
+	
+",
+                "some-session-uuid"
+            ),
+            "some-session-uuid"
+        );
     }
 
     #[test]
