@@ -1,12 +1,12 @@
 //! HTTP client for the official MCP Registry
-//! (registry.modelcontextprotocol.io/v0/servers).
+//! (registry.modelcontextprotocol.io/v0.1/servers).
 //! Used as a fallback when local BM25 search returns no results or too few.
 
 use crate::search::InstallHint;
 use serde::Deserialize;
 use std::time::Duration;
 
-const REGISTRY_BASE: &str = "https://registry.modelcontextprotocol.io/v0/servers";
+const REGISTRY_BASE: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 
 /// Wall-clock budget for the fallback request to the official MCP
 /// Registry. Deliberately short -- this is a best-effort fallback path,
@@ -67,7 +67,6 @@ struct RegistryTransport {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct RegistryRemote {
     #[serde(rename = "type")]
     remote_type: String,
@@ -81,6 +80,18 @@ pub struct RegistryHit {
     pub description: String,
     pub install_hint: Option<InstallHint>,
     pub remote_url: Option<String>,
+}
+
+/// Picks the remote URL agentflare can actually connect to. The registry
+/// may list multiple remotes with different transports (e.g. the
+/// deprecated HTTP+SSE alongside the current standard); only
+/// "streamable-http" is one this codebase speaks, so a blind first()/next()
+/// risks surfacing a URL nothing here can use.
+fn select_remote_url(remotes: Vec<RegistryRemote>) -> Option<String> {
+    remotes
+        .into_iter()
+        .find(|r| r.remote_type == "streamable-http")
+        .map(|r| r.url)
 }
 
 /// Search the official MCP Registry for servers matching `query`.
@@ -114,7 +125,7 @@ pub fn search_registry(query: &str, limit: usize) -> Vec<RegistryHit> {
                 identifier: p.identifier,
                 runtime_hint: p.runtime_hint,
             });
-            let remote_url = server.remotes.into_iter().next().map(|r| r.url);
+            let remote_url = select_remote_url(server.remotes);
             RegistryHit {
                 server: server.name,
                 description,
@@ -141,6 +152,30 @@ fn urlencode(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn remote(remote_type: &str, url: &str) -> RegistryRemote {
+        RegistryRemote {
+            remote_type: remote_type.to_string(),
+            url: url.to_string(),
+        }
+    }
+
+    #[test]
+    fn select_remote_url_prefers_streamable_http() {
+        let remotes = vec![
+            remote("sse", "https://example.com/sse"),
+            remote("streamable-http", "https://example.com/mcp"),
+        ];
+        assert_eq!(
+            select_remote_url(remotes),
+            Some("https://example.com/mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn select_remote_url_returns_none_when_no_streamable_http_remote() {
+        let remotes = vec![remote("sse", "https://example.com/sse")];
+        assert_eq!(select_remote_url(remotes), None);
+    }
     #[test]
     fn empty_query_returns_empty() {
         assert!(search_registry("  ", 5).is_empty());
@@ -150,5 +185,13 @@ mod tests {
     fn urlencodes_special_chars() {
         let encoded = urlencode("hello world");
         assert_eq!(encoded, "hello%20world");
+    }
+
+    #[test]
+    fn registry_base_uses_the_stable_v0_1_endpoint() {
+        assert!(
+            REGISTRY_BASE.ends_with("/v0.1/servers"),
+            "registry.modelcontextprotocol.io only serves /v0.1/servers -- /v0/servers is not a real endpoint: {REGISTRY_BASE}"
+        );
     }
 }

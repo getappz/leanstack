@@ -67,7 +67,7 @@ pub fn merge_registry_hits(
     let remaining = limit.saturating_sub(local.len());
     local.extend(registry.into_iter().take(remaining).map(|hit| SkillHit {
         name: hit.server,
-        source: String::new(),
+        source: "mcp_registry".to_string(),
         description: hit.description,
         est_tokens: 0,
         compressed: false,
@@ -208,6 +208,22 @@ mod tests {
                 "live".to_string(),
                 "win-cleanup".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn merge_registry_hits_marks_fallback_hits_as_registry_sourced() {
+        let registry = vec![gateway_registry::registry_search::RegistryHit {
+            server: "some-server".to_string(),
+            description: "from the registry".to_string(),
+            install_hint: None,
+            remote_url: None,
+        }];
+        let merged = merge_registry_hits(vec![], 1, registry);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].source, "mcp_registry",
+            "registry-fallback hits must carry a distinguishable source, not an empty string local skills could also have"
         );
     }
 }
