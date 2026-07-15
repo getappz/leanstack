@@ -70,6 +70,36 @@ fn session_start_message(agent: &str) -> String {
         }
     }
 
+    // Pending item queue: items assigned to this agent that are still open.
+    let db_path = crate::paths::home().join(".agentflare").join("backend.db");
+    if db_path.exists() {
+        if let Ok(conn) = agentflare_backend::db::open_db(&db_path) {
+            let project_id = conn
+                .query_row(
+                    "SELECT id FROM projects WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok();
+            if let Some(pid) = project_id {
+                if let Ok(items) =
+                    agentflare_backend::item::list_by_assignee_agent(&conn, &pid, agent)
+                {
+                    if !items.is_empty() {
+                        lines.push(String::new());
+                        lines.push(format!(
+                            "Pending items assigned to you ({agent}, {} open):",
+                            items.len()
+                        ));
+                        for item in &items {
+                            lines.push(format!("  #{} {}", item.sequence_id, item.name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     lines.push(String::new());
     lines.push(
         "AGENTFLARE ACTIVE — lean-ctx tools, Exa search, clean git commits. Off: /agentflare off."
@@ -421,6 +451,110 @@ mod tests {
             let msg = session_start_message("claude-code");
             assert!(msg.contains("memory_remember"));
             assert!(msg.contains("memory_recall"));
+        });
+    }
+
+    #[test]
+    fn session_start_message_shows_pending_items_from_backend_db() {
+        use crate::paths::test_support::with_temp_home;
+        use agentflare_backend::item;
+        use agentflare_backend::project;
+        use agentflare_backend::workspace;
+
+        with_temp_home(|| {
+            let home = crate::paths::home();
+            std::fs::create_dir_all(home.join(".agentflare")).unwrap();
+            let db_path = home.join(".agentflare").join("backend.db");
+            let conn = agentflare_backend::db::open_db(&db_path).unwrap();
+
+            let ws = workspace::create(
+                &conn,
+                workspace::CreateWorkspace {
+                    name: "test".into(),
+                    slug: "test".into(),
+                    owner_agent: None,
+                    item_label: None,
+                },
+            )
+            .unwrap();
+            let proj = project::create(
+                &conn,
+                project::CreateProject {
+                    workspace_id: ws.id,
+                    name: "default".into(),
+                    identifier: "DEF".into(),
+                    external_source: None,
+                    external_id: None,
+                },
+            )
+            .unwrap();
+            let sid = {
+                let states = agentflare_backend::state::list_by_project(&conn, &proj.id).unwrap();
+                states
+                    .iter()
+                    .find(|s| s.is_default)
+                    .unwrap()
+                    .id
+                    .clone()
+            };
+
+            // Item assigned to the agent — should appear.
+            item::create(
+                &conn,
+                item::CreateItem {
+                    project_id: proj.id.clone(),
+                    state_id: sid.clone(),
+                    name: "Review PR #42".into(),
+                    description: None,
+                    priority: None,
+                    parent_id: None,
+                    assignee_agent: Some("claude-code".into()),
+                    sort_order: None,
+                    external_source: None,
+                    external_id: None,
+                    metadata: None,
+                    label_ids: vec![],
+                    assignee_ids: vec![],
+                    dependency_ids: vec![],
+                },
+            )
+            .unwrap();
+
+            // Item assigned to a different agent — should NOT appear.
+            item::create(
+                &conn,
+                item::CreateItem {
+                    project_id: proj.id.clone(),
+                    state_id: sid,
+                    name: "Secret task".into(),
+                    description: None,
+                    priority: None,
+                    parent_id: None,
+                    assignee_agent: Some("other-agent".into()),
+                    sort_order: None,
+                    external_source: None,
+                    external_id: None,
+                    metadata: None,
+                    label_ids: vec![],
+                    assignee_ids: vec![],
+                    dependency_ids: vec![],
+                },
+            )
+            .unwrap();
+
+            let msg = session_start_message("claude-code");
+            assert!(
+                msg.contains("Review PR #42"),
+                "expected pending item in message, got:\n{msg}"
+            );
+            assert!(
+                msg.contains("Pending items assigned to you"),
+                "expected pending section header in message, got:\n{msg}"
+            );
+            assert!(
+                !msg.contains("Secret task"),
+                "other agent's item should not appear"
+            );
         });
     }
 }
