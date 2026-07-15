@@ -781,7 +781,7 @@ impl AgentflareMcp {
     #[tool(
         description = "Skill operations — search installed skills or load one by name. Single consolidated tool with `action` field (search|load)."
     )]
-    fn skill(&self, Parameters(req): Parameters<SkillRequest>) -> Result<String, ErrorData> {
+    async fn skill(&self, Parameters(req): Parameters<SkillRequest>) -> Result<String, ErrorData> {
         match req.action.as_str() {
             "search" => {
                 let query = req
@@ -806,8 +806,12 @@ impl AgentflareMcp {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let hits = if local.len() < limit {
                     let remaining = limit - local.len();
-                    let registry =
-                        gateway_registry::registry_search::search_registry(&query, remaining);
+                    let query_owned = query.clone();
+                    let registry = tokio::task::spawn_blocking(move || {
+                        gateway_registry::registry_search::search_registry(&query_owned, remaining)
+                    })
+                    .await
+                    .unwrap_or_default();
                     skill_registry::merge_registry_hits(local, limit, registry)
                 } else {
                     local
@@ -1984,8 +1988,12 @@ impl AgentflareMcp {
                 };
                 let hits = if local.len() < limit {
                     let remaining = limit - local.len();
-                    let registry =
-                        gateway_registry::registry_search::search_registry(&query, remaining);
+                    let query_owned = query.clone();
+                    let registry = tokio::task::spawn_blocking(move || {
+                        gateway_registry::registry_search::search_registry(&query_owned, remaining)
+                    })
+                    .await
+                    .unwrap_or_default();
                     gateway_registry::merge_registry_hits(local, limit, registry)
                 } else {
                     local
@@ -3044,8 +3052,8 @@ mod tests {
         assert_eq!(err.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
     }
 
-    #[test]
-    fn skill_search_empty_query_is_invalid_params() {
+    #[tokio::test]
+    async fn skill_search_empty_query_is_invalid_params() {
         let s = AgentflareMcp::default();
         let err = s
             .skill(Parameters(SkillRequest {
@@ -3053,12 +3061,13 @@ mod tests {
                 query: Some("".into()),
                 ..Default::default()
             }))
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("query"));
     }
 
-    #[test]
-    fn skill_load_unknown_name_reports_not_found_with_search_hint() {
+    #[tokio::test]
+    async fn skill_load_unknown_name_reports_not_found_with_search_hint() {
         // Isolated DB path so the test never opens/refreshes the shared skills.db.
         let tmp = tempfile::tempdir().unwrap();
         let s = AgentflareMcp {
@@ -3072,12 +3081,13 @@ mod tests {
                 original: false,
                 ..Default::default()
             }))
+            .await
             .unwrap_err();
         assert!(out.to_string().contains("skill_search"));
     }
 
-    #[test]
-    fn skill_search_mode_rejects_unknown_value() {
+    #[tokio::test]
+    async fn skill_search_mode_rejects_unknown_value() {
         let s = AgentflareMcp::default();
         let err = s
             .skill(Parameters(SkillRequest {
@@ -3086,6 +3096,7 @@ mod tests {
                 mode: Some("fuzzy".into()),
                 ..Default::default()
             }))
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("mode"));
     }
