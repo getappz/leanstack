@@ -358,7 +358,7 @@ struct MemoryRequest {
     #[schemars(description = "Keep N most recent messages verbatim (compact)")]
     #[serde(default)]
     preserve_recent: Option<usize>,
-    #[schemars(description = "Scorer backend: fts5|keyword (compact)")]
+    #[schemars(description = "Scorer backend: fts5 (compact)")]
     #[serde(default)]
     scorer: Option<String>,
 }
