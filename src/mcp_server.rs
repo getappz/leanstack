@@ -280,7 +280,7 @@ struct ArtifactRequest {
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct MemoryRequest {
-    #[schemars(description = "Action: context|curate|handoff|recall|relate|remember")]
+    #[schemars(description = "Action: compact|context|curate|handoff|recall|relate|remember")]
     action: String,
     #[schemars(description = "Title of the observation (remember)")]
     #[serde(default)]
@@ -352,6 +352,15 @@ struct MemoryRequest {
     #[schemars(description = "Sub-action for curate: update|delete|pin|unpin")]
     #[serde(default)]
     curate_action: Option<String>,
+    #[schemars(description = "Target fraction of lines to keep (0.0-1.0, compact)")]
+    #[serde(default)]
+    compression_ratio: Option<f64>,
+    #[schemars(description = "Keep N most recent messages verbatim (compact)")]
+    #[serde(default)]
+    preserve_recent: Option<usize>,
+    #[schemars(description = "Scorer backend: fts5 (compact)")]
+    #[serde(default)]
+    scorer: Option<String>,
 }
 
 #[derive(Default)]
@@ -542,7 +551,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ItemRequest {
     #[schemars(
-        description = "Action: create|get|list|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
+        description = "Action: create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
     )]
     action: String,
     #[schemars(
@@ -589,12 +598,17 @@ struct ItemRequest {
     )]
     #[serde(default)]
     state_group: Option<String>,
-    #[schemars(description = "Max items to return (list); omit for no limit")]
+    #[schemars(
+        description = "Max items to return (list: omit for no limit; search: omit for 20, capped at 1000)"
+    )]
     #[serde(default)]
     limit: Option<i64>,
     #[schemars(description = "Items to skip before applying limit (list); default 0")]
     #[serde(default)]
     offset: Option<i64>,
+    #[schemars(description = "FTS5 search query (search)")]
+    #[serde(default)]
+    query: Option<String>,
 }
 
 /// Lean per-item projection for `item(list)` — the raw 19-field `Item` (full
@@ -772,7 +786,7 @@ impl AgentflareMcp {
     #[tool(
         description = "Skill operations — search installed skills or load one by name. Single consolidated tool with `action` field (search|load)."
     )]
-    fn skill(&self, Parameters(req): Parameters<SkillRequest>) -> Result<String, ErrorData> {
+    async fn skill(&self, Parameters(req): Parameters<SkillRequest>) -> Result<String, ErrorData> {
         match req.action.as_str() {
             "search" => {
                 let query = req
@@ -791,9 +805,22 @@ impl AgentflareMcp {
                         ));
                     }
                 };
-                let hits = self
-                    .with_fresh_registry(|reg| reg.search(&query, req.limit.unwrap_or(5), mode))?
+                let limit = req.limit.unwrap_or(5);
+                let local = self
+                    .with_fresh_registry(|reg| reg.search(&query, limit, mode))?
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let hits = if local.len() < limit {
+                    let remaining = limit - local.len();
+                    let query_owned = query.clone();
+                    let registry = tokio::task::spawn_blocking(move || {
+                        gateway_registry::registry_search::search_registry(&query_owned, remaining)
+                    })
+                    .await
+                    .unwrap_or_default();
+                    skill_registry::merge_registry_hits(local, limit, registry)
+                } else {
+                    local
+                };
                 Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
             }
             "load" => {
@@ -1957,11 +1984,25 @@ impl AgentflareMcp {
                         ));
                     }
                 };
-                let guard = self.ensure_gateway_registry().await?;
-                let reg = guard.as_ref().expect("ensured above");
-                let hits = reg
-                    .search(&query, req.limit.unwrap_or(5), mode)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let limit = req.limit.unwrap_or(5);
+                let local = {
+                    let guard = self.ensure_gateway_registry().await?;
+                    let reg = guard.as_ref().expect("ensured above");
+                    reg.search(&query, limit, mode)
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                };
+                let hits = if local.len() < limit {
+                    let remaining = limit - local.len();
+                    let query_owned = query.clone();
+                    let registry = tokio::task::spawn_blocking(move || {
+                        gateway_registry::registry_search::search_registry(&query_owned, remaining)
+                    })
+                    .await
+                    .unwrap_or_default();
+                    gateway_registry::merge_registry_hits(local, limit, registry)
+                } else {
+                    local
+                };
                 Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
             }
             "execute" => {
@@ -2009,7 +2050,7 @@ impl AgentflareMcp {
         }
     } // --- Memory tools ---
     #[tool(
-        description = "Memory operations — remember, recall, context, curate, handoff, or relate observations. Single consolidated tool with `action` field (context|curate|handoff|recall|relate|remember)."
+        description = "Memory operations — compact, context, curate, handoff, recall, relate, or remember observations. Single consolidated tool with `action` field (compact|context|curate|handoff|recall|relate|remember)."
     )]
     fn memory(&self, Parameters(req): Parameters<MemoryRequest>) -> Result<String, ErrorData> {
         match req.action.as_str() {
@@ -2072,6 +2113,17 @@ impl AgentflareMcp {
                 crate::memory::mcp::handle_handoff(input)
                     .map_err(|e| ErrorData::internal_error(e, None))
             }
+            "compact" => {
+                let input = crate::memory::mcp::CompactInput {
+                    lines: req.content.unwrap_or_default(),
+                    query: req.query,
+                    compression_ratio: req.compression_ratio,
+                    preserve_recent: req.preserve_recent,
+                    scorer: req.scorer,
+                };
+                crate::memory::mcp::handle_compact(input)
+                    .map_err(|e| ErrorData::internal_error(e, None))
+            }
             "relate" => {
                 let source_id = req
                     .source_id
@@ -2132,11 +2184,12 @@ impl AgentflareMcp {
             "release" => self.item_release(req),
             "done" => self.item_done(req),
             "cancel" => self.item_cancel(req),
+            "search" => self.item_search(req),
             "add_label" => self.item_add_label(req),
             "remove_label" => self.item_remove_label(req),
             other => Err(ErrorData::invalid_params(
                 format!(
-                    "unknown item action: '{other}' — expected create|get|list|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
+                    "unknown item action: '{other}' — expected create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
                 ),
                 None,
             )),
@@ -2144,7 +2197,7 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label). See each field's description for when it's required."
+        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label). See each field's description for when it's required."
     )]
     fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
         self.item_inner(req)
@@ -3005,8 +3058,8 @@ mod tests {
         assert_eq!(err.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
     }
 
-    #[test]
-    fn skill_search_empty_query_is_invalid_params() {
+    #[tokio::test]
+    async fn skill_search_empty_query_is_invalid_params() {
         let s = AgentflareMcp::default();
         let err = s
             .skill(Parameters(SkillRequest {
@@ -3014,12 +3067,13 @@ mod tests {
                 query: Some("".into()),
                 ..Default::default()
             }))
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("query"));
     }
 
-    #[test]
-    fn skill_load_unknown_name_reports_not_found_with_search_hint() {
+    #[tokio::test]
+    async fn skill_load_unknown_name_reports_not_found_with_search_hint() {
         // Isolated DB path so the test never opens/refreshes the shared skills.db.
         let tmp = tempfile::tempdir().unwrap();
         let s = AgentflareMcp {
@@ -3033,12 +3087,13 @@ mod tests {
                 original: false,
                 ..Default::default()
             }))
+            .await
             .unwrap_err();
         assert!(out.to_string().contains("skill_search"));
     }
 
-    #[test]
-    fn skill_search_mode_rejects_unknown_value() {
+    #[tokio::test]
+    async fn skill_search_mode_rejects_unknown_value() {
         let s = AgentflareMcp::default();
         let err = s
             .skill(Parameters(SkillRequest {
@@ -3047,6 +3102,7 @@ mod tests {
                 mode: Some("fuzzy".into()),
                 ..Default::default()
             }))
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("mode"));
     }
