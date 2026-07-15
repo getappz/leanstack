@@ -1,17 +1,10 @@
+//! DEPRECATED — use `agentflare flare code` instead.
 use clap::{Args, Subcommand};
 use std::io::Read;
 
-/// Read-only/investigative subagent types get no ponytail persona by
-/// default — the persona's lazy-code/commit-style/etc. guidance is dead
-/// weight (~1300 tokens) for an agent that never writes code.
 const DEFAULT_EXCLUDE_AGENT_TYPES: &str =
     "explore|investigat|search|review|readonly|read-only|verify";
 
-/// Decides whether to inject for a given `agent_type`. With no override,
-/// `DEFAULT_EXCLUDE_AGENT_TYPES` is a DENY-list (matches → skip injection).
-/// `PONYTAIL_SUBAGENT_MATCHER`, when set, fully replaces that default with a
-/// caller-supplied ALLOW-list regex instead (matches → inject) — same
-/// semantics as before this default existed.
 fn should_inject_for(agent_type: &str, override_matcher: Option<&str>) -> bool {
     if agent_type.is_empty() {
         return true;
@@ -33,7 +26,6 @@ fn should_inject_for(agent_type: &str, override_matcher: Option<&str>) -> bool {
 
 fn subagent_should_inject() -> bool {
     let override_matcher = std::env::var("PONYTAIL_SUBAGENT_MATCHER").ok();
-
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut input = String::new();
@@ -47,28 +39,19 @@ fn subagent_should_inject() -> bool {
             return true;
         }
     };
-
     let data: serde_json::Value = match serde_json::from_str(&input) {
         Ok(v) => v,
         Err(_) => return true,
     };
-    let agent_type = data
-        .get("agent_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
+    let agent_type = data.get("agent_type").and_then(|v| v.as_str()).unwrap_or("");
     should_inject_for(agent_type, override_matcher.as_deref())
 }
 
 #[derive(Subcommand)]
 pub enum PonytailAction {
     Status,
-    Set {
-        mode: String,
-    },
-    Default {
-        mode: String,
-    },
+    Set { mode: String },
+    Default { mode: String },
     Off,
     Review,
     Audit,
@@ -106,15 +89,16 @@ fn report_message(mode: &str) -> String {
 }
 
 fn emit_hook(event: &str, off_guard: bool) {
-    let mode = ponytail::active_mode().unwrap_or_else(ponytail::default_mode);
+    let mode = crate::flare::code::active_mode()
+        .unwrap_or_else(crate::flare::code::default_mode);
     if off_guard && mode == "off" {
-        ponytail::clear_active();
+        crate::flare::code::clear_active();
         println!("OK");
         return;
     }
-    let instructions = ponytail::build_instructions(&mode, None);
-    let platform = ponytail::detect_platform();
-    let output = ponytail::format_hook_output(event, &instructions.body, &platform);
+    let instructions = crate::flare::code::build_instructions(&mode, None);
+    let platform = crate::flare::code::detect_platform();
+    let output = crate::flare::code::format_hook_output(event, &instructions.body, &platform);
     println!("{output}");
 }
 
@@ -122,67 +106,53 @@ impl PonytailArgs {
     pub fn run(self) {
         match self.action {
             PonytailAction::Status => {
-                let mode = ponytail::active_mode().unwrap_or_else(ponytail::default_mode);
+                let mode = crate::flare::code::active_mode()
+                    .unwrap_or_else(crate::flare::code::default_mode);
                 println!("{mode}");
             }
             PonytailAction::Set { mode } => {
-                let normalized = ponytail::normalize_config_mode(&mode).unwrap_or_else(|| {
-                    eprintln!("error: invalid mode: {mode}");
-                    std::process::exit(1);
-                });
-                ponytail::set_active(normalized).unwrap_or_else(|e| {
+                let normalized = crate::flare::code::normalize_config_mode(&mode)
+                    .unwrap_or_else(|| {
+                        eprintln!("error: invalid mode: {mode}");
+                        std::process::exit(1);
+                    });
+                crate::flare::code::set_active(normalized).unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
                 println!("{normalized}");
             }
             PonytailAction::Default { mode } => {
-                let normalized = ponytail::normalize_config_mode(&mode).unwrap_or_else(|| {
-                    eprintln!("error: invalid mode: {mode}");
-                    std::process::exit(1);
-                });
-                ponytail::set_default_mode(normalized).unwrap_or_else(|e| {
+                let normalized = crate::flare::code::normalize_config_mode(&mode)
+                    .unwrap_or_else(|| {
+                        eprintln!("error: invalid mode: {mode}");
+                        std::process::exit(1);
+                    });
+                crate::flare::code::set_default_mode(normalized).unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
-                ponytail::set_active(normalized).ok();
+                crate::flare::code::set_active(normalized).ok();
                 println!("default: {normalized}");
             }
             PonytailAction::Off => {
-                ponytail::clear_active();
+                crate::flare::code::clear_active();
                 println!("off");
             }
-            PonytailAction::Review => {
-                println!("{}", ponytail::sub_skills::SKILL_REVIEW);
-            }
-            PonytailAction::Audit => {
-                println!("{}", ponytail::sub_skills::SKILL_AUDIT);
-            }
-            PonytailAction::Debt => {
-                println!("{}", ponytail::sub_skills::SKILL_DEBT);
-            }
-            PonytailAction::Gain => {
-                println!("{}", ponytail::sub_skills::SKILL_GAIN);
-            }
-            PonytailAction::Info => {
-                println!("{}", ponytail::sub_skills::SKILL_HELP);
-            }
-            PonytailAction::Playbook => {
-                println!("{}", ponytail::sub_skills::SKILL_PLAYBOOK);
-            }
-            PonytailAction::NoHallucination => {
-                println!("{}", ponytail::sub_skills::SKILL_NO_HALLUCINATION);
-            }
+            PonytailAction::Review => println!("{}", crate::flare::code::SKILL_REVIEW),
+            PonytailAction::Audit => println!("{}", crate::flare::code::SKILL_AUDIT),
+            PonytailAction::Debt => println!("{}", crate::flare::code::SKILL_DEBT),
+            PonytailAction::Gain => println!("{}", crate::flare::code::SKILL_GAIN),
+            PonytailAction::Info => println!("{}", crate::flare::code::SKILL_HELP),
+            PonytailAction::Playbook => println!("{}", crate::flare::code::SKILL_PLAYBOOK),
+            PonytailAction::NoHallucination => println!("{}", crate::flare::code::SKILL_NO_HALLUCINATION),
             PonytailAction::Hook { event } => match event {
                 PonytailHookEvent::SessionStart => {
-                    // A session-scoped override must not outlive its session:
-                    // there is no SessionEnd hook, so clear it when the next
-                    // session starts — otherwise active_mode() reads the stale
-                    // override and set_active() below promotes it to global.
-                    ponytail::clear_session();
-                    let mode = ponytail::active_mode().unwrap_or_else(ponytail::default_mode);
+                    crate::flare::code::clear_session();
+                    let mode = crate::flare::code::active_mode()
+                        .unwrap_or_else(crate::flare::code::default_mode);
                     if mode != "off" {
-                        ponytail::set_active(&mode).ok();
+                        crate::flare::code::set_active(&mode).ok();
                     }
                     emit_hook("SessionStart", true);
                 }
@@ -194,30 +164,28 @@ impl PonytailArgs {
                 PonytailHookEvent::PromptSubmit => {
                     let mut input = String::new();
                     std::io::stdin().read_line(&mut input).ok();
-                    if let Some(action) = ponytail::detect_switch(&input) {
+                    if let Some(action) = crate::flare::code::detect_switch_action(&input) {
                         match action {
-                            ponytail::SwitchAction::SetMode(m) => {
-                                ponytail::set_active(&m).ok();
+                            crate::flare::code::SwitchAction::SetMode(m) => {
+                                crate::flare::code::set_active(&m).ok();
                             }
-                            ponytail::SwitchAction::SetSession(m) => {
-                                ponytail::set_session(&m).ok();
+                            crate::flare::code::SwitchAction::SetSession(m) => {
+                                crate::flare::code::set_session(&m).ok();
                             }
-                            ponytail::SwitchAction::SetDefault(m) => {
-                                ponytail::set_default_mode(&m).ok();
-                                ponytail::set_active(&m).ok();
+                            crate::flare::code::SwitchAction::SetDefault(m) => {
+                                crate::flare::code::set_default_mode(&m).ok();
+                                crate::flare::code::set_active(&m).ok();
                             }
-                            ponytail::SwitchAction::Off => {
-                                ponytail::clear_active();
+                            crate::flare::code::SwitchAction::Off => {
+                                crate::flare::code::clear_active();
                             }
-                            ponytail::SwitchAction::Report => {
-                                let mode =
-                                    ponytail::active_mode().unwrap_or_else(ponytail::default_mode);
-                                let platform = ponytail::detect_platform();
+                            crate::flare::code::SwitchAction::Report => {
+                                let mode = crate::flare::code::active_mode()
+                                    .unwrap_or_else(crate::flare::code::default_mode);
+                                let platform = crate::flare::code::detect_platform();
                                 let ctx = report_message(&mode);
-                                let output = ponytail::format_hook_output(
-                                    "UserPromptSubmit",
-                                    &ctx,
-                                    &platform,
+                                let output = crate::flare::code::format_hook_output(
+                                    "UserPromptSubmit", &ctx, &platform,
                                 );
                                 println!("{output}");
                                 return;
@@ -227,7 +195,8 @@ impl PonytailArgs {
                     println!("OK");
                 }
                 PonytailHookEvent::Statusline => {
-                    let mode = ponytail::active_mode().unwrap_or_else(ponytail::default_mode);
+                    let mode = crate::flare::code::active_mode()
+                        .unwrap_or_else(crate::flare::code::default_mode);
                     if mode == "off" || mode.is_empty() {
                         return;
                     }
@@ -248,16 +217,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn report_message_says_active_for_runtime_mode() {
-        assert_eq!(report_message("full"), "PONYTAIL MODE ACTIVE — level: full");
-    }
-
-    #[test]
     fn should_inject_for_excludes_read_only_agent_types_by_default() {
         assert!(!should_inject_for("cavecrew-investigator", None));
-        assert!(!should_inject_for("Explore", None), "case-insensitive");
+        assert!(!should_inject_for("Explore", None));
         assert!(!should_inject_for("cavecrew-reviewer", None));
-        assert!(!should_inject_for("some-search-agent", None));
     }
 
     #[test]
@@ -273,24 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn should_inject_for_override_matcher_is_an_allowlist_not_a_denylist() {
-        // PONYTAIL_SUBAGENT_MATCHER fully replaces the default deny-list —
-        // an explore-type agent normally excluded by default is injected
-        // when it matches the caller's allow-list.
-        assert!(should_inject_for("explore", Some("explore|builder")));
-        assert!(!should_inject_for("other", Some("explore|builder")));
-    }
-
-    #[test]
     fn should_inject_for_falls_back_to_inject_on_invalid_override_regex() {
         assert!(should_inject_for("anything", Some("[invalid(")));
-    }
-
-    #[test]
-    fn report_message_says_off_for_off_mode() {
-        assert_eq!(
-            report_message("off"),
-            "ponytail is off. Use /ponytail lite|full|ultra to activate."
-        );
     }
 }

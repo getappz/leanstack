@@ -109,7 +109,7 @@ fn get_ponytail_mode(request: &GetPromptRequestParams) -> GetPromptResult {
         .to_lowercase();
 
     if mode_arg.is_empty() || mode_arg == "status" {
-        let mode = ponytail::active_mode().unwrap_or_else(ponytail::default_mode);
+        let mode = crate::flare::code::active_mode().unwrap_or_else(crate::flare::code::default_mode);
         return assistant_text(if mode == "off" {
             "ponytail is off. Use /ponytail mode=lite|full|ultra to activate.".to_string()
         } else {
@@ -117,12 +117,12 @@ fn get_ponytail_mode(request: &GetPromptRequestParams) -> GetPromptResult {
         });
     }
     if mode_arg == "off" {
-        ponytail::clear_active();
+        crate::flare::code::clear_active();
         return assistant_text("ponytail is now off.");
     }
-    match ponytail::normalize_config_mode(&mode_arg) {
-        Some(normalized) => match ponytail::set_active(normalized) {
-            Ok(()) => assistant_text(ponytail::build_instructions(normalized, None).body),
+    match crate::flare::code::normalize_config_mode(&mode_arg) {
+        Some(normalized) => match crate::flare::code::set_active(normalized) {
+            Ok(()) => assistant_text(crate::flare::code::build_instructions(normalized, None).body),
             Err(e) => assistant_text(format!("Failed to persist ponytail mode: {e}")),
         },
         None => assistant_text(format!(
@@ -226,10 +226,10 @@ fn get_handoff_command(request: &GetPromptRequestParams, agent: Option<&str>) ->
 }
 
 fn get_ponytail_skill(skill: &str) -> GetPromptResult {
-    if let Err(e) = ponytail::set_active(skill) {
+    if let Err(e) = crate::flare::code::set_active(skill) {
         return assistant_text(format!("Failed to persist ponytail mode: {e}"));
     }
-    let body = ponytail::sub_skills::get(skill).unwrap_or_default();
+    let body = crate::flare::code::sub_skills::get(skill).unwrap_or_default();
     assistant_text(body)
 }
 

@@ -7,6 +7,7 @@ mod channel;
 mod claim;
 mod coaching;
 mod cost;
+mod flare;
 mod gateway;
 mod handoff;
 mod hook;
@@ -54,6 +55,7 @@ pub enum Commands {
     Auth(auth::AuthArgs),
     Artifacts(artifacts::ArtifactsArgs),
     Handoff(handoff::HandoffArgs),
+    Flare(flare::FlareArgs),
     Ponytail(ponytail::PonytailArgs),
     Caveman(caveman::CavemanArgs),
     Channel(channel::ChannelArgs),
@@ -79,6 +81,7 @@ impl Commands {
             Self::Auth(cmd) => cmd.run(),
             Self::Artifacts(cmd) => cmd.run(),
             Self::Handoff(cmd) => cmd.run(),
+            Self::Flare(cmd) => cmd.run(),
             Self::Ponytail(cmd) => cmd.run(),
             Self::Caveman(cmd) => cmd.run(),
             Self::Channel(cmd) => cmd.run(),

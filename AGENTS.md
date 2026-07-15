@@ -6,6 +6,21 @@ Continue) gets a real integration via the `agentflare` CLI — see
 https://github.com/getappz/agentflare. Use this file only if your tool isn't
 one of those.
 
+## Flare optimize module
+
+agentflare ships a single consolidated compression/optimization module (`flare`)
+with four layers:
+
+| Layer   | Command                     | What it does                          |
+|---------|-----------------------------|---------------------------------------|
+| output  | `agentflare flare output`   | LLM-based prose compression (was caveman) |
+| code    | `agentflare flare code`     | Lazy senior dev code minimalism (was ponytail) |
+| context | `agentflare flare context`  | Session transcript compaction via BM25 |
+| runtime | (automatic via hooks)       | Session hygiene, model routing nudges  |
+
+Legacy commands (`agentflare caveman`, `agentflare ponytail`) still work as
+backward-compatible aliases.
+
 ## Context compression — lean-ctx
 
 Prefer [lean-ctx](https://github.com/yvgude/lean-ctx) tools over native equivalents:
