@@ -27,61 +27,58 @@ pub struct ScoredLine {
 ///
 /// Creates an ephemeral in-memory FTS5 table, inserts each line as a row,
 /// and returns matched lines ranked by relevance (most relevant first).
-/// Returns empty vec when:
+/// Returns `Ok(vec![])` when:
 /// - `lines` is empty
 /// - `query` sanitizes to nothing (whitespace, punctuation-only)
 /// - no lines match the query
-pub fn score_lines(lines: &[LineEntry], query: &str) -> Vec<ScoredLine> {
+///
+/// Returns `Err` on a SQLite failure (out-of-memory, corrupted ephemeral
+/// state, etc.) rather than panicking -- callers already return `Result`
+/// (`handle_compact`) or fail soft on `Err` (the PreCompact hook), so a
+/// scoring failure degrades gracefully instead of taking down the whole
+/// process.
+pub fn score_lines(lines: &[LineEntry], query: &str) -> rusqlite::Result<Vec<ScoredLine>> {
     if lines.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
 
-    // OR mode for broader recall — compaction keeps all potentially relevant lines.
     let Some(safe_query) = fts_query(query, MatchMode::Any) else {
-        return vec![];
+        return Ok(vec![]);
     };
 
-    let conn = Connection::open_in_memory().expect("in-memory SQLite connection");
+    let conn = Connection::open_in_memory()?;
 
-    conn.execute_batch("CREATE VIRTUAL TABLE transcript_fts USING fts5(\"ix\" UNINDEXED, text);")
-        .expect("create FTS5 table");
+    conn.execute_batch("CREATE VIRTUAL TABLE transcript_fts USING fts5(\"ix\" UNINDEXED, text);")?;
 
     {
-        let tx = conn.unchecked_transaction().expect("start transaction");
+        let tx = conn.unchecked_transaction()?;
         {
-            let mut stmt = tx
-                .prepare("INSERT INTO transcript_fts(\"ix\", text) VALUES(?1, ?2);")
-                .expect("prepare insert");
+            let mut stmt =
+                tx.prepare("INSERT INTO transcript_fts(\"ix\", text) VALUES(?1, ?2);")?;
             for line in lines {
-                stmt.execute(rusqlite::params![line.index as i64, &line.text])
-                    .expect("insert line");
+                stmt.execute(rusqlite::params![line.index as i64, &line.text])?;
             }
         }
-        tx.commit().expect("commit transcript insert batch");
+        tx.commit()?;
     }
 
     let weights = Bm25Weights::new(vec![]);
     let sql = format!(
-        "SELECT \"ix\", text, bm25(transcript_fts{}) AS score \
-         FROM transcript_fts \
-         WHERE transcript_fts MATCH ?1 \
-         ORDER BY score, \"ix\"",
+        "SELECT \"ix\", text, bm25(transcript_fts{}) AS score FROM transcript_fts WHERE transcript_fts MATCH ?1 ORDER BY score, \"ix\"",
         weights.sql_args()
     );
 
-    let mut stmt = conn.prepare(&sql).expect("prepare query");
+    let mut stmt = conn.prepare(&sql)?;
 
-    let results = stmt
-        .query_map(rusqlite::params![safe_query], |row| {
-            Ok(ScoredLine {
-                index: row.get::<_, i64>("ix")? as usize,
-                text: row.get("text")?,
-                score: row.get("score")?,
-            })
+    let results = stmt.query_map(rusqlite::params![safe_query], |row| {
+        Ok(ScoredLine {
+            index: row.get::<_, i64>("ix")? as usize,
+            text: row.get("text")?,
+            score: row.get("score")?,
         })
-        .expect("query lines");
+    })?;
 
-    results.filter_map(|r| r.ok()).collect()
+    results.collect()
 }
 
 #[cfg(test)]
@@ -104,7 +101,7 @@ mod tests {
                 text: "I need to query the users table.".to_string(),
             },
         ];
-        let scored = score_lines(&lines, "database query");
+        let scored = score_lines(&lines, "database query").unwrap();
         assert!(!scored.is_empty(), "should match at least one line");
         let matched: Vec<usize> = scored.iter().map(|s| s.index).collect();
         assert!(matched.contains(&0), "line with 'database' should match");
@@ -121,13 +118,13 @@ mod tests {
             index: 0,
             text: "Fix the login button color.".to_string(),
         }];
-        let scored = score_lines(&lines, "quantum physics");
+        let scored = score_lines(&lines, "quantum physics").unwrap();
         assert!(scored.is_empty());
     }
 
     #[test]
     fn score_lines_returns_empty_for_empty_lines() {
-        let scored = score_lines(&[], "anything");
+        let scored = score_lines(&[], "anything").unwrap();
         assert!(scored.is_empty());
     }
 
@@ -137,7 +134,7 @@ mod tests {
             index: 0,
             text: "Hello world.".to_string(),
         }];
-        let scored = score_lines(&lines, "");
+        let scored = score_lines(&lines, "").unwrap();
         assert!(scored.is_empty());
     }
 
@@ -147,7 +144,7 @@ mod tests {
             index: 0,
             text: "Hello world.".to_string(),
         }];
-        let scored = score_lines(&lines, "***");
+        let scored = score_lines(&lines, "***").unwrap();
         assert!(scored.is_empty());
     }
 
@@ -163,7 +160,7 @@ mod tests {
                 text: "The price is $19.99 + tax (10%).".to_string(),
             },
         ];
-        let scored = score_lines(&lines, "cargo build");
+        let scored = score_lines(&lines, "cargo build").unwrap();
         assert_eq!(scored.len(), 1);
         assert_eq!(scored[0].index, 0);
     }
@@ -180,7 +177,7 @@ mod tests {
                 text: "database schema".to_string(),
             },
         ];
-        let scored = score_lines(&lines, "database");
+        let scored = score_lines(&lines, "database").unwrap();
         assert_eq!(scored.len(), 2);
         assert_eq!(scored[0].index, 0);
         assert_eq!(scored[1].index, 1);

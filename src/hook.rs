@@ -290,7 +290,9 @@ pub fn pre_compact(_agent: &str) {
         })
         .collect();
     let query = relevance_query(&content, &parsed.session_id);
-    let scored = crate::compact::score_lines(&entries, query);
+    let Ok(scored) = crate::compact::score_lines(&entries, query) else {
+        return;
+    };
     if let Ok(json) = serde_json::to_string(&scored) {
         println!("{json}");
     }

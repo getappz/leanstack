@@ -278,10 +278,13 @@ pub fn handle_compact(input: CompactInput) -> Result<String, String> {
         .collect();
 
     if entries.is_empty() {
-        return Ok(serde_json::json!({"lines": [], "kept": 0, "total": 0}).to_string());
+        return Ok(
+            serde_json::json!({"lines": [], "kept": 0, "total": 0, "query": query}).to_string(),
+        );
     }
 
-    let scored = crate::compact::score_lines(&entries, &query);
+    let scored =
+        crate::compact::score_lines(&entries, &query).map_err(|e| format!("score lines: {e}"))?;
 
     let target = input.compression_ratio.unwrap_or(0.5).clamp(0.0, 1.0);
     let preserve = input.preserve_recent.unwrap_or(3);
@@ -559,5 +562,24 @@ mod tests {
             scorer: Some("fts5".to_string()),
         };
         assert!(handle_compact(input).is_ok());
+    }
+
+    #[test]
+    fn handle_compact_empty_lines_response_includes_query() {
+        let input = CompactInput {
+            lines: String::new(),
+            query: Some("some query".to_string()),
+            compression_ratio: None,
+            preserve_recent: None,
+            scorer: None,
+        };
+        let out = handle_compact(input).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["query"], "some query",
+            "empty-input response must include query like the full response does, got {v}"
+        );
+        assert_eq!(v["kept"], 0);
+        assert_eq!(v["total"], 0);
     }
 }
