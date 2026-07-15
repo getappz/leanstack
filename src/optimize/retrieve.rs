@@ -109,7 +109,7 @@ fn make_id(kind: &EntryKind, before: u64, after: u64) -> String {
     origin_key(kind).hash(&mut h);
     before.hash(&mut h);
     after.hash(&mut h);
-    format!("r-{:06x}", h.finish() & 0xff_ffff)
+    format!("r-{:012x}", h.finish() & 0xffff_ffff_ffff)
 }
 
 pub fn register(kind: EntryKind, before: u64, after: u64, now: u64) -> CompressionEntry {
@@ -258,6 +258,17 @@ mod tests {
                 other => panic!("expected delegation, got {other:?}"),
             }
         });
+    }
+
+    #[test]
+    fn id_is_48_bit_hex_width() {
+        let k = EntryKind::FileBackup {
+            backup_path: "/some/path.md".into(),
+        };
+        let id = make_id(&k, 1234, 56);
+        assert!(id.starts_with("r-"), "id: {id}");
+        assert_eq!(id.len(), 14, "expected r- + 12 hex chars: {id}");
+        assert!(id[2..].chars().all(|c| c.is_ascii_hexdigit()), "id: {id}");
     }
 
     #[test]

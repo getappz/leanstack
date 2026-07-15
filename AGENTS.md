@@ -21,6 +21,12 @@ with four layers:
 Legacy commands (`agentflare caveman`, `agentflare ponytail`) still work as
 backward-compatible aliases.
 
+`agentflare optimize retrieve <id>` (and MCP `mcp__flare__optimize
+action=retrieve`) recovers an original that the output layer compressed away
+(CCR pattern). lean-ctx-compressed *reads* are instead recovered via
+`ctx_read mode=raw` — agentflare does not re-cache them, because lean-ctx is
+a separate sidecar not in agentflare's read path.
+
 ## Context compression — lean-ctx
 
 Prefer [lean-ctx](https://github.com/yvgude/lean-ctx) tools over native equivalents:
