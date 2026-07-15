@@ -65,7 +65,7 @@ pub fn score_lines(lines: &[LineEntry], query: &str) -> Vec<ScoredLine> {
         "SELECT \"ix\", text, bm25(transcript_fts{}) AS score \
          FROM transcript_fts \
          WHERE transcript_fts MATCH ?1 \
-         ORDER BY score",
+         ORDER BY score, \"ix\"",
         weights.sql_args()
     );
 

@@ -251,14 +251,19 @@ pub struct CompactInput {
     pub query: Option<String>,
     pub compression_ratio: Option<f64>,
     pub preserve_recent: Option<usize>,
-    /// Reserved for a future selectable scorer backend (fts5|keyword);
-    #[allow(dead_code)]
     pub scorer: Option<String>,
 }
 
 pub fn handle_compact(input: CompactInput) -> Result<String, String> {
     if input.query.as_deref().is_none_or(|q| q.trim().is_empty()) {
         return Err("query is required".into());
+    }
+    if let Some(scorer) = input.scorer.as_deref()
+        && scorer != "fts5"
+    {
+        return Err(format!(
+            "unsupported scorer '{scorer}' -- only 'fts5' is implemented"
+        ));
     }
     let query = input.query.unwrap();
 
@@ -529,5 +534,30 @@ mod tests {
             vec![5],
             "expected the more-relevant line (index 5, 3 mentions) to be kept over the earlier weaker match (index 0, 1 mention)"
         );
+    }
+
+    #[test]
+    fn handle_compact_rejects_unsupported_scorer() {
+        let input = CompactInput {
+            lines: "some line".to_string(),
+            query: Some("some".to_string()),
+            compression_ratio: None,
+            preserve_recent: None,
+            scorer: Some("keyword".to_string()),
+        };
+        let err = handle_compact(input).unwrap_err();
+        assert!(err.contains("keyword"), "{err}");
+    }
+
+    #[test]
+    fn handle_compact_accepts_fts5_scorer() {
+        let input = CompactInput {
+            lines: "some line".to_string(),
+            query: Some("some".to_string()),
+            compression_ratio: None,
+            preserve_recent: None,
+            scorer: Some("fts5".to_string()),
+        };
+        assert!(handle_compact(input).is_ok());
     }
 }
