@@ -4,7 +4,7 @@ The landing site for agentflare, deployed to **Cloudflare Workers** with static
 assets — the same setup pattern as the sarvo apps (`apps/web`: a Worker with an
 `assets` binding + a custom-domain route).
 
-```
+```text
 site/
 ├── wrangler.jsonc     # Worker config — assets binding + agentflare.dev custom domain
 ├── package.json       # dev / deploy / tail scripts (wrangler only, no build step)
