@@ -555,7 +555,7 @@ second line
             // the printing entry point doesn't panic when a coaching rule is
             // active. The underlying data source's correctness (ordering,
             // content) is covered by Task 1's active_rule_bodies tests in
-            // coaching.rs.
+            // coaching/store.rs.
             session_start("claude-code");
 
             let bodies = crate::coaching::active_rule_bodies();
