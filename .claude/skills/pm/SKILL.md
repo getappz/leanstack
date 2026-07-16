@@ -10,7 +10,7 @@ description: Product management for the current agentflare project — run /pm:s
 These workflows NEVER mutate items. Do not call `item` with any of:
 create, update, update_state, delete, claim, heartbeat, release, done, cancel,
 add_label, remove_label — nor `comment` create/edit/delete. You may only read
-(`item` list/get/search/groom/standup, `comment` list, `handoff` inbox, `memory`).
+(`item` list/get/search/groom/standup/health, `comment` list, `handoff` inbox, `memory`).
 Output is suggestions for a human, never actions taken.
 
 All content authored from public PM methodologies (RICE, ICE, MoSCoW, Now/Next/Later). No third-party notices required.
@@ -84,12 +84,13 @@ Arg: capacity hint like "~8" (optional; caps the Now bucket).
 
 Arg: window in weeks (default 4).
 
-1. Velocity: `item action="list" state_group="completed"`; per rubric.md, count
-   items whose `updated_at` falls in each trailing 7-day window; show the series
-   and the trend arrow.
-2. WIP: `item action="list" state_group="started"`; report the count and list.
-3. Stuck: WIP items with `updated_at` older than 7 days.
-4. Bottlenecks: read `handoff` history (read-only) for items handed off
-   repeatedly; if none available, print "no handoff history".
-5. One-glance scorecard: Velocity · WIP · Stuck · Bottlenecks.
-6. Print the time-signal caveat. Read-only.
+1. One call: `item action="health" window_weeks=<N, default 4>`. The server
+   returns `velocity` (oldest→newest weekly series + `velocity_trend`:
+   up/down/flat), `wip` (list + count), `stuck` (WIP older than
+   `staleness_days`, default 7), and `bottlenecks`/`bottleneck_note`.
+2. `bottlenecks` is currently always empty — agentflare has no persisted
+   handoff-history log distinct from item state yet, so this can't be
+   computed server-side. Print `bottleneck_note` verbatim ("no handoff
+   history") rather than inventing a signal.
+3. One-glance scorecard: Velocity · WIP · Stuck · Bottlenecks.
+4. Print the time-signal caveat. Read-only.

@@ -97,6 +97,17 @@ fn near_duplicates(
     duplicates
 }
 
+fn to_standup_item(i: &agentflare_backend::item::Item) -> StandupItem {
+    StandupItem {
+        id: i.id.clone(),
+        sequence_id: i.sequence_id,
+        name: i.name.clone(),
+        priority: i.priority.clone(),
+        assignee_agent: i.assignee_agent.clone(),
+        updated_at: i.updated_at,
+    }
+}
+
 /// Now/Next/Later planning buckets. Unestimated items are excluded outright
 /// (can't be planned without a size); of the rest, blocked items go to
 /// `later`, and ready items split into `now` (first `capacity`, in existing
@@ -714,17 +725,6 @@ impl AgentflareMcp {
             let done_cutoff = now - cutoff_hours.saturating_mul(3_600);
             let stuck_cutoff = now - stuck_days.saturating_mul(86_400);
 
-            fn to_standup_item(i: &agentflare_backend::item::Item) -> StandupItem {
-                StandupItem {
-                    id: i.id.clone(),
-                    sequence_id: i.sequence_id,
-                    name: i.name.clone(),
-                    priority: i.priority.clone(),
-                    assignee_agent: i.assignee_agent.clone(),
-                    updated_at: i.updated_at,
-                }
-            }
-
             let mut done: Vec<StandupItem> = items
                 .iter()
                 .filter(|i| {
@@ -776,6 +776,107 @@ impl AgentflareMcp {
                 in_progress,
                 stuck_count: stuck.len(),
                 stuck,
+            };
+            Ok(serde_json::to_string_pretty(&resp).unwrap_or_default())
+        })?
+    }
+
+    /// One-call health scorecard: velocity (trailing weekly windows, updated_at
+    /// proxy per rubric.md), WIP, stuck, and a bottlenecks placeholder.
+    ///
+    /// No precomputed/event-populated rollup table backs velocity — checked
+    /// first: `events::emit` (agentflare-backend/src/events.rs) is outbound
+    /// webhook delivery only, not a persisted log, and there's no handoff-
+    /// history table either (`handoff` is assign + asset version + comment,
+    /// not a separate audit log). Building either is real new schema/migration
+    /// work; at this project's actual scale (~40 items) a live scan is
+    /// sub-millisecond (see the groom benchmark), so adding that
+    /// infrastructure now would be speculative. Revisit if item volume grows
+    /// enough that this scan is ever measured as slow — don't estimate it.
+    pub(super) fn item_health(&self, req: ItemRequest) -> Result<String, ErrorData> {
+        let window_weeks = req.window_weeks.unwrap_or(4).max(1);
+        let stuck_days = req.staleness_days.unwrap_or(7).max(0);
+        self.with_backend_db(|conn| {
+            let project = self.resolve_project(conn)?;
+            let items = agentflare_backend::item::list_by_project(conn, &project.id)
+                .map_err(map_backend_err)?;
+            let states = agentflare_backend::state::list_by_project(conn, &project.id)
+                .map_err(map_backend_err)?;
+            let state_by_id: std::collections::HashMap<&str, &agentflare_backend::state::State> =
+                states.iter().map(|s| (s.id.as_str(), s)).collect();
+            let group_of = |i: &agentflare_backend::item::Item| -> &str {
+                state_by_id
+                    .get(i.state_id.as_str())
+                    .map(|s| s.group_name.as_str())
+                    .unwrap_or("")
+            };
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+
+            let completed: Vec<&agentflare_backend::item::Item> = items
+                .iter()
+                .filter(|i| group_of(i) == "completed")
+                .collect();
+            let mut velocity: Vec<VelocityWeek> = (0..window_weeks)
+                .map(|w| {
+                    let week_end = now - w.saturating_mul(7 * 86_400);
+                    let week_start = week_end - 7 * 86_400;
+                    // Upper bound inclusive: an item completed in the same
+                    // second as this call must not be excluded from "this week".
+                    let completed_count = completed
+                        .iter()
+                        .filter(|i| i.updated_at > week_start && i.updated_at <= week_end)
+                        .count();
+                    VelocityWeek {
+                        week_start,
+                        week_end,
+                        completed_count,
+                    }
+                })
+                .collect();
+            velocity.reverse(); // oldest -> newest
+            let velocity_trend = match velocity.len() {
+                n if n >= 2 => {
+                    let last = velocity[n - 1].completed_count;
+                    let prev = velocity[n - 2].completed_count;
+                    match last.cmp(&prev) {
+                        std::cmp::Ordering::Greater => "up",
+                        std::cmp::Ordering::Less => "down",
+                        std::cmp::Ordering::Equal => "flat",
+                    }
+                }
+                _ => "flat",
+            }
+            .to_string();
+
+            let wip: Vec<StandupItem> = items
+                .iter()
+                .filter(|i| group_of(i) == "started")
+                .map(to_standup_item)
+                .collect();
+            let stuck_cutoff = now - stuck_days.saturating_mul(86_400);
+            let stuck: Vec<StandupItem> = wip
+                .iter()
+                .filter(|i| i.updated_at < stuck_cutoff)
+                .cloned()
+                .collect();
+
+            let resp = HealthResponse {
+                window_weeks,
+                velocity,
+                velocity_trend,
+                wip_count: wip.len(),
+                wip,
+                stuck_days,
+                stuck_count: stuck.len(),
+                stuck,
+                bottlenecks: Vec::new(),
+                bottleneck_note: "no handoff history — agentflare does not persist a handoff \
+                    log distinct from item state today"
+                    .to_string(),
             };
             Ok(serde_json::to_string_pretty(&resp).unwrap_or_default())
         })?

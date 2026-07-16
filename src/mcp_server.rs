@@ -556,7 +556,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ItemRequest {
     #[schemars(
-        description = "Action: create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup"
+        description = "Action: create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup|health"
     )]
     action: String,
     #[schemars(
@@ -631,6 +631,9 @@ struct ItemRequest {
     )]
     #[serde(default)]
     cutoff_hours: Option<i64>,
+    #[schemars(description = "Trailing weekly windows for velocity (health); default 4")]
+    #[serde(default)]
+    window_weeks: Option<i64>,
 }
 
 /// Lean per-item projection for `item(list)` — the raw 19-field `Item` (full
@@ -703,7 +706,7 @@ struct GroomResponse {
 
 /// Lean per-item row for `standup` — no description, matches `ItemSummary`'s
 /// thin-projection philosophy since standup doesn't need item bodies.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 struct StandupItem {
     id: String,
     sequence_id: i64,
@@ -730,6 +733,31 @@ struct StandupResponse {
     in_progress_count: usize,
     stuck: Vec<StandupItem>,
     stuck_count: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct VelocityWeek {
+    week_start: i64,
+    week_end: i64,
+    completed_count: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct HealthResponse {
+    window_weeks: i64,
+    /// Oldest → newest.
+    velocity: Vec<VelocityWeek>,
+    /// "up" | "down" | "flat" — last window vs. the one before it.
+    velocity_trend: String,
+    wip_count: usize,
+    wip: Vec<StandupItem>,
+    stuck_days: i64,
+    stuck_count: usize,
+    stuck: Vec<StandupItem>,
+    /// Empty today — agentflare has no persisted handoff log distinct from
+    /// item state, so this can't be computed yet (see `bottleneck_note`).
+    bottlenecks: Vec<String>,
+    bottleneck_note: String,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -2371,9 +2399,10 @@ impl AgentflareMcp {
             "remove_label" => self.item_remove_label(req),
             "groom" => self.item_groom(req),
             "standup" => self.item_standup(req),
+            "health" => self.item_health(req),
             other => Err(ErrorData::invalid_params(
                 format!(
-                    "unknown item action: '{other}' — expected create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup"
+                    "unknown item action: '{other}' — expected create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup|health"
                 ),
                 None,
             )),
@@ -2381,7 +2410,7 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup). `groom` returns a priority+staleness-ranked shortlist with description, stale/unassigned/blocked/duplicate flags, and a pull_next list — all in one call, no per-item `get` round trips needed. `standup` returns done/in_progress(grouped by assignee)/stuck buckets computed server-side. See each field's description for when it's required."
+        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup|health). `groom` returns a priority+staleness-ranked shortlist with description, stale/unassigned/blocked/duplicate flags, and a pull_next list — all in one call, no per-item `get` round trips needed. `standup` returns done/in_progress(grouped by assignee)/stuck buckets computed server-side. `health` returns a velocity/WIP/stuck scorecard; `bottlenecks` is currently always empty — no handoff log is persisted yet, see `bottleneck_note`. See each field's description for when it's required."
     )]
     fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
         self.item_inner(req)
@@ -4908,6 +4937,68 @@ mod tests {
         assert_eq!(alice_group["items"][0]["id"], wip_alice["id"]);
         // Nothing is 7+ days old in a freshly-created fixture.
         assert_eq!(standup["stuck_count"], 0);
+    }
+
+    #[test]
+    fn item_health_reports_velocity_wip_and_bottleneck_placeholder() {
+        let (_tmp, s) = harness();
+        let project_id: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(empty_item_create("bootstrap"))).unwrap(),
+        )
+        .unwrap();
+        let project_id = project_id["project_id"].as_str().unwrap().to_string();
+        let conn = backend_conn(&_tmp);
+        let states = agentflare_backend::state::list_by_project(&conn, &project_id).unwrap();
+        let started_state = states
+            .iter()
+            .find(|st| st.group_name == "started")
+            .unwrap()
+            .id
+            .clone();
+        let completed_state = states
+            .iter()
+            .find(|st| st.group_name == "completed")
+            .unwrap()
+            .id
+            .clone();
+        drop(conn);
+
+        let move_to = |name: &str, state_id: &str| {
+            let created: serde_json::Value = serde_json::from_str(
+                &s.item(Parameters(empty_item_create(name))).unwrap(),
+            )
+            .unwrap();
+            s.item(Parameters(ItemRequest {
+                action: "update_state".into(),
+                id: Some(created["id"].as_str().unwrap().to_string()),
+                state_id: Some(state_id.to_string()),
+                ..Default::default()
+            }))
+            .unwrap();
+        };
+        move_to("Done 1", &completed_state);
+        move_to("Done 2", &completed_state);
+        move_to("WIP", &started_state);
+
+        let health: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "health".into(),
+                window_weeks: Some(2),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let velocity = health["velocity"].as_array().unwrap();
+        assert_eq!(velocity.len(), 2, "oldest -> newest, 2 requested windows");
+        assert_eq!(velocity[1]["completed_count"], 2, "current week has both Done items");
+        assert_eq!(velocity[0]["completed_count"], 0, "prior week is empty");
+        assert_eq!(health["velocity_trend"], "up");
+        assert_eq!(health["wip_count"], 1);
+        assert_eq!(health["stuck_count"], 0);
+        assert_eq!(health["bottlenecks"].as_array().unwrap().len(), 0);
+        assert!(health["bottleneck_note"].as_str().unwrap().contains("no handoff history"));
     }
 
     /// Real measured comparison, not an estimate: one `groom` call vs. the
