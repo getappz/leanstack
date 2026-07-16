@@ -10,13 +10,24 @@ Call `item` with `action="list"`. Add filters as needed:
 - `assignee_agent`: matches that agent PLUS unassigned items, open-first.
 
 The list projection has ONLY: id, name, state, state_group, priority,
-assignee_agent, parent_id, sequence_id, updated_at.
+assignee_agent, parent_id, sequence_id, updated_at. Use `list` for
+standup/health, which only need this thin projection.
+
+## Grooming/plan: one call, not list+N×get
+
+`item action="groom"` (optional `state_group`, `staleness_days` default 14,
+`limit` default 15) returns the priority+recency-ranked shortlist with full
+description AND precomputed `stale`/`unassigned`/`blocked_by`/
+`depended_on_by_count`/`possible_duplicates`/`size`/`unestimated`, plus
+`pull_next` and summary counts — computed server-side in one round trip.
+Do not fall back to `list` + per-item `get` for grooming/planning; that was
+the old N+1 path this action replaces.
 
 ## Detail fetch (only when needed)
 
-`item action="get" id=<id>` returns the full item incl. description, metadata,
-labels, timestamps. Grooming/plan fetch detail ONLY for the shortlisted items
-(cap at the top 15) to stay bounded.
+`item action="get" id=<id>` returns one full item incl. description, metadata,
+labels, timestamps — for a single ad-hoc lookup outside grooming, not for
+building a shortlist (use `groom` for that).
 
 ## Time signals — approximate, state this in output
 

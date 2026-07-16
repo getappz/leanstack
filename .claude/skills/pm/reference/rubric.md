@@ -8,8 +8,11 @@ Map each factor to a fixed 1–5 from readable signals. Show the reason inline.
   `customer`, `revenue`, `priority:high|urgent`. 1 trivial … 5 critical.
 - Confidence — how well-specified the item is (has a clear description/acceptance).
   1 vague … 5 crisp.
-- Effort  — size. From a `size:S|M|L` label or an estimate in the body.
-  1 = large/expensive … 5 = tiny. If unknown, mark UNESTIMATED (see below).
+- Effort  — size. From `groom`'s `size` field (parsed server-side from
+  `metadata.size`, set via `item(update)` with `metadata={"size":"S"|"M"|"L"}`).
+  1 = large/expensive … 5 = tiny. `groom` sets `unestimated=true` when
+  `size` is absent — treat that as UNESTIMATED (see below), don't guess a
+  size from description prose.
 
 Print each score as: `RICE 9.6 — R4 I5 C3 / E? (UNESTIMATED)` with one-line why.
 

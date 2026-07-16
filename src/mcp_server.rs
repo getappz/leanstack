@@ -556,7 +556,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ItemRequest {
     #[schemars(
-        description = "Action: create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
+        description = "Action: create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom"
     )]
     action: String,
     #[schemars(
@@ -586,7 +586,9 @@ struct ItemRequest {
     )]
     #[serde(default)]
     assignee_agent: Option<String>,
-    #[schemars(description = "Domain-specific fields as a JSON object (create)")]
+    #[schemars(
+        description = "Domain-specific fields as a JSON object (create, update). Set {\"size\": \"S\"|\"M\"|\"L\"} so `groom` can score effort instead of reporting the item unestimated."
+    )]
     #[serde(default)]
     metadata: Option<serde_json::Value>,
     #[schemars(description = "Label IDs to attach on creation (create)")]
@@ -614,6 +616,11 @@ struct ItemRequest {
     #[schemars(description = "FTS5 search query (search)")]
     #[serde(default)]
     query: Option<String>,
+    #[schemars(
+        description = "Days since updated_at before an item counts as stale (groom); default 14"
+    )]
+    #[serde(default)]
+    staleness_days: Option<i64>,
 }
 
 /// Lean per-item projection for `item(list)` — the raw 19-field `Item` (full
@@ -630,6 +637,48 @@ struct ItemSummary {
     parent_id: Option<String>,
     sequence_id: i64,
     updated_at: i64,
+}
+
+/// One shortlisted item plus the decision-support signals `groom` computes
+/// server-side (staleness, blocking, fan-in, near-duplicates) so the caller
+/// doesn't have to re-derive them by eyeballing timestamps and free text.
+#[derive(Debug, serde::Serialize)]
+struct GroomItem {
+    id: String,
+    sequence_id: i64,
+    name: String,
+    description: String,
+    state: String,
+    state_group: String,
+    priority: String,
+    assignee_agent: Option<String>,
+    updated_at: i64,
+    stale: bool,
+    unassigned: bool,
+    /// Parsed from `metadata.size` ("S"|"M"|"L"); `None` when absent — see `unestimated`.
+    size: Option<String>,
+    /// True when `metadata.size` is missing — add a size label to enable real RICE scoring.
+    unestimated: bool,
+    /// IDs this item depends on that are still open (not completed/cancelled).
+    blocked_by: Vec<String>,
+    /// How many other items declare a dependency on this one.
+    depended_on_by_count: i64,
+    /// Other shortlisted items with a near-identical name (token-Jaccard ≥ 0.5).
+    possible_duplicates: Vec<String>,
+}
+
+/// One-call groom result: priority+staleness-ranked shortlist with all the
+/// flags a human/agent needs to make pull-next decisions, computed in Rust
+/// instead of costing N `get` round trips + manual LLM staleness/dup checks.
+#[derive(Debug, serde::Serialize)]
+struct GroomResponse {
+    staleness_days: i64,
+    stale_count: usize,
+    unassigned_count: usize,
+    unestimated_count: usize,
+    items: Vec<GroomItem>,
+    /// Top unassigned, not-stale, unblocked items from the shortlist.
+    pull_next: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -2269,9 +2318,10 @@ impl AgentflareMcp {
             "search" => self.item_search(req),
             "add_label" => self.item_add_label(req),
             "remove_label" => self.item_remove_label(req),
+            "groom" => self.item_groom(req),
             other => Err(ErrorData::invalid_params(
                 format!(
-                    "unknown item action: '{other}' — expected create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label"
+                    "unknown item action: '{other}' — expected create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom"
                 ),
                 None,
             )),
@@ -2279,7 +2329,7 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label). See each field's description for when it's required."
+        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom). `groom` returns a priority+staleness-ranked shortlist with description, stale/unassigned/blocked/duplicate flags, and a pull_next list — all in one call, no per-item `get` round trips needed. See each field's description for when it's required."
     )]
     fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
         self.item_inner(req)
@@ -4421,6 +4471,272 @@ mod tests {
             .map(|i| i["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, vec!["Open", "Done"]);
+    }
+
+    #[test]
+    fn item_groom_flags_unassigned_and_computes_pull_next() {
+        let (_tmp, s) = harness();
+        let foo: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Foo"))).unwrap()).unwrap();
+        s.item(Parameters(ItemRequest {
+            action: "create".into(),
+            name: Some("Bar".into()),
+            assignee_agent: Some("someone".into()),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let items = groomed["items"].as_array().unwrap();
+        let foo_entry = items
+            .iter()
+            .find(|i| i["name"] == "Foo")
+            .expect("Foo present");
+        assert_eq!(foo_entry["unassigned"], true);
+        assert_eq!(foo_entry["stale"], false);
+        let bar_entry = items
+            .iter()
+            .find(|i| i["name"] == "Bar")
+            .expect("Bar present");
+        assert_eq!(bar_entry["unassigned"], false);
+
+        let pull_next: Vec<&str> = groomed["pull_next"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(pull_next.contains(&foo["id"].as_str().unwrap()));
+        assert_eq!(groomed["unassigned_count"], 1);
+    }
+
+    #[test]
+    fn item_groom_flags_blocked_by_open_dependency() {
+        let (_tmp, s) = harness();
+        let dep: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Dep"))).unwrap()).unwrap();
+        let dep_id = dep["id"].as_str().unwrap().to_string();
+        let blocked: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "create".into(),
+                name: Some("Blocked".into()),
+                dependency_ids: Some(vec![dep_id.clone()]),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let items = groomed["items"].as_array().unwrap();
+        let blocked_entry = items
+            .iter()
+            .find(|i| i["id"] == blocked["id"])
+            .expect("Blocked present");
+        let blocked_by: Vec<&str> = blocked_entry["blocked_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(blocked_by, vec![dep_id.as_str()]);
+
+        let dep_entry = items.iter().find(|i| i["id"] == dep["id"]).unwrap();
+        assert_eq!(dep_entry["depended_on_by_count"], 1);
+
+        let pull_next: Vec<&str> = groomed["pull_next"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(!pull_next.contains(&blocked["id"].as_str().unwrap()));
+    }
+
+    #[test]
+    fn item_groom_detects_near_duplicate_names() {
+        let (_tmp, s) = harness();
+        let a: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(empty_item_create(
+                "FIX-08 backlog low unassigned stale",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let b: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(empty_item_create(
+                "FIX-09 backlog low unassigned stale duplicateish",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let items = groomed["items"].as_array().unwrap();
+        let a_entry = items.iter().find(|i| i["id"] == a["id"]).unwrap();
+        let dups: Vec<&str> = a_entry["possible_duplicates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(dups.contains(&b["id"].as_str().unwrap()));
+    }
+
+    #[test]
+    fn item_update_sets_metadata() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Sized"))).unwrap())
+                .unwrap();
+        let updated: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "update".into(),
+                id: Some(created["id"].as_str().unwrap().to_string()),
+                metadata: Some(serde_json::json!({"size": "M"})),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["metadata"], serde_json::json!({"size": "M"}).to_string());
+    }
+
+    #[test]
+    fn item_groom_reads_size_and_flags_unestimated() {
+        let (_tmp, s) = harness();
+        let sized: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "create".into(),
+                name: Some("Sized".into()),
+                metadata: Some(serde_json::json!({"size": "L"})),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let bare: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Bare"))).unwrap()).unwrap();
+
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let items = groomed["items"].as_array().unwrap();
+        let sized_entry = items.iter().find(|i| i["id"] == sized["id"]).unwrap();
+        assert_eq!(sized_entry["size"], "L");
+        assert_eq!(sized_entry["unestimated"], false);
+        let bare_entry = items.iter().find(|i| i["id"] == bare["id"]).unwrap();
+        assert_eq!(bare_entry["size"], serde_json::Value::Null);
+        assert_eq!(bare_entry["unestimated"], true);
+        assert_eq!(groomed["unestimated_count"], 1);
+    }
+
+    /// Real measured comparison, not an estimate: one `groom` call vs. the
+    /// `list` + N×`get` path it replaces, against a backlog-sized dataset (60
+    /// items — close to this project's real ~40-item backlog) with dependency
+    /// edges so `groom`'s blocked/fan-in computation does real work too. Not a
+    /// hard perf gate (`#[ignore]`, run explicitly) — timing assertions in CI
+    /// are flaky; this is for a human to re-run and read the numbers.
+    #[test]
+    #[ignore = "manual benchmark — run with: cargo test item_groom_benchmark -- --ignored --nocapture"]
+    fn item_groom_benchmark() {
+        let (_tmp, s) = harness();
+        let mut ids: Vec<String> = Vec::with_capacity(60);
+        for n in 0..60 {
+            let priority = ["urgent", "high", "medium", "low", "none"][n % 5];
+            let created: serde_json::Value = serde_json::from_str(
+                &s.item(Parameters(ItemRequest {
+                    action: "create".into(),
+                    name: Some(format!("Benchmark item {n}")),
+                    description: Some(
+                        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(20),
+                    ),
+                    priority: Some(priority.into()),
+                    dependency_ids: if n > 0 && n % 7 == 0 {
+                        Some(vec![ids[n - 1].clone()])
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            ids.push(created["id"].as_str().unwrap().to_string());
+        }
+
+        let groom_start = std::time::Instant::now();
+        let groomed = s
+            .item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let groom_elapsed = groom_start.elapsed();
+
+        let old_start = std::time::Instant::now();
+        let listed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "list".into(),
+                state_group: Some("backlog,unstarted".into()),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let shortlist_ids: Vec<String> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(15)
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect();
+        for id in &shortlist_ids {
+            s.item(Parameters(ItemRequest {
+                action: "get".into(),
+                id: Some(id.clone()),
+                ..Default::default()
+            }))
+            .unwrap();
+        }
+        let old_elapsed = old_start.elapsed();
+
+        println!(
+            "groom (1 call): {groom_elapsed:?} | list+{}xget (old path): {old_elapsed:?} | speedup: {:.1}x",
+            shortlist_ids.len(),
+            old_elapsed.as_secs_f64() / groom_elapsed.as_secs_f64().max(1e-9)
+        );
+        assert!(groomed.contains("pull_next"));
     }
 
     #[test]

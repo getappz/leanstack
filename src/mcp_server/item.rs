@@ -153,6 +153,7 @@ impl AgentflareMcp {
                 state_id: None,
                 assignee_agent: req.assignee_agent,
                 sort_order: None,
+                metadata: req.metadata.map(|v| v.to_string()),
             };
             let item =
                 agentflare_backend::item::update(conn, &id, input).map_err(map_backend_err)?;
@@ -443,6 +444,178 @@ impl AgentflareMcp {
                 serde_json::json!({"removed": true, "item_id": item_id, "label_id": label_id})
                     .to_string(),
             )
+        })?
+    }
+
+    /// One-call groom: filtered + priority/staleness-ranked shortlist with
+    /// full description plus stale/unassigned/blocked/duplicate signals
+    /// computed server-side. Replaces the `list` + N×`get` round trips a
+    /// manual groom otherwise costs.
+    pub(super) fn item_groom(&self, req: ItemRequest) -> Result<String, ErrorData> {
+        if req.limit.is_some_and(|l| l < 0) {
+            return Err(ErrorData::invalid_params("limit must be non-negative", None));
+        }
+        let staleness_days = req.staleness_days.unwrap_or(14).max(0);
+        let cap = req.limit.unwrap_or(15).max(0) as usize;
+        self.with_backend_db(|conn| {
+            let project = self.resolve_project(conn)?;
+            let mut items = agentflare_backend::item::list_by_project(conn, &project.id)
+                .map_err(map_backend_err)?;
+            let states = agentflare_backend::state::list_by_project(conn, &project.id)
+                .map_err(map_backend_err)?;
+            let state_by_id: std::collections::HashMap<&str, &agentflare_backend::state::State> =
+                states.iter().map(|s| (s.id.as_str(), s)).collect();
+
+            let wanted_groups: Vec<&str> = req
+                .state_group
+                .as_deref()
+                .unwrap_or("backlog,unstarted")
+                .split(',')
+                .map(str::trim)
+                .collect();
+            items.retain(|i| {
+                state_by_id
+                    .get(i.state_id.as_str())
+                    .map(|s| wanted_groups.contains(&s.group_name.as_str()))
+                    .unwrap_or(false)
+            });
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let stale_cutoff = now - staleness_days.saturating_mul(86_400);
+
+            fn priority_rank(p: &str) -> u8 {
+                match p {
+                    "urgent" => 5,
+                    "high" => 4,
+                    "medium" => 3,
+                    "low" => 2,
+                    _ => 1,
+                }
+            }
+            // Priority first, then most-recently-touched within a priority tier.
+            items.sort_by(|a, b| {
+                priority_rank(&b.priority)
+                    .cmp(&priority_rank(&a.priority))
+                    .then(b.updated_at.cmp(&a.updated_at))
+            });
+            let shortlist: Vec<_> = items.into_iter().take(cap).collect();
+
+            let ids: Vec<String> = shortlist.iter().map(|i| i.id.clone()).collect();
+            let edges = agentflare_backend::item::dependencies_for_items(conn, &ids)
+                .map_err(map_backend_err)?;
+            let group_of = |id: &str| -> &str {
+                shortlist
+                    .iter()
+                    .find(|i| i.id == id)
+                    .and_then(|i| state_by_id.get(i.state_id.as_str()))
+                    .map(|s| s.group_name.as_str())
+                    .unwrap_or("")
+            };
+            let mut fanin: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+            let mut blocked_by: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for (item_id, depends_on) in &edges {
+                *fanin.entry(depends_on.clone()).or_insert(0) += 1;
+                if !matches!(group_of(depends_on), "completed" | "cancelled") {
+                    blocked_by
+                        .entry(item_id.clone())
+                        .or_default()
+                        .push(depends_on.clone());
+                }
+            }
+
+            // Near-duplicate names within the shortlist (token-Jaccard, no
+            // embeddings needed at this backlog scale).
+            fn name_tokens(name: &str) -> std::collections::HashSet<String> {
+                name.to_lowercase()
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| s.len() > 2)
+                    .map(str::to_string)
+                    .collect()
+            }
+            let token_sets: Vec<_> = shortlist.iter().map(|i| name_tokens(&i.name)).collect();
+            let mut duplicates: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for a in 0..shortlist.len() {
+                for b in (a + 1)..shortlist.len() {
+                    let (sa, sb) = (&token_sets[a], &token_sets[b]);
+                    if sa.is_empty() || sb.is_empty() {
+                        continue;
+                    }
+                    let inter = sa.intersection(sb).count() as f64;
+                    let union = sa.union(sb).count() as f64;
+                    if union > 0.0 && inter / union >= 0.5 {
+                        duplicates
+                            .entry(shortlist[a].id.clone())
+                            .or_default()
+                            .push(shortlist[b].id.clone());
+                        duplicates
+                            .entry(shortlist[b].id.clone())
+                            .or_default()
+                            .push(shortlist[a].id.clone());
+                    }
+                }
+            }
+
+            // `size` lives in the free-form `metadata` JSON blob (`{"size": "S"|"M"|"L"}`)
+            // rather than a regex over description prose — sets via `item(update)`.
+            fn parsed_size(metadata: &str) -> Option<String> {
+                serde_json::from_str::<serde_json::Value>(metadata)
+                    .ok()?
+                    .get("size")?
+                    .as_str()
+                    .filter(|s| matches!(*s, "S" | "M" | "L"))
+                    .map(str::to_string)
+            }
+
+            let groom_items: Vec<GroomItem> = shortlist
+                .into_iter()
+                .map(|i| {
+                    let state = state_by_id.get(i.state_id.as_str());
+                    let stale = i.updated_at < stale_cutoff;
+                    let unassigned = i.assignee_agent.is_none();
+                    let size = parsed_size(&i.metadata);
+                    let unestimated = size.is_none();
+                    GroomItem {
+                        blocked_by: blocked_by.get(&i.id).cloned().unwrap_or_default(),
+                        depended_on_by_count: *fanin.get(&i.id).unwrap_or(&0),
+                        possible_duplicates: duplicates.get(&i.id).cloned().unwrap_or_default(),
+                        id: i.id,
+                        sequence_id: i.sequence_id,
+                        name: i.name,
+                        description: i.description,
+                        state: state.map(|s| s.name.clone()).unwrap_or_default(),
+                        state_group: state.map(|s| s.group_name.clone()).unwrap_or_default(),
+                        priority: i.priority,
+                        assignee_agent: i.assignee_agent,
+                        updated_at: i.updated_at,
+                        stale,
+                        unassigned,
+                        size,
+                        unestimated,
+                    }
+                })
+                .collect();
+
+            let pull_next: Vec<String> = groom_items
+                .iter()
+                .filter(|i| i.unassigned && !i.stale && i.blocked_by.is_empty())
+                .take(3)
+                .map(|i| i.id.clone())
+                .collect();
+
+            let resp = GroomResponse {
+                staleness_days,
+                stale_count: groom_items.iter().filter(|i| i.stale).count(),
+                unassigned_count: groom_items.iter().filter(|i| i.unassigned).count(),
+                unestimated_count: groom_items.iter().filter(|i| i.unestimated).count(),
+                items: groom_items,
+                pull_next,
+            };
+            Ok(serde_json::to_string_pretty(&resp).unwrap_or_default())
         })?
     }
 }
