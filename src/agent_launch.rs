@@ -410,7 +410,13 @@ mod tests {
             package_manager: None,
             package_name: None,
         }];
-        let script = format!("echo -n \"$CARGO_TARGET_DIR\" > {}", marker_path.display());
+        // `printf`, not `echo -n`: on macOS's /bin/sh, `-n` isn't a flag
+        // (that's a bash builtin behavior), so `echo -n` would literally
+        // print "-n" into the marker instead of suppressing the newline.
+        let script = format!(
+            "printf '%s' \"$CARGO_TARGET_DIR\" > {}",
+            marker_path.display()
+        );
         run_launch_env(
             &reg,
             "aider",
