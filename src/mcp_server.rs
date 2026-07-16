@@ -2422,6 +2422,25 @@ impl AgentflareMcp {
         }
     }
 
+    /// Verify a label belongs to the repo's resolved project before mutating it by
+    /// ID, so `update`/`delete` can't reach across projects by guessing an ID.
+    /// Returns `invalid_params` on mismatch (same shape as not-found).
+    fn ensure_label_in_project(
+        &self,
+        conn: &rusqlite::Connection,
+        label_id: &str,
+    ) -> Result<(), ErrorData> {
+        let project = self.resolve_project(conn)?;
+        let label = agentflare_backend::label::get(conn, label_id).map_err(map_backend_err)?;
+        if label.project_id.as_deref() != Some(project.id.as_str()) {
+            return Err(ErrorData::invalid_params(
+                format!("label {label_id} is not in this project"),
+                None,
+            ));
+        }
+        Ok(())
+    }
+
     fn label_inner(&self, req: LabelRequest) -> Result<String, ErrorData> {
         match req.action.as_str() {
             "create" => {
@@ -2464,6 +2483,7 @@ impl AgentflareMcp {
                     sort_order: req.sort_order,
                 };
                 self.with_backend_db(|conn| {
+                    self.ensure_label_in_project(conn, &id)?;
                     let label = agentflare_backend::label::update(conn, &id, input)
                         .map_err(map_backend_err)?;
                     Ok(serde_json::to_string_pretty(&label).unwrap_or_default())
@@ -2474,6 +2494,7 @@ impl AgentflareMcp {
                     .id
                     .ok_or_else(|| ErrorData::invalid_params("id is required for delete", None))?;
                 self.with_backend_db(|conn| {
+                    self.ensure_label_in_project(conn, &id)?;
                     agentflare_backend::label::delete(conn, &id).map_err(map_backend_err)?;
                     Ok(serde_json::json!({"deleted": true, "id": id}).to_string())
                 })?
@@ -5519,6 +5540,76 @@ mod tests {
             }))
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn label_update_and_delete_reject_foreign_project_label() {
+        let (tmp, s) = harness();
+
+        // A label in a separate workspace/project, not the repo's resolved project.
+        let foreign_label_id = {
+            let conn = backend_conn(&tmp);
+            let ws = agentflare_backend::workspace::create(
+                &conn,
+                agentflare_backend::workspace::CreateWorkspace {
+                    name: "Other".into(),
+                    slug: "other".into(),
+                    owner_agent: None,
+                    item_label: None,
+                },
+            )
+            .unwrap();
+            let proj = agentflare_backend::project::create(
+                &conn,
+                agentflare_backend::project::CreateProject {
+                    workspace_id: ws.id.clone(),
+                    name: "Other".into(),
+                    identifier: "OTH".into(),
+                    external_source: None,
+                    external_id: None,
+                },
+            )
+            .unwrap();
+            agentflare_backend::label::create(
+                &conn,
+                agentflare_backend::label::CreateLabel {
+                    project_id: Some(proj.id),
+                    workspace_id: ws.id,
+                    name: "bug".into(),
+                    color: None,
+                    parent_id: None,
+                    sort_order: None,
+                    external_source: None,
+                    external_id: None,
+                },
+            )
+            .unwrap()
+            .id
+        };
+
+        let upd = s
+            .label(Parameters(LabelRequest {
+                action: "update".into(),
+                id: Some(foreign_label_id.clone()),
+                name: Some("hijacked".into()),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(upd.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        let del = s
+            .label(Parameters(LabelRequest {
+                action: "delete".into(),
+                id: Some(foreign_label_id.clone()),
+                ..Default::default()
+            }))
+            .unwrap_err();
+        assert_eq!(del.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        // The foreign label must survive both rejected attempts unchanged.
+        let conn = backend_conn(&tmp);
+        let survivor = agentflare_backend::label::get(&conn, &foreign_label_id).unwrap();
+        assert_eq!(survivor.name, "bug");
     }
 
     #[test]

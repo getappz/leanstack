@@ -85,11 +85,14 @@ pub fn create(conn: &Connection, input: CreateLabel) -> Result<Label> {
     let id = uuid::Uuid::now_v7().to_string();
     let ts = now();
     let color = input.color.unwrap_or_else(|| "#60646C".to_string());
+    // Compute the auto-append sort_order and insert inside one transaction so two
+    // concurrent auto-append creates can't read the same MAX and collide.
+    let tx = conn.unchecked_transaction()?;
     let sort_order = match input.sort_order {
         Some(v) => v,
-        None => next_sort_order(conn, input.project_id.as_deref(), &input.workspace_id)?,
+        None => next_sort_order(&tx, input.project_id.as_deref(), &input.workspace_id)?,
     };
-    conn.execute(
+    tx.execute(
         "INSERT INTO labels (id, project_id, workspace_id, name, color, parent_id, sort_order, external_source, external_id, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
@@ -106,6 +109,7 @@ pub fn create(conn: &Connection, input: CreateLabel) -> Result<Label> {
             ts,
         ],
     )?;
+    tx.commit()?;
     get(conn, &id)
 }
 
