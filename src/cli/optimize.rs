@@ -20,7 +20,7 @@ pub enum OutputAction {
 }
 
 /// Register an output-layer compression's original and return its expand-marker.
-fn record_and_marker(
+pub(crate) fn record_and_marker(
     original_path: std::path::PathBuf,
     before: u64,
     after: u64,
@@ -74,8 +74,9 @@ impl OutputAction {
                 );
                 match result {
                     Ok(report) => {
-                        let pct =
-                            100 - (100 * report.compressed_bytes / report.original_bytes.max(1));
+                        let pct = 100usize.saturating_sub(
+                            100 * report.compressed_bytes / report.original_bytes.max(1),
+                        );
                         println!(
                             "{}→{}B ▼{pct}%",
                             report.original_bytes, report.compressed_bytes

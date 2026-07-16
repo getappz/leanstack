@@ -303,6 +303,15 @@ pub fn describe_origin(kind: &EntryKind) -> String {
     }
 }
 
+/// Non-sensitive kind label for list output; never exposes stored paths.
+pub fn kind_label(kind: &EntryKind) -> &'static str {
+    match kind {
+        EntryKind::FileBackup { .. } => "file",
+        EntryKind::Inline { .. } => "inline",
+        EntryKind::LeanCtxRead { .. } => "lean-ctx",
+    }
+}
+
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

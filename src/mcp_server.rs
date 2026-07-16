@@ -2197,7 +2197,19 @@ impl AgentflareMcp {
                     crate::optimize::retrieve::active_state(crate::optimize::retrieve::now_unix());
                 let mut entries: Vec<_> = state.entries.values().collect();
                 entries.sort_by_key(|e| std::cmp::Reverse(e.created_ts));
-                serde_json::to_string(&entries)
+                let summary: Vec<_> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "id": e.id,
+                            "kind": crate::optimize::retrieve::kind_label(&e.kind),
+                            "size_before": e.size_before,
+                            "size_after": e.size_after,
+                            "created_ts": e.created_ts,
+                        })
+                    })
+                    .collect();
+                serde_json::to_string(&summary)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))
             }
             other => Err(ErrorData::invalid_params(

@@ -57,11 +57,21 @@ impl CavemanArgs {
                 );
                 match result {
                     Ok(report) => {
-                        let pct =
-                            100 - (100 * report.compressed_bytes / report.original_bytes.max(1));
+                        let pct = 100usize.saturating_sub(
+                            100 * report.compressed_bytes / report.original_bytes.max(1),
+                        );
                         println!(
                             "{}→{}B ▼{pct}%",
                             report.original_bytes, report.compressed_bytes
+                        );
+                        println!(
+                            "{}",
+                            crate::cli::optimize::record_and_marker(
+                                report.original_path.clone(),
+                                report.original_bytes as u64,
+                                report.compressed_bytes as u64,
+                                crate::optimize::retrieve::now_unix(),
+                            )
                         );
                     }
                     Err(e) => {
