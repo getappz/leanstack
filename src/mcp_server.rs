@@ -4661,6 +4661,46 @@ mod tests {
         assert_eq!(groomed["unestimated_count"], 1);
     }
 
+    /// Regression: some callers double-encode an object-typed `metadata` param
+    /// as a JSON string containing JSON — reproduced live via item(create)
+    /// with metadata={"size":"S"}, which stored `"{\"size\": \"S\"}"` (a
+    /// string) rather than the object itself. `groom` must still read `size`
+    /// through that extra layer instead of silently reporting `unestimated`.
+    #[test]
+    fn item_groom_reads_size_through_double_encoded_metadata() {
+        let (_tmp, s) = harness();
+        let double_encoded: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "create".into(),
+                name: Some("Double-encoded".into()),
+                metadata: Some(serde_json::Value::String(
+                    serde_json::json!({"size": "M"}).to_string(),
+                )),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let entry = groomed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == double_encoded["id"])
+            .unwrap();
+        assert_eq!(entry["size"], "M");
+        assert_eq!(entry["unestimated"], false);
+    }
+
     /// Real measured comparison, not an estimate: one `groom` call vs. the
     /// `list` + N×`get` path it replaces, against a backlog-sized dataset (60
     /// items — close to this project's real ~40-item backlog) with dependency

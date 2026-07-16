@@ -563,8 +563,17 @@ impl AgentflareMcp {
             // `size` lives in the free-form `metadata` JSON blob (`{"size": "S"|"M"|"L"}`)
             // rather than a regex over description prose — sets via `item(update)`.
             fn parsed_size(metadata: &str) -> Option<String> {
-                serde_json::from_str::<serde_json::Value>(metadata)
-                    .ok()?
+                let mut value = serde_json::from_str::<serde_json::Value>(metadata).ok()?;
+                // Defensive: some callers double-encode an object-typed param as a
+                // JSON string containing JSON (observed live — item(create) with
+                // metadata={"size":"S"} stored `"{\"size\": \"S\"}"` instead of the
+                // object). Unwrap one extra layer before giving up.
+                if let serde_json::Value::String(inner) = &value
+                    && let Ok(reparsed) = serde_json::from_str::<serde_json::Value>(inner)
+                {
+                    value = reparsed;
+                }
+                value
                     .get("size")?
                     .as_str()
                     .filter(|s| matches!(*s, "S" | "M" | "L"))
