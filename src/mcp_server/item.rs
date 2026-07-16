@@ -685,4 +685,99 @@ impl AgentflareMcp {
             Ok(serde_json::to_string_pretty(&resp).unwrap_or_default())
         })?
     }
+
+    /// One-call standup: done/in-progress(grouped by assignee)/stuck, computed
+    /// server-side from a single state-filtered read instead of the caller
+    /// bucketing a flat `list` result by hand.
+    pub(super) fn item_standup(&self, req: ItemRequest) -> Result<String, ErrorData> {
+        let cutoff_hours = req.cutoff_hours.unwrap_or(24).max(0);
+        let stuck_days = req.staleness_days.unwrap_or(7).max(0);
+        self.with_backend_db(|conn| {
+            let project = self.resolve_project(conn)?;
+            let mut items = agentflare_backend::item::list_by_project(conn, &project.id)
+                .map_err(map_backend_err)?;
+            let states = agentflare_backend::state::list_by_project(conn, &project.id)
+                .map_err(map_backend_err)?;
+            let state_by_id: std::collections::HashMap<&str, &agentflare_backend::state::State> =
+                states.iter().map(|s| (s.id.as_str(), s)).collect();
+            items.retain(|i| {
+                state_by_id
+                    .get(i.state_id.as_str())
+                    .map(|s| matches!(s.group_name.as_str(), "started" | "completed"))
+                    .unwrap_or(false)
+            });
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let done_cutoff = now - cutoff_hours.saturating_mul(3_600);
+            let stuck_cutoff = now - stuck_days.saturating_mul(86_400);
+
+            fn to_standup_item(i: &agentflare_backend::item::Item) -> StandupItem {
+                StandupItem {
+                    id: i.id.clone(),
+                    sequence_id: i.sequence_id,
+                    name: i.name.clone(),
+                    priority: i.priority.clone(),
+                    assignee_agent: i.assignee_agent.clone(),
+                    updated_at: i.updated_at,
+                }
+            }
+
+            let mut done: Vec<StandupItem> = items
+                .iter()
+                .filter(|i| {
+                    state_by_id
+                        .get(i.state_id.as_str())
+                        .map(|s| s.group_name == "completed")
+                        .unwrap_or(false)
+                        && i.updated_at >= done_cutoff
+                })
+                .map(to_standup_item)
+                .collect();
+            done.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
+
+            let in_progress_items: Vec<_> = items
+                .iter()
+                .filter(|i| {
+                    state_by_id
+                        .get(i.state_id.as_str())
+                        .map(|s| s.group_name == "started")
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            let stuck: Vec<StandupItem> = in_progress_items
+                .iter()
+                .filter(|i| i.updated_at < stuck_cutoff)
+                .map(|i| to_standup_item(i))
+                .collect();
+
+            let mut by_assignee: std::collections::BTreeMap<String, Vec<StandupItem>> =
+                std::collections::BTreeMap::new();
+            for i in &in_progress_items {
+                by_assignee
+                    .entry(i.assignee_agent.clone().unwrap_or_else(|| "unassigned".into()))
+                    .or_default()
+                    .push(to_standup_item(i));
+            }
+            let in_progress: Vec<StandupGroup> = by_assignee
+                .into_iter()
+                .map(|(assignee, items)| StandupGroup { assignee, items })
+                .collect();
+
+            let resp = StandupResponse {
+                cutoff_hours,
+                stuck_days,
+                done_count: done.len(),
+                done,
+                in_progress_count: in_progress_items.len(),
+                in_progress,
+                stuck_count: stuck.len(),
+                stuck,
+            };
+            Ok(serde_json::to_string_pretty(&resp).unwrap_or_default())
+        })?
+    }
 }

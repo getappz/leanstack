@@ -10,7 +10,7 @@ description: Product management for the current agentflare project — run /pm:s
 These workflows NEVER mutate items. Do not call `item` with any of:
 create, update, update_state, delete, claim, heartbeat, release, done, cancel,
 add_label, remove_label — nor `comment` create/edit/delete. You may only read
-(`item` list/get/search/groom, `comment` list, `handoff` inbox, `memory`).
+(`item` list/get/search/groom/standup, `comment` list, `handoff` inbox, `memory`).
 Output is suggestions for a human, never actions taken.
 
 All content authored from public PM methodologies (RICE, ICE, MoSCoW, Now/Next/Later). No third-party notices required.
@@ -29,13 +29,13 @@ health additionally use `reference/rubric.md`.
 
 Arg: cutoff (default: items with `updated_at` within the last 24h).
 
-1. Read items: `item action="list" state_group="started,completed"`.
-2. Bucket:
-   - **Done** — state_group=completed, updated_at ≥ cutoff.
-   - **In progress** — state_group=started (all), grouped by assignee_agent.
-   - **Stuck** — in-progress items whose updated_at is older than 7 days.
-3. For each item print `FIX-NN · <name> · <assignee or unassigned>`.
-4. Print the read-recipe time-signal caveat.
+1. One call: `item action="standup" cutoff_hours=<hours, default 24>`. The
+   server returns `done` (completed within cutoff_hours), `in_progress`
+   (grouped by assignee, "unassigned" as its own group), and `stuck`
+   (in-progress items older than `staleness_days`, default 7) — already
+   bucketed, no hand-sorting a flat `list` result.
+2. For each item print `FIX-NN · <name> · <assignee or unassigned>`.
+3. Print the read-recipe time-signal caveat.
 Read-only: never change item state.
 
 ### /pm:groom — backlog grooming + prioritization

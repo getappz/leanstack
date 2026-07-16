@@ -10,8 +10,14 @@ Call `item` with `action="list"`. Add filters as needed:
 - `assignee_agent`: matches that agent PLUS unassigned items, open-first.
 
 The list projection has ONLY: id, name, state, state_group, priority,
-assignee_agent, parent_id, sequence_id, updated_at. Use `list` for
-standup/health, which only need this thin projection.
+assignee_agent, parent_id, sequence_id, updated_at.
+
+## Standup: one call, not list+bucket
+
+`item action="standup"` (optional `cutoff_hours` default 24, `staleness_days`
+default 7 for the stuck threshold) returns `done`/`in_progress` (grouped by
+assignee)/`stuck` pre-bucketed server-side, plus counts. Use this instead of
+`list` + hand-sorting for standup.
 
 ## Grooming/plan: one call, not list+N×get
 

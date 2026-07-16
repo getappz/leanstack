@@ -556,7 +556,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct ItemRequest {
     #[schemars(
-        description = "Action: create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom"
+        description = "Action: create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup"
     )]
     action: String,
     #[schemars(
@@ -626,6 +626,11 @@ struct ItemRequest {
     )]
     #[serde(default)]
     capacity: Option<i64>,
+    #[schemars(
+        description = "Hours back a completed item counts as \"done\" (standup); default 24"
+    )]
+    #[serde(default)]
+    cutoff_hours: Option<i64>,
 }
 
 /// Lean per-item projection for `item(list)` — the raw 19-field `Item` (full
@@ -694,6 +699,37 @@ struct GroomResponse {
     /// Unestimated items — excluded from now/next/later, can't be planned yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     needs_estimation: Option<Vec<String>>,
+}
+
+/// Lean per-item row for `standup` — no description, matches `ItemSummary`'s
+/// thin-projection philosophy since standup doesn't need item bodies.
+#[derive(Debug, serde::Serialize)]
+struct StandupItem {
+    id: String,
+    sequence_id: i64,
+    name: String,
+    priority: String,
+    assignee_agent: Option<String>,
+    updated_at: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct StandupGroup {
+    /// The literal string "unassigned" when `assignee_agent` is null.
+    assignee: String,
+    items: Vec<StandupItem>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct StandupResponse {
+    cutoff_hours: i64,
+    stuck_days: i64,
+    done: Vec<StandupItem>,
+    done_count: usize,
+    in_progress: Vec<StandupGroup>,
+    in_progress_count: usize,
+    stuck: Vec<StandupItem>,
+    stuck_count: usize,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -2334,9 +2370,10 @@ impl AgentflareMcp {
             "add_label" => self.item_add_label(req),
             "remove_label" => self.item_remove_label(req),
             "groom" => self.item_groom(req),
+            "standup" => self.item_standup(req),
             other => Err(ErrorData::invalid_params(
                 format!(
-                    "unknown item action: '{other}' — expected create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom"
+                    "unknown item action: '{other}' — expected create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup"
                 ),
                 None,
             )),
@@ -2344,7 +2381,7 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom). `groom` returns a priority+staleness-ranked shortlist with description, stale/unassigned/blocked/duplicate flags, and a pull_next list — all in one call, no per-item `get` round trips needed. See each field's description for when it's required."
+        description = "Manage work items in the repo's linked project. Single consolidated tool with `action` field (create|get|list|search|update|update_state|delete|claim|heartbeat|release|done|cancel|add_label|remove_label|groom|standup). `groom` returns a priority+staleness-ranked shortlist with description, stale/unassigned/blocked/duplicate flags, and a pull_next list — all in one call, no per-item `get` round trips needed. `standup` returns done/in_progress(grouped by assignee)/stuck buckets computed server-side. See each field's description for when it's required."
     )]
     fn item(&self, Parameters(req): Parameters<ItemRequest>) -> Result<String, ErrorData> {
         self.item_inner(req)
@@ -4791,6 +4828,86 @@ mod tests {
         ];
         expected.sort_unstable();
         assert_eq!(needs_est, expected);
+    }
+
+    #[test]
+    fn item_standup_buckets_done_in_progress_grouped_and_stuck() {
+        let (_tmp, s) = harness();
+        let project_id: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(empty_item_create("bootstrap"))).unwrap(),
+        )
+        .unwrap();
+        let project_id = project_id["project_id"].as_str().unwrap().to_string();
+        let conn = backend_conn(&_tmp);
+        let states = agentflare_backend::state::list_by_project(&conn, &project_id).unwrap();
+        let started_state = states
+            .iter()
+            .find(|st| st.group_name == "started")
+            .unwrap()
+            .id
+            .clone();
+        let completed_state = states
+            .iter()
+            .find(|st| st.group_name == "completed")
+            .unwrap()
+            .id
+            .clone();
+        drop(conn);
+
+        let move_to = |name: &str, assignee: Option<&str>, state_id: &str| -> serde_json::Value {
+            let created: serde_json::Value = serde_json::from_str(
+                &s.item(Parameters(ItemRequest {
+                    action: "create".into(),
+                    name: Some(name.into()),
+                    assignee_agent: assignee.map(String::from),
+                    ..Default::default()
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            s.item(Parameters(ItemRequest {
+                action: "update_state".into(),
+                id: Some(created["id"].as_str().unwrap().to_string()),
+                state_id: Some(state_id.to_string()),
+                ..Default::default()
+            }))
+            .unwrap();
+            created
+        };
+
+        let wip_alice = move_to("WIP Alice", Some("alice"), &started_state);
+        let _wip_bob = move_to("WIP Bob", Some("bob"), &started_state);
+        let _wip_unassigned = move_to("WIP Unassigned", None, &started_state);
+        let done_item = move_to("Done item", Some("alice"), &completed_state);
+
+        let standup: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "standup".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(standup["done_count"], 1);
+        assert_eq!(standup["done"][0]["id"], done_item["id"]);
+        assert_eq!(standup["in_progress_count"], 3);
+        let groups: Vec<&str> = standup["in_progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["assignee"].as_str().unwrap())
+            .collect();
+        assert_eq!(groups, vec!["alice", "bob", "unassigned"]);
+        let alice_group = standup["in_progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["assignee"] == "alice")
+            .unwrap();
+        assert_eq!(alice_group["items"][0]["id"], wip_alice["id"]);
+        // Nothing is 7+ days old in a freshly-created fixture.
+        assert_eq!(standup["stuck_count"], 0);
     }
 
     /// Real measured comparison, not an estimate: one `groom` call vs. the
