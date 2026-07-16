@@ -246,8 +246,7 @@ mod tests {
     #[test]
     fn apply_rule_body_with_dashes_line_is_not_truncated() {
         with_temp_home(|| {
-            let applied =
-                apply_rule("dashes", "Title", "before\n---\nafter", None).unwrap();
+            let applied = apply_rule("dashes", "Title", "before\n---\nafter", None).unwrap();
             assert!(
                 applied.body.contains("before"),
                 "body should contain text before the --- line: {}",
@@ -269,8 +268,7 @@ mod tests {
     #[test]
     fn apply_rule_title_with_em_dash_is_not_truncated() {
         with_temp_home(|| {
-            let applied =
-                apply_rule("emdash", "Foo \u{2014} Bar", "Body", None).unwrap();
+            let applied = apply_rule("emdash", "Foo \u{2014} Bar", "Body", None).unwrap();
             assert_eq!(applied.title, "Foo \u{2014} Bar");
 
             let rules = list_rules();
@@ -360,7 +358,10 @@ mod tests {
             .unwrap();
 
             let bodies = rule_bodies_for_prompt("please review this change");
-            assert_eq!(bodies, vec!["Every review finding needs a diff.".to_string()]);
+            assert_eq!(
+                bodies,
+                vec!["Every review finding needs a diff.".to_string()]
+            );
         });
     }
 

@@ -619,7 +619,10 @@ second line
             .unwrap();
 
             let bodies = crate::coaching::rule_bodies_for_prompt("please review this PR");
-            assert_eq!(bodies, vec!["Every review finding needs a diff.".to_string()]);
+            assert_eq!(
+                bodies,
+                vec!["Every review finding needs a diff.".to_string()]
+            );
             assert!(crate::coaching::rule_bodies_for_prompt("what's for lunch").is_empty());
         });
     }

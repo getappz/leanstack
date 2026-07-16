@@ -265,8 +265,14 @@ mod tests {
             tools: vec!["mcp__flare__review".to_string()],
             auto_match: true,
         };
-        write_rule_file(&dir, "revfix", "Reviews ship with fixes", "Body text", Some(&trigger))
-            .unwrap();
+        write_rule_file(
+            &dir,
+            "revfix",
+            "Reviews ship with fixes",
+            "Body text",
+            Some(&trigger),
+        )
+        .unwrap();
 
         let rule = parse_rule_file(&dir.join("coaching-revfix.md")).unwrap();
         assert_eq!(rule.trigger, Some(trigger));
