@@ -8,18 +8,18 @@ one of those.
 
 ## Flare optimize module
 
-agentflare ships a single consolidated compression/optimization module (`flare`)
+agentflare ships a single consolidated compression/optimization module (`optimize`)
 with four layers:
 
-| Layer   | Command                     | What it does                          |
-|---------|-----------------------------|---------------------------------------|
-| output  | `agentflare flare output`   | LLM-based prose compression (was caveman) |
-| code    | `agentflare flare code`     | Lazy senior dev code minimalism (was ponytail) |
-| context | `agentflare flare context`  | Session transcript compaction via BM25 |
-| runtime | (automatic via hooks)       | Session hygiene, model routing nudges  |
+| Layer   | Command                       | What it does                          |
+|---------|-------------------------------|---------------------------------------|
+| output  | `agentflare optimize output`  | LLM-based prose compression (was caveman) |
+| code    | `agentflare optimize code`    | Lazy senior dev code minimalism (was ponytail) |
+| context | `agentflare optimize context` | Session transcript compaction via BM25 |
+| runtime | (automatic via hooks)         | Session hygiene, model routing nudges  |
 
-Legacy commands (`agentflare caveman`, `agentflare ponytail`) still work as
-backward-compatible aliases.
+Legacy commands (`agentflare flare`, `agentflare caveman`, `agentflare ponytail`)
+still work as backward-compatible aliases.
 
 `agentflare optimize retrieve <id>` (and MCP `mcp__flare__optimize
 action=retrieve`) recovers an original that the output layer compressed away
