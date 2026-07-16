@@ -13,6 +13,7 @@ mod hook;
 mod init;
 mod mcp;
 mod memory;
+mod optimize;
 mod ponytail;
 mod review;
 mod run;
@@ -54,6 +55,8 @@ pub enum Commands {
     Auth(auth::AuthArgs),
     Artifacts(artifacts::ArtifactsArgs),
     Handoff(handoff::HandoffArgs),
+    #[command(alias = "flare", visible_alias = "opt")]
+    Optimize(optimize::OptimizeArgs),
     Ponytail(ponytail::PonytailArgs),
     Caveman(caveman::CavemanArgs),
     Channel(channel::ChannelArgs),
@@ -79,6 +82,7 @@ impl Commands {
             Self::Auth(cmd) => cmd.run(),
             Self::Artifacts(cmd) => cmd.run(),
             Self::Handoff(cmd) => cmd.run(),
+            Self::Optimize(cmd) => cmd.run(),
             Self::Ponytail(cmd) => cmd.run(),
             Self::Caveman(cmd) => cmd.run(),
             Self::Channel(cmd) => cmd.run(),
