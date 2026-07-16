@@ -371,7 +371,7 @@ pub fn add_label(conn: &Connection, item_id: &str, label_id: &str) -> Result<()>
     };
     if !in_scope {
         return Err(crate::error::Error::Validation(format!(
-            "label {label_id} is not in item {item_id}'s project"
+            "label {label_id} is not in item {item_id}'s scope (project or workspace)"
         )));
     }
     conn.execute(
@@ -828,6 +828,51 @@ mod tests {
         .unwrap();
         add_label(&conn, &item.id, &global.id).unwrap();
         assert_eq!(list_labels(&conn, &item.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn add_label_rejects_workspace_level_label_from_another_workspace() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid1, sid1) = seed_project(&conn, "1");
+        let (_pid2, _sid2) = seed_project(&conn, "2");
+        let item = create(
+            &conn,
+            CreateItem {
+                project_id: pid1,
+                state_id: sid1,
+                name: "Test".into(),
+                description: None,
+                priority: None,
+                parent_id: None,
+                assignee_agent: None,
+                sort_order: None,
+                external_source: None,
+                external_id: None,
+                metadata: None,
+                label_ids: vec![],
+                assignee_ids: vec![],
+                dependency_ids: vec![],
+            },
+        )
+        .unwrap();
+        // Workspace-level label (project_id = None) but in a *different* workspace.
+        let foreign_global = crate::label::create(
+            &conn,
+            crate::label::CreateLabel {
+                project_id: None,
+                workspace_id: workspace_by_slug(&conn, "test2"),
+                name: "global".into(),
+                color: None,
+                parent_id: None,
+                sort_order: None,
+                external_source: None,
+                external_id: None,
+            },
+        )
+        .unwrap();
+        let err = add_label(&conn, &item.id, &foreign_global.id).unwrap_err();
+        assert!(matches!(err, crate::error::Error::Validation(_)));
+        assert!(list_labels(&conn, &item.id).unwrap().is_empty());
     }
 
     #[test]
