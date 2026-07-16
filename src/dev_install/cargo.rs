@@ -1,66 +1,81 @@
-//! `cargo build` + built-artifact path resolution for `dev-install`.
+//! `cargo build` + built-artifact discovery for `dev-install`.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-/// Build the `agentflare` binary from the current source tree.
+/// Build the `agentflare` binary from the current source tree and return the
+/// path cargo actually wrote it to.
 ///
-/// Inherits stdio so the user sees cargo's progress/errors directly.
-pub(crate) fn build(release: bool) -> Result<(), String> {
+/// Reads the executable path from cargo's `compiler-artifact` JSON message
+/// rather than reconstructing `target_directory/<profile>/agentflare`: that
+/// reconstruction is wrong whenever `build.target` / `CARGO_BUILD_TARGET` adds a
+/// `<triple>/` segment, or a custom profile changes the directory name. Human
+/// progress and diagnostics still stream to stderr.
+pub(crate) fn build_and_locate(release: bool) -> Result<PathBuf, String> {
     let mut cmd = Command::new("cargo");
-    cmd.args(["build", "-p", "agentflare", "--bin", "agentflare"]);
+    cmd.args([
+        "build",
+        "-p",
+        "agentflare",
+        "--bin",
+        "agentflare",
+        "--message-format",
+        "json-render-diagnostics",
+    ]);
     if release {
         cmd.arg("--release");
     }
-    let status = cmd
-        .status()
+
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
         .map_err(|e| format!("failed to run cargo build: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("cargo build failed".to_string())
+
+    // stderr is inherited (live progress); stdout is the JSON stream we parse.
+    // Only stdout is a pipe, so draining it fully cannot deadlock.
+    let mut json = String::new();
+    child
+        .stdout
+        .take()
+        .expect("stdout was piped")
+        .read_to_string(&mut json)
+        .map_err(|e| format!("reading cargo output: {e}"))?;
+
+    let status = child.wait().map_err(|e| format!("waiting on cargo: {e}"))?;
+    if !status.success() {
+        return Err("cargo build failed".to_string());
     }
+
+    parse_executable_path(&json)
+        .ok_or_else(|| "cargo build did not report an agentflare executable".to_string())
 }
 
-/// Resolve the path to the freshly built binary via `cargo metadata`'s
-/// `target_directory` (rather than assuming `./target`, which is wrong under a
-/// custom `CARGO_TARGET_DIR` or a workspace with a shared target).
-pub(crate) fn built_binary_path(release: bool) -> Result<PathBuf, String> {
-    let out = Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .output()
-        .map_err(|e| format!("failed to run cargo metadata: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "cargo metadata failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+/// Find the `agentflare` binary path in cargo's JSON build output. Pure, so it
+/// is unit-testable without invoking cargo. Returns the last matching
+/// `compiler-artifact` executable (there is normally exactly one).
+fn parse_executable_path(build_json: &str) -> Option<PathBuf> {
+    let mut found = None;
+    for line in build_json.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
+            continue;
+        }
+        let name = v
+            .get("target")
+            .and_then(|t| t.get("name"))
+            .and_then(serde_json::Value::as_str);
+        if name != Some("agentflare") {
+            continue;
+        }
+        if let Some(exe) = v.get("executable").and_then(serde_json::Value::as_str) {
+            found = Some(PathBuf::from(exe));
+        }
     }
-    let json = String::from_utf8_lossy(&out.stdout);
-    let target_dir = parse_target_directory(&json)
-        .ok_or_else(|| "no target_directory in cargo metadata output".to_string())?;
-    Ok(PathBuf::from(target_dir)
-        .join(profile_dir(release))
-        .join(binary_name()))
-}
-
-fn profile_dir(release: bool) -> &'static str {
-    if release { "release" } else { "debug" }
-}
-
-fn binary_name() -> &'static str {
-    if cfg!(windows) {
-        "agentflare.exe"
-    } else {
-        "agentflare"
-    }
-}
-
-/// Extract `target_directory` from `cargo metadata` JSON. Pure so it can be
-/// unit-tested without invoking cargo.
-fn parse_target_directory(json: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("target_directory")?.as_str().map(String::from)
+    found
 }
 
 #[cfg(test)]
@@ -68,23 +83,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_target_directory_reads_the_field() {
-        let json = r#"{"packages":[],"target_directory":"/repo/target","version":1}"#;
+    fn parse_executable_path_reads_the_agentflare_artifact_under_a_target_triple() {
+        // The path carries a `<triple>/` segment (build.target set) — exactly the
+        // case the reconstructed `target/<profile>/` lookup got wrong.
+        let json = concat!(
+            r#"{"reason":"compiler-artifact","target":{"name":"serde"},"executable":null}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact","target":{"name":"agentflare"},"executable":"/repo/target/x86_64-unknown-linux-gnu/release/agentflare"}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+        );
         assert_eq!(
-            parse_target_directory(json).as_deref(),
-            Some("/repo/target")
+            parse_executable_path(json),
+            Some(PathBuf::from(
+                "/repo/target/x86_64-unknown-linux-gnu/release/agentflare"
+            ))
         );
     }
 
     #[test]
-    fn parse_target_directory_missing_field_is_none() {
-        assert_eq!(parse_target_directory(r#"{"version":1}"#), None);
-        assert_eq!(parse_target_directory("not json"), None);
-    }
-
-    #[test]
-    fn profile_dir_maps_release_flag() {
-        assert_eq!(profile_dir(true), "release");
-        assert_eq!(profile_dir(false), "debug");
+    fn parse_executable_path_none_when_no_agentflare_executable() {
+        let json = concat!(
+            r#"{"reason":"compiler-artifact","target":{"name":"agentflare"},"executable":null}"#,
+            "\n",
+            "not json\n",
+        );
+        assert_eq!(parse_executable_path(json), None);
     }
 }

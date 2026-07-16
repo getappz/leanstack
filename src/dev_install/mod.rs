@@ -23,15 +23,13 @@ pub fn run(release: bool, dry_run: bool) {
         "building agentflare ({})...",
         if release { "release" } else { "debug" }
     );
-    if let Err(e) = cargo::build(release) {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    }
-
-    let built = match cargo::built_binary_path(release) {
+    let built = match cargo::build_and_locate(release) {
         Ok(p) if p.exists() => p,
         Ok(p) => {
-            eprintln!("error: built binary not found at {}", p.display());
+            eprintln!(
+                "error: cargo reported {} but it does not exist",
+                p.display()
+            );
             std::process::exit(1);
         }
         Err(e) => {
