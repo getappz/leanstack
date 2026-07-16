@@ -144,7 +144,7 @@ fn backup_path_for(target: &Path, mode: BackupMode) -> PathBuf {
             let base = dirs::cache_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("agentflare")
-                .join("caveman")
+                .join("flare-output")
                 .join("backups");
             // Hash the full parent path, not just its last component — two
             // files with the same name under differently-located but
