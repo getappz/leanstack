@@ -7,6 +7,7 @@ mod channel;
 mod claim;
 mod coaching;
 mod cost;
+mod dev_install;
 mod gateway;
 mod handoff;
 mod hook;
@@ -44,6 +45,7 @@ pub enum Commands {
     Init(init::InitArgs),
     Hook(hook::HookArgs),
     Cost(cost::CostArgs),
+    DevInstall(dev_install::DevInstallArgs),
     Coaching(coaching::CoachingArgs),
     Gateway(gateway::GatewayArgs),
     Mcp(mcp::McpArgs),
@@ -71,6 +73,7 @@ impl Commands {
             Self::Init(cmd) => cmd.run(),
             Self::Hook(cmd) => cmd.run(),
             Self::Cost(cmd) => cmd.run(),
+            Self::DevInstall(cmd) => cmd.run(),
             Self::Coaching(cmd) => cmd.run(),
             Self::Gateway(cmd) => cmd.run(),
             Self::Mcp(cmd) => cmd.run(),
