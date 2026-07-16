@@ -13,6 +13,22 @@ use std::process::{Command, Stdio};
 /// `<triple>/` segment, or a custom profile changes the directory name. Human
 /// progress and diagnostics still stream to stderr.
 pub(crate) fn build_and_locate(release: bool) -> Result<PathBuf, String> {
+    // dev-install replaces the *running* binary, so the build must target this
+    // host. A configured cross target would produce a binary that can't run here
+    // (failing verification after a wasted build); reject it early with a clear
+    // message. A `.cargo/config` `build.target` is not caught here, but
+    // verify_runs() is the backstop that refuses to install a non-runnable binary.
+    if let Ok(t) = std::env::var("CARGO_BUILD_TARGET")
+        && !t.is_empty()
+        && t != crate::build_time::TARGET
+    {
+        return Err(format!(
+            "CARGO_BUILD_TARGET is `{t}`, but dev-install must build for the host target \
+             `{}` so the result can replace the running binary; unset CARGO_BUILD_TARGET",
+            crate::build_time::TARGET
+        ));
+    }
+
     let mut cmd = Command::new("cargo");
     cmd.args([
         "build",
@@ -36,14 +52,16 @@ pub(crate) fn build_and_locate(release: bool) -> Result<PathBuf, String> {
     // stderr is inherited (live progress); stdout is the JSON stream we parse.
     // Only stdout is a pipe, so draining it fully cannot deadlock.
     let mut json = String::new();
-    child
+    let read_result = child
         .stdout
         .take()
         .expect("stdout was piped")
-        .read_to_string(&mut json)
-        .map_err(|e| format!("reading cargo output: {e}"))?;
+        .read_to_string(&mut json);
 
+    // Always reap the child, even if reading its stdout failed, so cargo is
+    // never left running as an orphan.
     let status = child.wait().map_err(|e| format!("waiting on cargo: {e}"))?;
+    read_result.map_err(|e| format!("reading cargo output: {e}"))?;
     if !status.success() {
         return Err("cargo build failed".to_string());
     }
