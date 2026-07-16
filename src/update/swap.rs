@@ -48,11 +48,12 @@ fn unix_replace(new_binary: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A sibling temp path in the target's directory (`agentflare` -> `agentflare.new`).
+/// A pid-scoped sibling temp path in the target's directory, so concurrent
+/// swaps against the same target can't clobber each other's staged file.
 #[cfg(not(windows))]
 fn staging_path(target: &Path) -> std::path::PathBuf {
     let mut name = target.file_name().unwrap_or_default().to_os_string();
-    name.push(".new");
+    name.push(format!(".{}.new", std::process::id()));
     target.with_file_name(name)
 }
 
@@ -74,7 +75,13 @@ fn windows_replace(new_binary: &Path, target: &Path) -> Result<(), String> {
             }
             Err(e) => {
                 // Never leave the install without a binary: put the old one back.
-                let _ = std::fs::rename(&old, target);
+                if let Err(re) = std::fs::rename(&old, target) {
+                    return Err(format!(
+                        "copy new binary failed ({e}); rollback also failed ({re}); \
+                         previous binary preserved at {}",
+                        old.display()
+                    ));
+                }
                 Err(format!("copy new binary: {e}"))
             }
         }
@@ -180,9 +187,14 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn staging_path_is_a_sibling_of_the_target() {
+    fn staging_path_is_a_pid_scoped_sibling_of_the_target() {
         let target = Path::new("/opt/bin/agentflare");
-        assert_eq!(staging_path(target), Path::new("/opt/bin/agentflare.new"));
+        let staged = staging_path(target);
+        assert_eq!(staged.parent(), target.parent());
+        let name = staged.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("agentflare."), "got {name}");
+        assert!(name.ends_with(".new"), "got {name}");
+        assert!(name.contains(&std::process::id().to_string()), "got {name}");
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! stays separate from the binary-swap logic in [`super::swap`].
 
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 pub(crate) const REPO: &str = "getappz/agentflare";
 pub(crate) const API_LATEST: &str =
@@ -51,7 +52,16 @@ fn release_url(version: &str, asset: &str) -> String {
 }
 
 fn gh_get(url: &str) -> Result<ureq::Response, String> {
-    ureq::get(url)
+    // Bound connection and per-read stalls so a hung network never blocks the
+    // update indefinitely. Deliberately no *overall* timeout: asset downloads
+    // can be large and slow, and a per-read timeout already guards a stalled
+    // socket without capping a legitimate long transfer.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(60))
+        .build();
+    agent
+        .get(url)
         .set("User-Agent", "agentflare")
         .set("Accept", "application/vnd.github+json")
         .call()
