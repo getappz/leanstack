@@ -914,6 +914,28 @@ impl AgentflareMcp {
         }
     }
 
+    /// Whether an asset's MIME type denotes text, so its content can be
+    /// returned as readable UTF-8 rather than Base64. Binary types are
+    /// excluded even when their bytes happen to be valid UTF-8.
+    fn mime_is_textual(mime: Option<&str>) -> bool {
+        let Some(m) = mime else { return false };
+        let m = m.split(';').next().unwrap_or(m).trim();
+        m.starts_with("text/")
+            || m.ends_with("+json")
+            || m.ends_with("+xml")
+            || matches!(
+                m,
+                "application/json"
+                    | "application/xml"
+                    | "application/javascript"
+                    | "application/ecmascript"
+                    | "application/typescript"
+                    | "application/toml"
+                    | "application/x-yaml"
+                    | "application/yaml"
+            )
+    }
+
     fn asset_max_attach_bytes() -> u64 {
         std::env::var("AGENTFLARE_BACKEND_ASSET_MAX_ATTACH_BYTES")
             .ok()
@@ -2743,10 +2765,17 @@ impl AgentflareMcp {
                     if size <= max_inline {
                         match agentflare_backend::asset::read_file(&base_path, &asset.storage_path) {
                             Ok(bytes) => {
-                                let b64 = base64_encode(&bytes);
+                                // Textual MIME + valid UTF-8 => return readable text so
+                                // callers don't decode every text asset; everything else
+                                // (binary MIME, or invalid UTF-8) => Base64.
+                                let (content, encoding) = match std::str::from_utf8(&bytes) {
+                                    Ok(text) if Self::mime_is_textual(asset.mime_type.as_deref()) => (text.to_string(), "utf8"),
+                                    _ => (base64_encode(&bytes), "base64"),
+                                };
                                 let result = serde_json::json!({
                                     "asset": meta,
-                                    "content": b64,
+                                    "content": content,
+                                    "encoding": encoding,
                                 });
                                 Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
                             }
@@ -5089,6 +5118,113 @@ mod tests {
                     std::env::remove_var("AGENTFLARE_BACKEND_ASSET_MAX_INLINE_BYTES")
                 },
             }
+        });
+    }
+
+    #[test]
+    fn asset_get_returns_text_content_as_utf8_not_base64() {
+        crate::paths::test_support::with_temp_home(|| {
+            let (_tmp, s) = harness();
+            let home = crate::paths::home();
+            let staging = home.join(".agentflare").join("staging");
+            std::fs::create_dir_all(&staging).unwrap();
+
+            let item: serde_json::Value = serde_json::from_str(
+                &s.item(Parameters(empty_item_create("utf8-content-test")))
+                    .unwrap(),
+            )
+            .unwrap();
+            let item_id = item["id"].as_str().unwrap().to_string();
+
+            let body = "# Handoff\n\nImplement the fix \u{2192} land a PR. \u{2713}";
+            std::fs::write(staging.join("note.md"), body.as_bytes()).unwrap();
+            let attached: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "attach".into(),
+                    id: None,
+                    item_id: Some(item_id.clone()),
+                    project_id: None,
+                    filename: Some("note.md".into()),
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let asset_id = attached["id"].as_str().unwrap().to_string();
+
+            let got: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "get".into(),
+                    id: Some(asset_id),
+                    item_id: None,
+                    project_id: None,
+                    filename: None,
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            // Text assets must come back as readable UTF-8, not base64.
+            assert_eq!(got["encoding"].as_str(), Some("utf8"));
+            assert_eq!(got["content"].as_str(), Some(body));
+        });
+    }
+
+    #[test]
+    fn asset_get_returns_base64_for_binary_with_valid_utf8_bytes() {
+        crate::paths::test_support::with_temp_home(|| {
+            let (_tmp, s) = harness();
+            let home = crate::paths::home();
+            let staging = home.join(".agentflare").join("staging");
+            std::fs::create_dir_all(&staging).unwrap();
+
+            let item: serde_json::Value = serde_json::from_str(
+                &s.item(Parameters(empty_item_create("binary-utf8-test")))
+                    .unwrap(),
+            )
+            .unwrap();
+            let item_id = item["id"].as_str().unwrap().to_string();
+
+            // Bytes 0x00,0x01,0x02,0x03 are valid UTF-8, but this is an
+            // octet-stream (.bin) asset: it must come back Base64, not "utf8".
+            let raw = [0u8, 1, 2, 3];
+            assert!(
+                std::str::from_utf8(&raw).is_ok(),
+                "precondition: valid UTF-8"
+            );
+            std::fs::write(staging.join("blob.bin"), raw).unwrap();
+            let attached: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "attach".into(),
+                    id: None,
+                    item_id: Some(item_id.clone()),
+                    project_id: None,
+                    filename: Some("blob.bin".into()),
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let asset_id = attached["id"].as_str().unwrap().to_string();
+
+            let got: serde_json::Value = serde_json::from_str(
+                &s.asset(Parameters(AssetRequest {
+                    action: "get".into(),
+                    id: Some(asset_id),
+                    item_id: None,
+                    project_id: None,
+                    filename: None,
+                    metadata: None,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            // Binary MIME => Base64 regardless of UTF-8 validity.
+            assert_eq!(got["encoding"].as_str(), Some("base64"));
+            // Content must be the Base64 of the raw bytes, not merely labeled so.
+            assert_eq!(got["content"].as_str(), Some("AAECAw=="));
         });
     }
 
