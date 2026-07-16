@@ -6,6 +6,16 @@
 
 use super::*;
 
+/// Bounds `groom`'s shortlist size — caps the O(n^2) duplicate-detection
+/// pass and the SQLite `IN (...)` parameter list built from it.
+const MAX_GROOM_LIMIT: i64 = 200;
+
+/// Bounds `health`'s velocity window — without this, a caller-supplied
+/// `window_weeks` (e.g. `i64::MAX`) would build a `Vec<VelocityWeek>` of
+/// that literal size regardless of how much data actually exists, while
+/// holding the backend DB lock.
+const MAX_WINDOW_WEEKS: i64 = 52;
+
 fn priority_rank(p: &str) -> u8 {
     match p {
         "urgent" => 5,
@@ -36,27 +46,24 @@ fn parsed_size(metadata: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Fan-in count and open-dependency blocking per item, from a flat edge list.
-fn dependency_signals<'a>(
-    edges: &[(String, String)],
-    state_group_of: impl Fn(&str) -> &'a str,
-) -> (
-    std::collections::HashMap<String, i64>,
-    std::collections::HashMap<String, Vec<String>>,
-) {
-    let mut fanin: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+/// Open-dependency blocking per item, from edges that already carry the
+/// dependency target's true state_group (joined server-side in
+/// `dependency_edges_for_items` — so blocking status is correct even when
+/// the target isn't in the same shortlist/limit window as the item).
+fn blocked_by_map(
+    edges: &[(String, String, String)],
+) -> std::collections::HashMap<String, Vec<String>> {
     let mut blocked_by: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
-    for (item_id, depends_on) in edges {
-        *fanin.entry(depends_on.clone()).or_insert(0) += 1;
-        if !matches!(state_group_of(depends_on), "completed" | "cancelled") {
+    for (item_id, depends_on, target_group) in edges {
+        if !matches!(target_group.as_str(), "completed" | "cancelled") {
             blocked_by
                 .entry(item_id.clone())
                 .or_default()
                 .push(depends_on.clone());
         }
     }
-    (fanin, blocked_by)
+    blocked_by
 }
 
 /// Near-duplicate names within a shortlist (token-Jaccard ≥ 0.5) — no
@@ -586,7 +593,9 @@ impl AgentflareMcp {
             ));
         }
         let staleness_days = req.staleness_days.unwrap_or(14).max(0);
-        let cap = req.limit.unwrap_or(15).max(0) as usize;
+        // Bounds the shortlist's O(n^2) duplicate-detection pass and the
+        // SQLite `IN (...)` parameter list built from it.
+        let cap = req.limit.unwrap_or(15).clamp(0, MAX_GROOM_LIMIT) as usize;
         self.with_backend_db(|conn| {
             let project = self.resolve_project(conn)?;
             let mut items = agentflare_backend::item::list_by_project(conn, &project.id)
@@ -625,16 +634,11 @@ impl AgentflareMcp {
             let shortlist: Vec<_> = items.into_iter().take(cap).collect();
 
             let ids: Vec<String> = shortlist.iter().map(|i| i.id.clone()).collect();
-            let edges = agentflare_backend::item::dependencies_for_items(conn, &ids)
+            let edges = agentflare_backend::item::dependency_edges_for_items(conn, &ids)
                 .map_err(map_backend_err)?;
-            let (fanin, blocked_by) = dependency_signals(&edges, |id| {
-                shortlist
-                    .iter()
-                    .find(|i| i.id == id)
-                    .and_then(|i| state_by_id.get(i.state_id.as_str()))
-                    .map(|s| s.group_name.as_str())
-                    .unwrap_or("")
-            });
+            let blocked_by = blocked_by_map(&edges);
+            let fanin = agentflare_backend::item::dependency_fanin_for_items(conn, &ids)
+                .map_err(map_backend_err)?;
             let duplicates = near_duplicates(&shortlist);
 
             let groom_items: Vec<GroomItem> = shortlist
@@ -728,18 +732,22 @@ impl AgentflareMcp {
             let done_cutoff = now - cutoff_hours.saturating_mul(3_600);
             let stuck_cutoff = now - stuck_days.saturating_mul(86_400);
 
-            let mut done: Vec<StandupItem> = items
+            // completed_at, not updated_at: editing an already-completed item
+            // (e.g. fixing a typo) bumps updated_at without re-completing it —
+            // using updated_at here would make old work spuriously reappear
+            // in a "done recently" digest.
+            let mut done_items: Vec<&agentflare_backend::item::Item> = items
                 .iter()
                 .filter(|i| {
                     state_by_id
                         .get(i.state_id.as_str())
                         .map(|s| s.group_name == "completed")
                         .unwrap_or(false)
-                        && i.updated_at >= done_cutoff
+                        && i.completed_at.is_some_and(|t| t >= done_cutoff)
                 })
-                .map(to_standup_item)
                 .collect();
-            done.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
+            done_items.sort_by_key(|i| std::cmp::Reverse(i.completed_at));
+            let done: Vec<StandupItem> = done_items.into_iter().map(to_standup_item).collect();
 
             let in_progress_items: Vec<_> = items
                 .iter()
@@ -801,7 +809,7 @@ impl AgentflareMcp {
     /// infrastructure now would be speculative. Revisit if item volume grows
     /// enough that this scan is ever measured as slow — don't estimate it.
     pub(super) fn item_health(&self, req: ItemRequest) -> Result<String, ErrorData> {
-        let window_weeks = req.window_weeks.unwrap_or(4).max(1);
+        let window_weeks = req.window_weeks.unwrap_or(4).clamp(1, MAX_WINDOW_WEEKS);
         let stuck_days = req.staleness_days.unwrap_or(7).max(0);
         self.with_backend_db(|conn| {
             let project = self.resolve_project(conn)?;
@@ -831,11 +839,17 @@ impl AgentflareMcp {
                 .map(|w| {
                     let week_end = now - w.saturating_mul(7 * 86_400);
                     let week_start = week_end - 7 * 86_400;
-                    // Upper bound inclusive: an item completed in the same
-                    // second as this call must not be excluded from "this week".
+                    // completed_at, not updated_at (see the standup fix above —
+                    // same reason: editing a completed item must not move it
+                    // between velocity weeks). Upper bound inclusive: an item
+                    // completed in the same second as this call must not be
+                    // excluded from "this week".
                     let completed_count = completed
                         .iter()
-                        .filter(|i| i.updated_at > week_start && i.updated_at <= week_end)
+                        .filter(|i| {
+                            i.completed_at
+                                .is_some_and(|t| t > week_start && t <= week_end)
+                        })
                         .count();
                     VelocityWeek {
                         week_start,

@@ -32,8 +32,9 @@ the old N+1 path this action replaces.
 ## Detail fetch (only when needed)
 
 `item action="get" id=<id>` returns one full item incl. description, metadata,
-labels, timestamps — for a single ad-hoc lookup outside grooming, not for
-building a shortlist (use `groom` for that).
+timestamps — for a single ad-hoc lookup outside grooming, not for building a
+shortlist (use `groom` for that). Labels are a separate join, not part of
+this response.
 
 ## Time signals — approximate, state this in output
 

@@ -606,7 +606,7 @@ struct ItemRequest {
     #[serde(default)]
     state_group: Option<String>,
     #[schemars(
-        description = "Max items to return (list: omit for no limit; search: omit for 20, capped at 1000)"
+        description = "Max items to return (list: omit for no limit; search: omit for 20, capped at 1000; groom: omit for 15, capped at 200)"
     )]
     #[serde(default)]
     limit: Option<i64>,
@@ -617,7 +617,7 @@ struct ItemRequest {
     #[serde(default)]
     query: Option<String>,
     #[schemars(
-        description = "Days since updated_at before an item counts as stale (groom); default 14"
+        description = "Days since updated_at before an item counts as stale/stuck (groom: default 14; standup/health: default 7)"
     )]
     #[serde(default)]
     staleness_days: Option<i64>,
@@ -631,7 +631,7 @@ struct ItemRequest {
     )]
     #[serde(default)]
     cutoff_hours: Option<i64>,
-    #[schemars(description = "Trailing weekly windows for velocity (health); default 4")]
+    #[schemars(description = "Trailing weekly windows for velocity (health); default 4, max 52")]
     #[serde(default)]
     window_weeks: Option<i64>,
 }
@@ -4599,6 +4599,119 @@ mod tests {
         assert_eq!(groomed["unassigned_count"], 1);
     }
 
+    /// Regression (CodeRabbit): a completed dependency must never read back
+    /// as an open blocker just because it fell outside the shortlist's
+    /// default state_group filter (completed items aren't in
+    /// "backlog,unstarted", so the naive shortlist-scoped lookup used to
+    /// return "" for its state and treat that as "still open").
+    #[test]
+    fn item_groom_does_not_block_on_a_completed_dependency_outside_the_shortlist() {
+        let (_tmp, s) = harness();
+        let dep: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Dep"))).unwrap()).unwrap();
+        let project_id = dep["project_id"].as_str().unwrap().to_string();
+        let blocked: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "create".into(),
+                name: Some("Blocked".into()),
+                dependency_ids: Some(vec![dep["id"].as_str().unwrap().to_string()]),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let conn = backend_conn(&_tmp);
+        let completed_state = agentflare_backend::state::list_by_project(&conn, &project_id)
+            .unwrap()
+            .into_iter()
+            .find(|st| st.group_name == "completed")
+            .unwrap()
+            .id;
+        drop(conn);
+        s.item(Parameters(ItemRequest {
+            action: "update_state".into(),
+            id: Some(dep["id"].as_str().unwrap().to_string()),
+            state_id: Some(completed_state),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        // Default state_group is "backlog,unstarted" — Dep (now completed)
+        // falls outside the shortlist entirely.
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let items = groomed["items"].as_array().unwrap();
+        assert!(
+            !items.iter().any(|i| i["id"] == dep["id"]),
+            "completed Dep should not be in the default shortlist"
+        );
+        let blocked_entry = items.iter().find(|i| i["id"] == blocked["id"]).unwrap();
+        assert_eq!(
+            blocked_entry["blocked_by"].as_array().unwrap().len(),
+            0,
+            "a completed dependency must not block, even when it's outside the shortlist"
+        );
+    }
+
+    /// Regression (CodeRabbit): fan-in must count dependents project-wide,
+    /// not just other items that happen to share the same shortlist.
+    #[test]
+    fn item_groom_fanin_counts_dependents_outside_the_shortlist() {
+        let (_tmp, s) = harness();
+        let target: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Target"))).unwrap())
+                .unwrap();
+        let project_id = target["project_id"].as_str().unwrap().to_string();
+        let dependent: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "create".into(),
+                name: Some("Dependent".into()),
+                dependency_ids: Some(vec![target["id"].as_str().unwrap().to_string()]),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let conn = backend_conn(&_tmp);
+        let completed_state = agentflare_backend::state::list_by_project(&conn, &project_id)
+            .unwrap()
+            .into_iter()
+            .find(|st| st.group_name == "completed")
+            .unwrap()
+            .id;
+        drop(conn);
+        // Move the dependent out of the default shortlist filter — Target's
+        // fan-in must still count it.
+        s.item(Parameters(ItemRequest {
+            action: "update_state".into(),
+            id: Some(dependent["id"].as_str().unwrap().to_string()),
+            state_id: Some(completed_state),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let items = groomed["items"].as_array().unwrap();
+        assert!(!items.iter().any(|i| i["id"] == dependent["id"]));
+        let target_entry = items.iter().find(|i| i["id"] == target["id"]).unwrap();
+        assert_eq!(target_entry["depended_on_by_count"], 1);
+    }
+
     #[test]
     fn item_groom_flags_blocked_by_open_dependency() {
         let (_tmp, s) = harness();
@@ -4861,6 +4974,85 @@ mod tests {
         assert_eq!(needs_est, expected);
     }
 
+    /// Regression (CodeRabbit): standup's "done" filter and health's
+    /// velocity bucketing must key off `completed_at`, not `updated_at` —
+    /// editing an already-completed item (e.g. fixing a typo) bumps
+    /// `updated_at` without re-completing it, and must not make old work
+    /// spuriously reappear as "just done" or shift which week it counts in.
+    #[test]
+    fn item_standup_and_health_use_completed_at_not_updated_at() {
+        let (_tmp, s) = harness();
+        let created: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("Old work"))).unwrap())
+                .unwrap();
+        let project_id = created["project_id"].as_str().unwrap().to_string();
+        let id = created["id"].as_str().unwrap().to_string();
+        let conn = backend_conn(&_tmp);
+        let completed_state = agentflare_backend::state::list_by_project(&conn, &project_id)
+            .unwrap()
+            .into_iter()
+            .find(|st| st.group_name == "completed")
+            .unwrap()
+            .id;
+        drop(conn);
+        s.item(Parameters(ItemRequest {
+            action: "update_state".into(),
+            id: Some(id.clone()),
+            state_id: Some(completed_state),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        // Simulate: completed long ago, then edited just now (updated_at
+        // recent, completed_at old) — direct SQL, no clock control in tests.
+        let old_ts = 1_700_000_000_i64; // long before "now" in this fixture era
+        let conn = backend_conn(&_tmp);
+        conn.execute(
+            "UPDATE items SET completed_at = ?1 WHERE id = ?2",
+            rusqlite::params![old_ts, id],
+        )
+        .unwrap();
+        drop(conn);
+        s.item(Parameters(ItemRequest {
+            action: "update".into(),
+            id: Some(id.clone()),
+            description: Some("fixed a typo".into()),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let standup: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "standup".into(),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !standup["done"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == id),
+            "editing an old completed item must not resurrect it in 'done'"
+        );
+
+        let health: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "health".into(),
+                window_weeks: Some(1),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            health["velocity"][0]["completed_count"], 0,
+            "an old completion must not count in this week's velocity just because it was edited"
+        );
+    }
+
     #[test]
     fn item_standup_buckets_done_in_progress_grouped_and_stuck() {
         let (_tmp, s) = harness();
@@ -5006,6 +5198,44 @@ mod tests {
                 .unwrap()
                 .contains("no handoff history")
         );
+    }
+
+    /// Regression (CodeRabbit): an absurd `window_weeks` must be clamped,
+    /// not used to size a `Vec<VelocityWeek>` directly — otherwise a caller
+    /// passing e.g. `i64::MAX` drives a near-infinite allocation while the
+    /// backend DB lock is held.
+    #[test]
+    fn item_health_clamps_window_weeks_to_a_sane_maximum() {
+        let (_tmp, s) = harness();
+        let health: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "health".into(),
+                window_weeks: Some(i64::MAX),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(health["window_weeks"], 52);
+        assert_eq!(health["velocity"].as_array().unwrap().len(), 52);
+    }
+
+    /// Regression (CodeRabbit): an absurd groom `limit` must be clamped —
+    /// bounds the O(n^2) duplicate-detection pass and the SQLite `IN (...)`
+    /// parameter list built from the shortlist.
+    #[test]
+    fn item_groom_clamps_limit_to_a_sane_maximum() {
+        let (_tmp, s) = harness();
+        let groomed: serde_json::Value = serde_json::from_str(
+            &s.item(Parameters(ItemRequest {
+                action: "groom".into(),
+                limit: Some(i64::MAX),
+                ..Default::default()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(groomed["items"].as_array().unwrap().len() <= 200);
     }
 
     /// Real measured comparison, not an estimate: one `groom` call vs. the
