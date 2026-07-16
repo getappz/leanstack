@@ -5223,6 +5223,8 @@ mod tests {
 
             // Binary MIME => Base64 regardless of UTF-8 validity.
             assert_eq!(got["encoding"].as_str(), Some("base64"));
+            // Content must be the Base64 of the raw bytes, not merely labeled so.
+            assert_eq!(got["content"].as_str(), Some("AAECAw=="));
         });
     }
 
