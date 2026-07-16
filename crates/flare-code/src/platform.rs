@@ -68,7 +68,7 @@ mod tests {
     fn codex_session_start_includes_system_message() {
         let output = format_hook_output("SessionStart", "test context", &AgentPlatform::Codex);
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(parsed["systemMessage"], "PONYTAIL:FULL");
+        assert_eq!(parsed["systemMessage"], "FLARE CODE:FULL");
         assert_eq!(parsed["additionalContext"], "test context");
         assert!(parsed.get("hookSpecificOutput").is_none());
     }

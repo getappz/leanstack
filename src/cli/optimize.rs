@@ -408,7 +408,7 @@ impl OptimizeArgs {
     fn run_context(&self, action: &ContextAction) {
         match action {
             ContextAction::Score { transcript, query } => {
-                let content = match std::fs::read_to_string(&transcript) {
+                let content = match std::fs::read_to_string(transcript) {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("error reading transcript: {e}");
@@ -452,8 +452,8 @@ impl OptimizeArgs {
             .unwrap_or_else(crate::optimize::code::default_mode);
         let runtime_turns = crate::optimize::load_runtime()
             .sessions
-            .iter()
-            .map(|(_, r)| r.turn_count)
+            .values()
+            .map(|r| r.turn_count)
             .sum::<u32>();
         println!(
             "FLARE OPTIMIZE ACTIVE\n\
