@@ -1,8 +1,7 @@
 {
   "lsp": {
-    "rust-analyzer": {
-      "enabled": true,
-      "settings": {
+    "rust": {
+      "initialization": {
         "rust-analyzer.checkOnSave": true,
         "rust-analyzer.check.command": "clippy",
         "rust-analyzer.cargo.features": "all",
