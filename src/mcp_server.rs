@@ -367,6 +367,79 @@ struct MemoryRequest {
     scorer: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct GitHubRequest {
+    #[schemars(
+        description = "Action: pr_create|pr_list|pr_get|pr_merge|pr_comment|pr_request_review|issue_create|issue_list|issue_get|issue_comment|issue_close|issue_label|release_list|release_get|release_latest|release_create|run_list|run_get|run_rerun|workflow_dispatch"
+    )]
+    action: String,
+    #[schemars(description = "owner/repo (default: resolved from the current repo's origin)")]
+    #[serde(default)]
+    repo: Option<String>,
+    #[schemars(description = "PR number (pr_get, pr_merge, pr_comment, pr_request_review)")]
+    #[serde(default)]
+    number: Option<u64>,
+    #[schemars(description = "PR title (pr_create)")]
+    #[serde(default)]
+    title: Option<String>,
+    #[schemars(description = "Head branch (pr_create)")]
+    #[serde(default)]
+    head: Option<String>,
+    #[schemars(description = "Base branch (pr_create)")]
+    #[serde(default)]
+    base: Option<String>,
+    #[schemars(description = "Body / comment text (pr_create, pr_comment)")]
+    #[serde(default)]
+    body: Option<String>,
+    #[schemars(description = "State filter for pr_list: open|closed|all (default open)")]
+    #[serde(default)]
+    state: Option<String>,
+    #[schemars(description = "Merge method for pr_merge: merge|squash|rebase (default merge)")]
+    #[serde(default)]
+    merge_method: Option<String>,
+    #[schemars(description = "Reviewer logins (pr_request_review)")]
+    #[serde(default)]
+    reviewers: Option<Vec<String>>,
+    #[schemars(description = "Labels (issue_create, issue_label)")]
+    #[serde(default)]
+    labels: Option<Vec<String>>,
+    #[schemars(description = "Assignee logins (issue_create)")]
+    #[serde(default)]
+    assignees: Option<Vec<String>>,
+    #[schemars(description = "Release id (release_get)")]
+    #[serde(default)]
+    release_id: Option<u64>,
+    #[schemars(description = "Git tag (release_create)")]
+    #[serde(default)]
+    tag: Option<String>,
+    #[schemars(description = "Release name (release_create)")]
+    #[serde(default)]
+    name: Option<String>,
+    #[schemars(description = "Mark release as draft (release_create, default false)")]
+    #[serde(default)]
+    draft: Option<bool>,
+    #[schemars(description = "Mark release as prerelease (release_create, default false)")]
+    #[serde(default)]
+    prerelease: Option<bool>,
+    #[schemars(description = "Workflow run id (run_get, run_rerun)")]
+    #[serde(default)]
+    run_id: Option<u64>,
+    #[schemars(description = "Branch filter for run_list")]
+    #[serde(default)]
+    branch: Option<String>,
+    #[schemars(description = "Workflow file name or id (workflow_dispatch)")]
+    #[serde(default)]
+    workflow: Option<String>,
+    #[schemars(
+        description = "Git ref to dispatch against (workflow_dispatch, default: repo default branch)"
+    )]
+    #[serde(default)]
+    git_ref: Option<String>,
+    #[schemars(description = "JSON inputs object for workflow_dispatch")]
+    #[serde(default)]
+    inputs: Option<serde_json::Value>,
+}
+
 #[derive(Default)]
 pub struct AgentflareMcp {
     /// Persisted across calls so `Registry::ensure_fresh`'s 60s debounce is
@@ -524,6 +597,17 @@ fn map_backend_err(e: agentflare_backend::Error) -> ErrorData {
         | agentflare_backend::Error::InvalidTransition(msg)
         | agentflare_backend::Error::Validation(msg) => ErrorData::invalid_params(msg, None),
         agentflare_backend::Error::Database(e) => ErrorData::internal_error(e.to_string(), None),
+    }
+}
+
+/// Maps a `GitHubError` to MCP `ErrorData`: client/auth mistakes become
+/// `invalid_params`, transport/parse failures become `internal_error`.
+fn to_mcp_error(err: crate::github::GitHubError) -> ErrorData {
+    let msg = err.to_string();
+    if crate::github::mcp::is_client_error(&err) {
+        ErrorData::invalid_params(msg, None)
+    } else {
+        ErrorData::internal_error(msg, None)
     }
 }
 
@@ -2342,6 +2426,258 @@ impl AgentflareMcp {
                 None,
             )),
         }
+    }
+    #[tool(
+        description = "GitHub repo management via the flare_git module. Single action-dispatch tool: action=pr_create|pr_list|pr_get|pr_merge|pr_comment|pr_request_review|issue_create|issue_list|issue_get|issue_comment|issue_close|issue_label|release_list|release_get|release_latest|release_create|run_list|run_get|run_rerun|workflow_dispatch. Uses gh/GITHUB_TOKEN credentials; repo defaults to the current repo's origin."
+    )]
+    fn flare_git(&self, Parameters(req): Parameters<GitHubRequest>) -> Result<String, ErrorData> {
+        use crate::github::{Client, RepoId, actions, issues, pulls, releases};
+
+        let repo = match &req.repo {
+            Some(r) => RepoId::parse(r)
+                .ok_or_else(|| ErrorData::invalid_params(format!("bad repo: {r}"), None))?,
+            None => RepoId::resolve_from_remote(&std::env::current_dir().unwrap_or_default())
+                .ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        "no repo given and could not resolve origin remote".to_string(),
+                        None,
+                    )
+                })?,
+        };
+        let client = Client::new().map_err(to_mcp_error)?;
+
+        let out = match req.action.as_str() {
+            "pr_create" => {
+                let title = req
+                    .title
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("title is required", None))?;
+                let head = req
+                    .head
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("head is required", None))?;
+                let base = req
+                    .base
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("base is required", None))?;
+                let pr = pulls::create(&client, &repo, title, head, base, req.body.as_deref())
+                    .map_err(to_mcp_error)?;
+                format!("Opened PR #{}: {}", pr.number, pr.html_url)
+            }
+            "pr_list" => {
+                let state = req.state.as_deref().unwrap_or("open");
+                let prs = pulls::list(&client, &repo, state).map_err(to_mcp_error)?;
+                serde_json::to_string(&prs.iter().map(|p| &p.html_url).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            }
+            "pr_get" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let pr = pulls::get(&client, &repo, n).map_err(to_mcp_error)?;
+                format!(
+                    "PR #{} [{}] {}: {}",
+                    pr.number, pr.state, pr.title, pr.html_url
+                )
+            }
+            "pr_merge" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let method = req.merge_method.as_deref().unwrap_or("merge");
+                pulls::merge(&client, &repo, n, method).map_err(to_mcp_error)?;
+                format!("Merged PR #{n} ({method})")
+            }
+            "pr_comment" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let body = req
+                    .body
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("body is required", None))?;
+                pulls::comment(&client, &repo, n, body).map_err(to_mcp_error)?;
+                format!("Commented on PR #{n}")
+            }
+            "pr_request_review" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let reviewers = req.reviewers.clone().unwrap_or_default();
+                pulls::request_review(&client, &repo, n, &reviewers).map_err(to_mcp_error)?;
+                format!("Requested review on PR #{n}")
+            }
+            "issue_create" => {
+                let title = req
+                    .title
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("title is required", None))?;
+                let labels = req.labels.clone().unwrap_or_default();
+                let assignees = req.assignees.clone().unwrap_or_default();
+                let issue = issues::create(
+                    &client,
+                    &repo,
+                    title,
+                    req.body.as_deref(),
+                    &labels,
+                    &assignees,
+                )
+                .map_err(to_mcp_error)?;
+                format!("Opened issue #{}: {}", issue.number, issue.html_url)
+            }
+            "issue_list" => {
+                let state = req.state.as_deref().unwrap_or("open");
+                let items = issues::list(&client, &repo, state).map_err(to_mcp_error)?;
+                serde_json::to_string(&items.iter().map(|i| &i.html_url).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            }
+            "issue_get" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let issue = issues::get(&client, &repo, n).map_err(to_mcp_error)?;
+                format!(
+                    "Issue #{} [{}] {}: {}",
+                    issue.number, issue.state, issue.title, issue.html_url
+                )
+            }
+            "issue_comment" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let body = req
+                    .body
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("body is required", None))?;
+                issues::comment(&client, &repo, n, body).map_err(to_mcp_error)?;
+                format!("Commented on issue #{n}")
+            }
+            "issue_close" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let issue = issues::close(&client, &repo, n).map_err(to_mcp_error)?;
+                format!("Closed issue #{} [{}]", issue.number, issue.state)
+            }
+            "issue_label" => {
+                let n = req
+                    .number
+                    .ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let labels = req.labels.clone().unwrap_or_default();
+                issues::add_labels(&client, &repo, n, &labels).map_err(to_mcp_error)?;
+                format!("Added {} label(s) to issue #{n}", labels.len())
+            }
+            "release_list" => {
+                let rels = releases::list(&client, &repo).map_err(to_mcp_error)?;
+                serde_json::to_string(&rels.iter().map(|r| &r.tag_name).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            }
+            "release_get" => {
+                let id = req
+                    .release_id
+                    .ok_or_else(|| ErrorData::invalid_params("release_id is required", None))?;
+                let rel = releases::get(&client, &repo, id).map_err(to_mcp_error)?;
+                format!(
+                    "Release {} [{}]: {}",
+                    rel.tag_name,
+                    if rel.prerelease { "pre" } else { "stable" },
+                    rel.html_url
+                )
+            }
+            "release_latest" => {
+                let rel = releases::latest(&client, &repo).map_err(to_mcp_error)?;
+                format!("Latest: {} — {}", rel.tag_name, rel.html_url)
+            }
+            "release_create" => {
+                let tag = req
+                    .tag
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("tag is required", None))?;
+                let rel = releases::create(
+                    &client,
+                    &repo,
+                    tag,
+                    req.name.as_deref(),
+                    req.body.as_deref(),
+                    req.draft.unwrap_or(false),
+                    req.prerelease.unwrap_or(false),
+                )
+                .map_err(to_mcp_error)?;
+                format!("Created release {}: {}", rel.tag_name, rel.html_url)
+            }
+            "run_list" => {
+                let runs = actions::list_runs(&client, &repo, req.branch.as_deref())
+                    .map_err(to_mcp_error)?;
+                let summary: Vec<String> = runs
+                    .iter()
+                    .map(|r| {
+                        format!(
+                            "{} {} {}",
+                            r.id,
+                            r.status,
+                            r.conclusion.as_deref().unwrap_or("-")
+                        )
+                    })
+                    .collect();
+                serde_json::to_string(&summary).unwrap_or_default()
+            }
+            "run_get" => {
+                let id = req
+                    .run_id
+                    .ok_or_else(|| ErrorData::invalid_params("run_id is required", None))?;
+                let run = actions::get_run(&client, &repo, id).map_err(to_mcp_error)?;
+                format!(
+                    "Run {} [{}/{}]: {}",
+                    run.id,
+                    run.status,
+                    run.conclusion.as_deref().unwrap_or("-"),
+                    run.html_url
+                )
+            }
+            "run_rerun" => {
+                let id = req
+                    .run_id
+                    .ok_or_else(|| ErrorData::invalid_params("run_id is required", None))?;
+                actions::rerun(&client, &repo, id).map_err(to_mcp_error)?;
+                format!("Re-queued run {id}")
+            }
+            "workflow_dispatch" => {
+                let wf = req
+                    .workflow
+                    .as_deref()
+                    .ok_or_else(|| ErrorData::invalid_params("workflow is required", None))?;
+                if req.inputs.as_ref().is_some_and(|v| !v.is_object()) {
+                    return Err(ErrorData::invalid_params(
+                        "inputs must be a JSON object",
+                        None,
+                    ));
+                }
+                let git_ref = match req.git_ref.as_deref() {
+                    Some(r) => r.to_string(),
+                    None => {
+                        if req.repo.is_some() {
+                            return Err(ErrorData::invalid_params(
+                                "git_ref is required when repo is overridden (cannot infer the target repo default branch)",
+                                None,
+                            ));
+                        }
+                        crate::git::resolve_default_branch(
+                            &std::env::current_dir().unwrap_or_default(),
+                        )
+                    }
+                };
+                actions::dispatch(&client, &repo, wf, &git_ref, req.inputs.as_ref())
+                    .map_err(to_mcp_error)?;
+                format!("Dispatched {wf} on {git_ref}")
+            }
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("unknown action: {other}"),
+                    None,
+                ));
+            }
+        };
+        Ok(out)
     }
     #[tool(
         description = "Optimize layer — reversible-compression retrieval (CCR). action=retrieve returns the original for a registered id; action=list enumerates live entries."
