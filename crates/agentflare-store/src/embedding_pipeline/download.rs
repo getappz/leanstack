@@ -68,7 +68,8 @@ pub fn ensure_model(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<Pa
                 anyhow::bail!(
                     "SHA-256 mismatch for {} of model '{}': pinned {pinned}, got {actual}. \
                      Upstream content changed under same revision. Delete {} and re-download.",
-                    file.local_name, config.name,
+                    file.local_name,
+                    config.name,
                     model_dir.join(LOCKFILE).display()
                 );
             }
@@ -80,7 +81,11 @@ pub fn ensure_model(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<Pa
     }
 
     write_lockfile(model_dir, &lock)?;
-    tracing::info!("Embedding model '{}' ready at {}", config.name, model_dir.display());
+    tracing::info!(
+        "Embedding model '{}' ready at {}",
+        config.name,
+        model_dir.display()
+    );
     Ok(model_dir.to_path_buf())
 }
 
@@ -143,7 +148,9 @@ fn download_file(
 
     if total < min_bytes {
         let _ = std::fs::remove_file(&tmp_path);
-        anyhow::bail!("Downloaded {local_name} is too small ({total} bytes, expected >= {min_bytes})");
+        anyhow::bail!(
+            "Downloaded {local_name} is too small ({total} bytes, expected >= {min_bytes})"
+        );
     }
 
     std::fs::rename(&tmp_path, &local_path)?;
@@ -218,12 +225,12 @@ pub fn clean_model(model_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(all(test, feature = "embeddings"))]
 mod tests {
-    use crate::embedding_pipeline::model_registry::{EmbeddingModel, ModelConfig};
     use super::*;
+    use crate::embedding_pipeline::model_registry::{EmbeddingModel, ModelConfig};
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const MODEL_BODY: &[u8] = b"MODEL-FILE-CONTENTS-0123456789-abcdefghij";
     const VOCAB_BODY: &[u8] = b"vocab line one\nvocab line two\nvocab line three\n";
@@ -286,17 +293,30 @@ mod tests {
         // First call downloads and pins both files.
         ensure_model(&model_dir, &config).unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), 2);
-        assert_eq!(std::fs::read(model_dir.join("model.onnx")).unwrap(), MODEL_BODY);
-        assert_eq!(std::fs::read(model_dir.join("vocab.txt")).unwrap(), VOCAB_BODY);
+        assert_eq!(
+            std::fs::read(model_dir.join("model.onnx")).unwrap(),
+            MODEL_BODY
+        );
+        assert_eq!(
+            std::fs::read(model_dir.join("vocab.txt")).unwrap(),
+            VOCAB_BODY
+        );
 
         // Tamper with the vocab file so its SHA-256 no longer matches the pin.
-        std::fs::write(model_dir.join("vocab.txt"), b"CORRUPTED-VOCAB-DATA-NOT-REAL").unwrap();
+        std::fs::write(
+            model_dir.join("vocab.txt"),
+            b"CORRUPTED-VOCAB-DATA-NOT-REAL",
+        )
+        .unwrap();
 
         // Second call must detect the mismatch and re-download the file.
         ensure_model(&model_dir, &config).unwrap();
 
         // Re-downloaded file now matches the genuine server content.
-        assert_eq!(std::fs::read(model_dir.join("vocab.txt")).unwrap(), VOCAB_BODY);
+        assert_eq!(
+            std::fs::read(model_dir.join("vocab.txt")).unwrap(),
+            VOCAB_BODY
+        );
 
         // The lockfile still records the genuine pinned hashes.
         let lock: std::collections::BTreeMap<String, String> = serde_json::from_str(
@@ -321,6 +341,9 @@ mod tests {
         std::fs::write(model_dir.join("vocab.txt"), b"").unwrap();
 
         ensure_model(&model_dir, &config).unwrap();
-        assert_eq!(std::fs::read(model_dir.join("vocab.txt")).unwrap(), VOCAB_BODY);
+        assert_eq!(
+            std::fs::read(model_dir.join("vocab.txt")).unwrap(),
+            VOCAB_BODY
+        );
     }
 }
