@@ -12,6 +12,7 @@ pub mod models;
 pub mod pulls;
 pub mod releases;
 pub mod actions;
+pub mod init_auth;
 
 pub use client::Client;
 pub use identity::RepoId;
