@@ -28,14 +28,12 @@ fn write_disk_blob(root: &Path, hash: &str, data: &[u8]) -> Result<(), std::io::
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&path, data)?;
-    std::fs::write(path.with_extension("meta"), &[])?;
     Ok(())
 }
 
 fn delete_disk_blob(root: &Path, hash: &str) {
     let path = blob_disk_path(root, hash);
     let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(path.with_extension("meta"));
 }
 
 use std::path::PathBuf;

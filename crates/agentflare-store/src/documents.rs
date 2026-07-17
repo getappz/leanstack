@@ -109,7 +109,7 @@ impl Store {
 
         let existing = conn
             .query_row(
-                "SELECT id, rowid, content, version FROM store_documents
+                "SELECT id, rowid, content, version, blob_hash, mime FROM store_documents
                  WHERE project_id = ?1 AND path = ?2",
                 params![project_id, path],
                 |row| {
@@ -118,23 +118,27 @@ impl Store {
                         row.get::<_, i64>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i32>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
                     ))
                 },
             )
             .optional()?;
 
-        if let Some((existing_id, rowid, old_content, old_version)) = existing {
+        if let Some((existing_id, rowid, old_content, old_version, old_blob_hash, old_mime)) = existing {
             let new_version = old_version + 1;
             let history_id = db_kit::ids::new_id();
 
+            let tx = conn.unchecked_transaction()?;
+
             // Snapshot current version to history
-            conn.execute(
-                "INSERT INTO store_doc_history (id, doc_id, version, content, title, created_at)
-                 VALUES (?1, ?2, ?3, ?4, (SELECT title FROM store_documents WHERE id = ?2), ?5)",
-                params![history_id, existing_id, old_version, old_content, now],
+            tx.execute(
+                "INSERT INTO store_doc_history (id, doc_id, version, content, blob_hash, mime, title, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT title FROM store_documents WHERE id = ?2), ?7)",
+                params![history_id, existing_id, old_version, old_content, old_blob_hash, old_mime, now],
             )?;
 
-            conn.execute(
+            tx.execute(
                 "UPDATE store_documents SET
                  content = ?1, updated_at = ?2, deleted_at = NULL,
                  version = ?3
@@ -144,50 +148,51 @@ impl Store {
 
             // Apply optional updates (need separate UPDATE to avoid long SQL)
             if let Some(title) = &opts.title {
-                conn.execute(
+                tx.execute(
                     "UPDATE store_documents SET title = ?1 WHERE id = ?2",
                     params![title, existing_id],
                 )?;
             }
             if let Some(doc_type) = &opts.doc_type {
-                conn.execute(
+                tx.execute(
                     "UPDATE store_documents SET doc_type = ?1 WHERE id = ?2",
                     params![doc_type, existing_id],
                 )?;
             }
             if opts.blob_hash.is_some() {
-                conn.execute(
+                tx.execute(
                     "UPDATE store_documents SET blob_hash = ?1 WHERE id = ?2",
                     params![opts.blob_hash, existing_id],
                 )?;
             }
             if let Some(mime) = &opts.mime {
-                conn.execute(
+                tx.execute(
                     "UPDATE store_documents SET mime = ?1 WHERE id = ?2",
                     params![mime, existing_id],
                 )?;
             }
             if let Some(tags) = &opts.tags {
                 let json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
-                conn.execute(
+                tx.execute(
                     "UPDATE store_documents SET tags = ?1 WHERE id = ?2",
                     params![json, existing_id],
                 )?;
             }
             if opts.session_id.is_some() {
-                conn.execute(
+                tx.execute(
                     "UPDATE store_documents SET session_id = ?1 WHERE id = ?2",
                     params![opts.session_id, existing_id],
                 )?;
             }
             if let Some(source) = &opts.source {
-                conn.execute(
+                tx.execute(
                     "UPDATE store_documents SET source = ?1 WHERE id = ?2",
                     params![source, existing_id],
                 )?;
             }
 
-            Self::doc_sync_fts(&conn, rowid, content)?;
+            Self::doc_sync_fts(&tx, rowid, content)?;
+            tx.commit()?;
             drop(conn);
             self.doc_get(&existing_id).map(|o| o.unwrap())
         } else {
@@ -406,7 +411,7 @@ impl Store {
              JOIN store_documents d ON d.id = v.doc_id
              WHERE d.project_id = ?1 AND d.deleted_at IS NULL",
         )?;
-        let mut results: Vec<(f64, DocMatch)> = stmt
+        let rows: Vec<(String, String, String, Vec<u8>)> = stmt
             .query_map(params![project_id], |row| {
                 let id: String = row.get(0)?;
                 let project_id: String = row.get(1)?;
@@ -414,7 +419,9 @@ impl Store {
                 let blob: Vec<u8> = row.get(3)?;
                 Ok((id, project_id, path, blob))
             })?
-            .filter_map(|r| r.ok())
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut results: Vec<(f64, DocMatch)> = rows
+            .into_iter()
             .filter_map(|(id, pid, path, blob)| {
                 if blob.len() % 4 != 0 {
                     return None;
@@ -659,5 +666,40 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].version, 1);
         assert_eq!(history[0].content, "v1");
+    }
+
+    #[test]
+    fn history_snapshot_preserves_blob_hash_and_mime() {
+        let s = store();
+        let doc = s
+            .doc_upsert_with_opts(
+                "p",
+                "/v.md",
+                "v1",
+                DocUpsertOpts {
+                    blob_hash: Some("hash-v1".into()),
+                    mime: Some("text/plain".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(doc.version, 1);
+
+        s.doc_upsert_with_opts(
+            "p",
+            "/v.md",
+            "v2",
+            DocUpsertOpts {
+                blob_hash: Some("hash-v2".into()),
+                mime: Some("text/markdown".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let history = s.doc_history(&doc.id).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].blob_hash.as_deref(), Some("hash-v1"));
+        assert_eq!(history[0].mime, "text/plain");
     }
 }

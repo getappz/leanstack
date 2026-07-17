@@ -3,7 +3,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::model_registry::{ModelConfig, VocabSource};
+use super::model_registry::ModelConfig;
 
 const USER_AGENT: &str = concat!("agentflare-store/", env!("CARGO_PKG_VERSION"));
 const LOCKFILE: &str = "model.lock.json";

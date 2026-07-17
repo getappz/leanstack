@@ -30,20 +30,6 @@ struct InputNames {
     token_type_ids: Option<String>,
 }
 
-fn is_bert_punctuation(ch: char) -> bool {
-    if ch.is_ascii() {
-        matches!(
-            ch,
-            '!' | '"' | '#' | '$' | '%' | '&' | '\'' | '(' | ')'
-                | '*' | '+' | ',' | '-' | '.' | '/' | ':' | ';'
-                | '<' | '=' | '>' | '?' | '@' | '[' | '\\' | ']'
-                | '^' | '_' | '`' | '{' | '|' | '}' | '~'
-        )
-    } else {
-        ch.is_ascii_punctuation()
-    }
-}
-
 impl EmbeddingEngine {
     pub fn load(model_dir: &Path) -> anyhow::Result<Self> {
         let selected = model_registry::resolve_model();
@@ -59,7 +45,7 @@ impl EmbeddingEngine {
         let tokenizer = load_tokenizer(&model_dir, &config)?;
         let model_path = model_dir.join("model.onnx");
 
-    let mut session = ort::session::Session::builder()
+    let session = ort::session::Session::builder()
             .map_err(|e| anyhow::anyhow!("ORT builder: {e}"))?
             .with_intra_threads(
                 std::thread::available_parallelism().map_or(4, |n| n.get().max(1)),
@@ -99,6 +85,7 @@ impl EmbeddingEngine {
 
         let dimensions = detect_dimensions(
             &config,
+            &model_path,
             &tokenizer,
             &input_names_list,
             &token_type_ids,
@@ -136,12 +123,7 @@ impl EmbeddingEngine {
         let input = tokenize(&self.tokenizer, input_text, self.max_seq_len);
         let mut hidden = self.run_inference(&input)?;
 
-        let pooled = if let InputNames { token_type_ids: Some(_), .. } = &self.input_names {
-            pooling::mean_pool(&hidden, &input.attention_mask, input.input_ids.len(), self.dimensions)
-        } else {
-            pooling::mean_pool(&hidden, &input.attention_mask, input.input_ids.len(), self.dimensions)
-        };
-        hidden = pooled;
+        hidden = pooling::mean_pool(&hidden, &input.attention_mask, input.input_ids.len(), self.dimensions);
 
         pooling::normalize_l2(&mut hidden);
         Ok(hidden)
@@ -249,6 +231,7 @@ fn tokenize(tokenizer: &TokenizerKind, text: &str, max_len: usize) -> TokenizedI
 
 fn detect_dimensions(
     config: &ModelConfig,
+    model_path: &Path,
     tokenizer: &TokenizerKind,
     input_names: &[String],
     token_type_ids: &Option<String>,
@@ -271,7 +254,7 @@ fn detect_dimensions(
         .map_err(|e| anyhow::anyhow!("ORT builder: {e}"))?
         .with_intra_threads(1)
         .map_err(|e| anyhow::anyhow!("ORT intra threads: {e}"))?
-        .commit_from_file(&config.model_url())
+        .commit_from_file(model_path)
         .map_err(|_| anyhow::anyhow!("cannot probe dimensions without model file"))?;
 
     let outputs = if let Some(type_id) = token_type_ids {
