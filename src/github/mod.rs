@@ -4,8 +4,10 @@
 //! new dependency, and sync throughout so the MCP tool stays a plain `fn`.
 
 pub mod auth;
+pub mod client;
 pub mod identity;
 
+pub use client::Client;
 pub use identity::{RepoId, normalize_repo};
 
 /// All failure modes of the GitHub module. `Display` never contains the token.
