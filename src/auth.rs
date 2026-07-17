@@ -604,7 +604,7 @@ pub fn pick(agent: &str) {
     let items: Vec<(String, String)> = profiles.iter().map(|p| (p.clone(), p.clone())).collect();
     match crate::ui::select(&format!("choose profile for {agent}"), &items) {
         Some(profile) => activate(agent, &profile, false),
-        None => eprintln!("no profile selected"),
+        None => crate::ui::skip("no profile selected"),
     }
 }
 

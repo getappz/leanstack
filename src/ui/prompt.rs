@@ -15,7 +15,7 @@ pub fn confirm(prompt: &str, default: bool) -> bool {
     cliclack::confirm(prompt)
         .initial_value(default)
         .interact()
-        .unwrap_or(default)
+        .unwrap_or(false)
 }
 
 /// Single-choice menu over `(value, label)` pairs. Returns the chosen value, or

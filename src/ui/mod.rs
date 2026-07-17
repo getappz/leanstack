@@ -25,9 +25,13 @@ pub use spinner::with_spinner;
 
 use std::io::IsTerminal;
 
-/// Interactive UI is safe only when both stdin and stdout are real terminals.
-/// Anything else — piped input, redirected output, CI, hook contexts — takes
-/// the plain-text branch so nothing blocks on input that can't arrive.
+/// Interactive UI is safe only when both stdin and stdout are real terminals,
+/// `CI` is unset, and the caller hasn't opted out via `AGENTFLARE_NO_INTERACTIVE`.
+/// TTY checks alone miss pseudo-TTY CI jobs and terminal-launched hooks, so both
+/// env vars take priority over the TTY check.
 pub fn interactive() -> bool {
+    if std::env::var_os("CI").is_some() || std::env::var_os("AGENTFLARE_NO_INTERACTIVE").is_some() {
+        return false;
+    }
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
