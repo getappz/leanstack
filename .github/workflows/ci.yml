@@ -84,7 +84,7 @@ jobs:
         with:
           fetch-depth: 0
       - if: needs.changes.result != 'success' || needs.changes.outputs.code == 'true'
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: clippy
       - if: needs.changes.result != 'success' || needs.changes.outputs.code == 'true'
@@ -110,7 +110,7 @@ jobs:
         with:
           fetch-depth: 0
       - if: needs.changes.result != 'success' || needs.changes.outputs.code == 'true'
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt
       - if: needs.changes.result != 'success' || needs.changes.outputs.code == 'true'
@@ -130,6 +130,33 @@ jobs:
         with:
           manifest-path: Cargo.toml
 
+  target-dir-guard:
+    # Fails fast if CARGO_TARGET_DIR is set project-wide (e.g. a repo/org
+    # Actions variable) instead of being left to Cargo's per-checkout
+    # default. Ambient CARGO_TARGET_DIR always outranks a worktree's local
+    # .cargo/config.toml (see src/worktree.rs's isolate_worktree_target_dir),
+    # so if it ever leaked in here it would silently share build artifacts
+    # across the `build` matrix jobs. No paths filter, same rationale as
+    # `deny`: a path-filtered required check never reports on PRs that skip
+    # it. See item #133/#139.
+    name: Ambient CARGO_TARGET_DIR guard
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Fail if CARGO_TARGET_DIR is set
+        shell: bash
+        env:
+          # A repo/org/environment Actions *variable* doesn't reach the shell
+          # unless mapped into `env` explicitly — map it so this guard also
+          # catches CARGO_TARGET_DIR configured that way, not just an
+          # ambient runner-environment value.
+          CARGO_TARGET_DIR_VAR: ${{ vars.CARGO_TARGET_DIR }}
+        run: |
+          if [ -n "${CARGO_TARGET_DIR:-}" ] || [ -n "${CARGO_TARGET_DIR_VAR:-}" ]; then
+            echo "::error::CARGO_TARGET_DIR is set (env=${CARGO_TARGET_DIR:-<unset>}, vars.CARGO_TARGET_DIR=${CARGO_TARGET_DIR_VAR:-<unset>}) — a project-wide target dir leaks build artifacts across worktrees/CI jobs. Unset it (see item #133/#139)." >&2
+            exit 1
+          fi
+
   # Single aggregating gate. Point branch protection at THIS job instead of
   # every leg above — stays correct when jobs are added/removed and can't be
   # bypassed by a silently-missing required check.
@@ -141,6 +168,7 @@ jobs:
       - clippy
       - fmt
       - deny
+      - target-dir-guard
     runs-on: ubuntu-latest
     permissions: {}
     steps:
