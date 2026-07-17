@@ -54,7 +54,11 @@ pub struct DocUpsertOpts {
 }
 
 impl Store {
-    fn doc_sync_fts(conn: &rusqlite::Connection, row_id: i64, content: &str) -> rusqlite::Result<()> {
+    fn doc_sync_fts(
+        conn: &rusqlite::Connection,
+        row_id: i64,
+        content: &str,
+    ) -> rusqlite::Result<()> {
         conn.execute(
             "DELETE FROM store_docs_fts WHERE rowid = ?1",
             params![row_id],
@@ -125,7 +129,9 @@ impl Store {
             )
             .optional()?;
 
-        if let Some((existing_id, rowid, old_content, old_version, old_blob_hash, old_mime)) = existing {
+        if let Some((existing_id, rowid, old_content, old_version, old_blob_hash, old_mime)) =
+            existing
+        {
             let new_version = old_version + 1;
             let history_id = db_kit::ids::new_id();
 
@@ -238,13 +244,13 @@ impl Store {
     pub fn doc_get(&self, id: &str) -> rusqlite::Result<Option<Document>> {
         let conn = self.conn();
         conn.query_row(
-                "SELECT id, project_id, path, content, title, doc_type, blob_hash, mime, tags,
+            "SELECT id, project_id, path, content, title, doc_type, blob_hash, mime, tags,
                         session_id, source, version, created_at, updated_at, deleted_at
                  FROM store_documents WHERE id = ?1",
-                params![id],
-                Self::row_to_document,
-            )
-            .optional()
+            params![id],
+            Self::row_to_document,
+        )
+        .optional()
     }
 
     pub fn doc_delete(&self, id: &str) -> rusqlite::Result<bool> {
@@ -316,26 +322,30 @@ impl Store {
         rows.collect()
     }
 
-    pub fn doc_get_version(&self, doc_id: &str, version: i32) -> rusqlite::Result<Option<DocVersion>> {
+    pub fn doc_get_version(
+        &self,
+        doc_id: &str,
+        version: i32,
+    ) -> rusqlite::Result<Option<DocVersion>> {
         let conn = self.conn();
         conn.query_row(
-                "SELECT id, doc_id, version, content, blob_hash, mime, title, created_at
+            "SELECT id, doc_id, version, content, blob_hash, mime, title, created_at
                  FROM store_doc_history WHERE doc_id = ?1 AND version = ?2",
-                params![doc_id, version],
-                |row| {
-                    Ok(DocVersion {
-                        id: row.get(0)?,
-                        doc_id: row.get(1)?,
-                        version: row.get(2)?,
-                        content: row.get(3)?,
-                        blob_hash: row.get(4)?,
-                        mime: row.get(5)?,
-                        title: row.get(6)?,
-                        created_at: row.get(7)?,
-                    })
-                },
-            )
-            .optional()
+            params![doc_id, version],
+            |row| {
+                Ok(DocVersion {
+                    id: row.get(0)?,
+                    doc_id: row.get(1)?,
+                    version: row.get(2)?,
+                    content: row.get(3)?,
+                    blob_hash: row.get(4)?,
+                    mime: row.get(5)?,
+                    title: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            },
+        )
+        .optional()
     }
 
     pub fn doc_search(
@@ -384,18 +394,18 @@ impl Store {
     pub fn doc_get_embedding(&self, doc_id: &str) -> rusqlite::Result<Option<Vec<f32>>> {
         let conn = self.conn();
         conn.query_row(
-                "SELECT embedding FROM store_docs_vec WHERE doc_id = ?1",
-                params![doc_id],
-                |row| {
-                    let blob: Vec<u8> = row.get(0)?;
-                    let vec: Vec<f32> = blob
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect();
-                    Ok(vec)
-                },
-            )
-            .optional()
+            "SELECT embedding FROM store_docs_vec WHERE doc_id = ?1",
+            params![doc_id],
+            |row| {
+                let blob: Vec<u8> = row.get(0)?;
+                let vec: Vec<f32> = blob
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                Ok(vec)
+            },
+        )
+        .optional()
     }
 
     pub fn doc_vec_search(
@@ -461,11 +471,19 @@ impl Store {
 
         let mut max_fts = fts.first().map(|m| m.score).unwrap_or(1.0);
         let mut max_vec = vec.first().map(|m| m.score).unwrap_or(1.0);
-        if max_fts < 1e-12 { max_fts = 1.0; }
-        if max_vec < 1e-12 { max_vec = 1.0; }
+        if max_fts < 1e-12 {
+            max_fts = 1.0;
+        }
+        if max_vec < 1e-12 {
+            max_vec = 1.0;
+        }
 
-        for m in &mut fts { m.score = alpha * (m.score / max_fts); }
-        for m in &mut vec { m.score = (1.0 - alpha) * (m.score / max_vec); }
+        for m in &mut fts {
+            m.score = alpha * (m.score / max_fts);
+        }
+        for m in &mut vec {
+            m.score = (1.0 - alpha) * (m.score / max_vec);
+        }
 
         let mut combined: Vec<DocMatch> = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -637,14 +655,21 @@ mod tests {
     #[test]
     fn upsert_with_metadata() {
         let s = store();
-        let doc = s.doc_upsert_with_opts("p", "/meta.md", "content", DocUpsertOpts {
-            title: Some("My Doc".into()),
-            doc_type: Some("note".into()),
-            mime: Some("text/markdown".into()),
-            tags: Some(vec!["rust".into(), "db".into()]),
-            source: Some("agent".into()),
-            ..Default::default()
-        }).unwrap();
+        let doc = s
+            .doc_upsert_with_opts(
+                "p",
+                "/meta.md",
+                "content",
+                DocUpsertOpts {
+                    title: Some("My Doc".into()),
+                    doc_type: Some("note".into()),
+                    mime: Some("text/markdown".into()),
+                    tags: Some(vec!["rust".into(), "db".into()]),
+                    source: Some("agent".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(doc.title, "My Doc");
         assert_eq!(doc.doc_type, "note");
         assert_eq!(doc.mime, "text/markdown");

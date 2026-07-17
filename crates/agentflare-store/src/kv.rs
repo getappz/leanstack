@@ -27,29 +27,29 @@ impl Store {
     pub fn kv_get(&self, key: &str) -> rusqlite::Result<Option<KvEntry>> {
         let conn = self.conn();
         conn.query_row(
-                "SELECT key, value, created_at, updated_at FROM store_kv WHERE key = ?1",
-                params![key],
-                |row| {
-                    Ok(KvEntry {
-                        key: row.get(0)?,
-                        value: row.get(1)?,
-                        created_at: row.get(2)?,
-                        updated_at: row.get(3)?,
-                    })
-                },
-            )
-            .optional()
+            "SELECT key, value, created_at, updated_at FROM store_kv WHERE key = ?1",
+            params![key],
+            |row| {
+                Ok(KvEntry {
+                    key: row.get(0)?,
+                    value: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
     }
 
     pub fn kv_exists(&self, key: &str) -> rusqlite::Result<bool> {
         let conn = self.conn();
         conn.query_row(
-                "SELECT 1 FROM store_kv WHERE key = ?1",
-                params![key],
-                |_| Ok(()),
-            )
-            .optional()
-            .map(|o| o.is_some())
+            "SELECT 1 FROM store_kv WHERE key = ?1",
+            params![key],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|o| o.is_some())
     }
 
     pub fn kv_delete(&self, key: &str) -> rusqlite::Result<bool> {

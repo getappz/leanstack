@@ -26,12 +26,18 @@ impl CustomModelSpec {
         };
         let mut parts = repo.split('/');
         let (owner, name) = (parts.next()?, parts.next()?);
-        if parts.next().is_some() || owner.is_empty() || name.is_empty()
+        if parts.next().is_some()
+            || owner.is_empty()
+            || name.is_empty()
             || repo.chars().any(char::is_whitespace)
         {
             return None;
         }
-        Some(Self { repo: repo.to_string(), revision, dimensions: None })
+        Some(Self {
+            repo: repo.to_string(),
+            revision,
+            dimensions: None,
+        })
     }
 
     fn storage_slug(&self) -> String {

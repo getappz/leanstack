@@ -1,12 +1,13 @@
-pub mod model_registry;
 pub mod download;
-pub mod tokenizer;
+pub mod model_registry;
 pub mod pooling;
+pub mod tokenizer;
 
 use std::path::{Path, PathBuf};
 
+use crate::embed;
 use model_registry::{EmbeddingModel, ModelConfig, VocabSource};
-use tokenizer::{TokenizedInput, WordPieceTokenizer, HfTokenizerWrapper};
+use tokenizer::{HfTokenizerWrapper, TokenizedInput, WordPieceTokenizer};
 
 pub struct EmbeddingEngine {
     tokenizer: TokenizerKind,
@@ -45,11 +46,9 @@ impl EmbeddingEngine {
         let tokenizer = load_tokenizer(&model_dir, &config)?;
         let model_path = model_dir.join("model.onnx");
 
-    let session = ort::session::Session::builder()
+        let session = ort::session::Session::builder()
             .map_err(|e| anyhow::anyhow!("ORT builder: {e}"))?
-            .with_intra_threads(
-                std::thread::available_parallelism().map_or(4, |n| n.get().max(1)),
-            )
+            .with_intra_threads(std::thread::available_parallelism().map_or(4, |n| n.get().max(1)))
             .map_err(|e| anyhow::anyhow!("ORT intra threads: {e}"))?
             .with_optimization_level(ort::session::builder::GraphOptimizationLevel::All)
             .map_err(|e| anyhow::anyhow!("ORT optimization: {e}"))?
@@ -123,9 +122,14 @@ impl EmbeddingEngine {
         let input = tokenize(&self.tokenizer, input_text, self.max_seq_len);
         let mut hidden = self.run_inference(&input)?;
 
-        hidden = pooling::mean_pool(&hidden, &input.attention_mask, input.input_ids.len(), self.dimensions);
+        hidden = pooling::mean_pool(
+            &hidden,
+            &input.attention_mask,
+            input.input_ids.len(),
+            self.dimensions,
+        );
 
-        pooling::normalize_l2(&mut hidden);
+        embed::normalize(&mut hidden);
         Ok(hidden)
     }
 
@@ -148,8 +152,12 @@ impl EmbeddingEngine {
         );
         hidden = pooled;
 
-        pooling::normalize_l2(&mut hidden);
+        embed::normalize(&mut hidden);
         Ok(hidden)
+    }
+
+    pub fn model_id(&self) -> &EmbeddingModel {
+        &self.model_id
     }
 
     pub fn dimensions(&self) -> usize {
@@ -164,11 +172,10 @@ impl EmbeddingEngine {
         if let Ok(dir) = std::env::var("AGENTFLARE_MODELS_DIR") {
             return PathBuf::from(dir);
         }
-        let base = dirs::cache_dir()
+        dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("agentflare")
-            .join("models");
-        base
+            .join("models")
     }
 
     fn run_inference(&self, input: &TokenizedInput) -> anyhow::Result<Vec<f32>> {
@@ -274,7 +281,9 @@ fn detect_dimensions(
     };
 
     let (shape, _) = outputs[output_name].try_extract_tensor::<f32>()?;
-    shape.last().copied().map(|s| s as usize).ok_or_else(|| {
-        anyhow::anyhow!("could not detect embedding dimensions from model output")
-    })
+    shape
+        .last()
+        .copied()
+        .map(|s| s as usize)
+        .ok_or_else(|| anyhow::anyhow!("could not detect embedding dimensions from model output"))
 }
