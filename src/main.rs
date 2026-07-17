@@ -42,6 +42,7 @@ mod rule_text;
 mod shell;
 mod state;
 mod tool_install;
+mod ui;
 mod uninstall;
 mod update;
 mod worktree;
