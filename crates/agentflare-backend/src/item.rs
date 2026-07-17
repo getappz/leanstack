@@ -510,6 +510,12 @@ pub fn dependency_fanin_for_items(
 /// via `flare-search-kit` into safe FTS5 tokens (quoted, operators
 /// neutralised) so user input like `PR-123` isn't misinterpreted as
 /// column:value syntax.
+///
+/// Falls back to a `LIKE` substring scan when FTS5 finds nothing. FTS5's
+/// default tokenizer splits on `-`/`_`, so a compound identifier like
+/// `agentflare-store` indexes as separate `agentflare`/`store` tokens —
+/// a query for `flare-store` (or bare `flare`) would otherwise miss it,
+/// since `flare` is a suffix, not a prefix, of `agentflare`.
 pub fn search(
     conn: &Connection,
     project_id: &str,
@@ -540,7 +546,30 @@ pub fn search(
         rusqlite::params![project_id, safe, flare_search_kit::clamped_limit(limit)],
         row_to_item,
     )?;
-    Ok(rows.collect::<std::result::Result<_, _>>()?)
+    let results: Vec<Item> = rows.collect::<std::result::Result<_, _>>()?;
+    if !results.is_empty() {
+        return Ok(results);
+    }
+
+    let like_pat = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+    let mut like_stmt = conn.prepare(
+        "SELECT items.id, items.project_id, items.state_id, items.name, items.description,
+                items.priority, items.parent_id, items.assignee_agent, items.sequence_id,
+                items.sort_order, items.started_at, items.completed_at, items.archived_at,
+                items.external_source, items.external_id, items.metadata,
+                items.created_at, items.updated_at, items.deleted_at
+         FROM items
+         WHERE items.project_id = ?1
+           AND items.deleted_at IS NULL
+           AND (items.name LIKE ?2 ESCAPE '\\' OR items.description LIKE ?2 ESCAPE '\\')
+         ORDER BY items.updated_at DESC
+         LIMIT ?3",
+    )?;
+    let like_rows = like_stmt.query_map(
+        rusqlite::params![project_id, like_pat, flare_search_kit::clamped_limit(limit)],
+        row_to_item,
+    )?;
+    Ok(like_rows.collect::<std::result::Result<_, _>>()?)
 }
 
 /// Claims an item so other agents don't duplicate the work: on a fresh
@@ -1514,6 +1543,39 @@ mod tests {
         .unwrap();
         assert_eq!(search(&conn, &pid1, "database", None).unwrap().len(), 1);
         assert_eq!(search(&conn, &pid2, "database", None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn search_falls_back_to_like_for_suffix_of_compound_token() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        create(
+            &conn,
+            CreateItem {
+                project_id: pid.clone(),
+                state_id: sid,
+                name: "Implement agentflare-store v1".into(),
+                description: Some("unified local storage layer".into()),
+                priority: None,
+                parent_id: None,
+                assignee_agent: None,
+                sort_order: None,
+                external_source: None,
+                external_id: None,
+                metadata: None,
+                label_ids: vec![],
+                assignee_ids: vec![],
+                dependency_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        // FTS5 tokenizes "agentflare-store" as ["agentflare", "store"], so a
+        // bare "flare" query (a suffix, not a prefix, of "agentflare") finds
+        // nothing via MATCH — only the LIKE fallback can find it.
+        let results = search(&conn, &pid, "flare-store", None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].name.contains("agentflare-store"));
     }
 
     #[test]
