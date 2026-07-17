@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod client;
 pub mod identity;
+pub mod mcp;
 pub mod models;
 pub mod pulls;
 

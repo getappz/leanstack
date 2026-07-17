@@ -367,6 +367,39 @@ struct MemoryRequest {
     scorer: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+struct GitHubRequest {
+    #[schemars(description = "Action: pr_create|pr_list|pr_get|pr_merge|pr_comment|pr_request_review")]
+    action: String,
+    #[schemars(description = "owner/repo (default: resolved from the current repo's origin)")]
+    #[serde(default)]
+    repo: Option<String>,
+    #[schemars(description = "PR number (pr_get, pr_merge, pr_comment, pr_request_review)")]
+    #[serde(default)]
+    number: Option<u64>,
+    #[schemars(description = "PR title (pr_create)")]
+    #[serde(default)]
+    title: Option<String>,
+    #[schemars(description = "Head branch (pr_create)")]
+    #[serde(default)]
+    head: Option<String>,
+    #[schemars(description = "Base branch (pr_create)")]
+    #[serde(default)]
+    base: Option<String>,
+    #[schemars(description = "Body / comment text (pr_create, pr_comment)")]
+    #[serde(default)]
+    body: Option<String>,
+    #[schemars(description = "State filter for pr_list: open|closed|all (default open)")]
+    #[serde(default)]
+    state: Option<String>,
+    #[schemars(description = "Merge method for pr_merge: merge|squash|rebase (default merge)")]
+    #[serde(default)]
+    merge_method: Option<String>,
+    #[schemars(description = "Reviewer logins (pr_request_review)")]
+    #[serde(default)]
+    reviewers: Option<Vec<String>>,
+}
+
 #[derive(Default)]
 pub struct AgentflareMcp {
     /// Persisted across calls so `Registry::ensure_fresh`'s 60s debounce is
@@ -524,6 +557,17 @@ fn map_backend_err(e: agentflare_backend::Error) -> ErrorData {
         | agentflare_backend::Error::InvalidTransition(msg)
         | agentflare_backend::Error::Validation(msg) => ErrorData::invalid_params(msg, None),
         agentflare_backend::Error::Database(e) => ErrorData::internal_error(e.to_string(), None),
+    }
+}
+
+/// Maps a `GitHubError` to MCP `ErrorData`: client/auth mistakes become
+/// `invalid_params`, transport/parse failures become `internal_error`.
+fn to_mcp_error(err: crate::github::GitHubError) -> ErrorData {
+    let msg = err.to_string();
+    if crate::github::mcp::is_client_error(&err) {
+        ErrorData::invalid_params(msg, None)
+    } else {
+        ErrorData::internal_error(msg, None)
     }
 }
 
@@ -2342,6 +2386,59 @@ impl AgentflareMcp {
                 None,
             )),
         }
+    }
+    #[tool(
+        description = "GitHub repo management via the flare_git module. Single action-dispatch tool: action=pr_create|pr_list|pr_get|pr_merge|pr_comment|pr_request_review. Uses gh/GITHUB_TOKEN credentials; repo defaults to the current repo's origin."
+    )]
+    fn flare_git(&self, Parameters(req): Parameters<GitHubRequest>) -> Result<String, ErrorData> {
+        use crate::github::{Client, RepoId, pulls};
+
+        let repo = match &req.repo {
+            Some(r) => RepoId::parse(r).ok_or_else(|| ErrorData::invalid_params(format!("bad repo: {r}"), None))?,
+            None => RepoId::resolve_from_remote(&std::env::current_dir().unwrap_or_default())
+                .ok_or_else(|| ErrorData::invalid_params("no repo given and could not resolve origin remote".to_string(), None))?,
+        };
+        let client = Client::new().map_err(to_mcp_error)?;
+
+        let out = match req.action.as_str() {
+            "pr_create" => {
+                let title = req.title.as_deref().ok_or_else(|| ErrorData::invalid_params("title is required", None))?;
+                let head = req.head.as_deref().ok_or_else(|| ErrorData::invalid_params("head is required", None))?;
+                let base = req.base.as_deref().ok_or_else(|| ErrorData::invalid_params("base is required", None))?;
+                let pr = pulls::create(&client, &repo, title, head, base, req.body.as_deref()).map_err(to_mcp_error)?;
+                format!("Opened PR #{}: {}", pr.number, pr.html_url)
+            }
+            "pr_list" => {
+                let state = req.state.as_deref().unwrap_or("open");
+                let prs = pulls::list(&client, &repo, state).map_err(to_mcp_error)?;
+                serde_json::to_string(&prs.iter().map(|p| &p.html_url).collect::<Vec<_>>()).unwrap_or_default()
+            }
+            "pr_get" => {
+                let n = req.number.ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let pr = pulls::get(&client, &repo, n).map_err(to_mcp_error)?;
+                format!("PR #{} [{}]: {}", pr.number, pr.state, pr.html_url)
+            }
+            "pr_merge" => {
+                let n = req.number.ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let method = req.merge_method.as_deref().unwrap_or("merge");
+                pulls::merge(&client, &repo, n, method).map_err(to_mcp_error)?;
+                format!("Merged PR #{n} ({method})")
+            }
+            "pr_comment" => {
+                let n = req.number.ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let body = req.body.as_deref().ok_or_else(|| ErrorData::invalid_params("body is required", None))?;
+                pulls::comment(&client, &repo, n, body).map_err(to_mcp_error)?;
+                format!("Commented on PR #{n}")
+            }
+            "pr_request_review" => {
+                let n = req.number.ok_or_else(|| ErrorData::invalid_params("number is required", None))?;
+                let reviewers = req.reviewers.clone().unwrap_or_default();
+                pulls::request_review(&client, &repo, n, &reviewers).map_err(to_mcp_error)?;
+                format!("Requested review on PR #{n}")
+            }
+            other => return Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
+        };
+        Ok(out)
     }
     #[tool(
         description = "Optimize layer — reversible-compression retrieval (CCR). action=retrieve returns the original for a registered id; action=list enumerates live entries."
