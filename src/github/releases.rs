@@ -22,7 +22,7 @@ fn create_body(
 
 pub fn list(client: &Client, repo: &RepoId) -> Result<Vec<Release>, GitHubError> {
     let path = format!("/repos/{}/{}/releases", repo.owner, repo.repo);
-    let json = client.request("GET", &path, None)?;
+    let json = client.get_paginated(&path, crate::github::client::as_array)?;
     serde_json::from_value(json).map_err(|e| GitHubError::Parse(e.to_string()))
 }
 
@@ -90,7 +90,10 @@ mod tests {
         let server = MockServer::start(vec![MockResponse::json(200, "[]")]);
         let client = server.client(None);
         assert!(list(&client, &repo()).unwrap().is_empty());
-        assert_eq!(server.requests()[0].path, "/repos/o/r/releases");
+        assert_eq!(
+            server.requests()[0].path,
+            "/repos/o/r/releases?per_page=100&page=1"
+        );
     }
 
     #[test]

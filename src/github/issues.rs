@@ -50,7 +50,7 @@ pub fn list(client: &Client, repo: &RepoId, state: &str) -> Result<Vec<Issue>, G
         repo.repo,
         crate::github::encode_query(state)
     );
-    let json = client.request("GET", &path, None)?;
+    let json = client.get_paginated(&path, crate::github::client::as_array)?;
     serde_json::from_value(json).map_err(|e| GitHubError::Parse(e.to_string()))
 }
 
@@ -146,7 +146,10 @@ mod tests {
         let client = server.client(None);
         let issues = list(&client, &repo(), "closed").unwrap();
         assert_eq!(issues.len(), 1);
-        assert_eq!(server.requests()[0].path, "/repos/o/r/issues?state=closed");
+        assert_eq!(
+            server.requests()[0].path,
+            "/repos/o/r/issues?state=closed&per_page=100&page=1"
+        );
     }
 
     #[test]
