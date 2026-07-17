@@ -71,11 +71,19 @@ fn call_via_cli(prompt: &str) -> Result<String, CavemanError> {
     let write_result = writer.join().map_err(|_| {
         CavemanError::Llm(format!("stdin writer thread for '{claude_bin}' panicked"))
     })?;
-    write_result
-        .map_err(|e| CavemanError::Llm(format!("write to '{claude_bin}' stdin failed: {e}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(CavemanError::Llm(format!("Claude call failed:\n{stderr}")));
+    }
+    // A stdin-write failure (typically a broken pipe) only means something if
+    // the child *also* failed -- checked above. A child that exits
+    // successfully without draining all of stdin (it printed a canned
+    // response and exited, it only needed the first N bytes, etc.) closing
+    // its read end early is the ordinary "downstream closed the pipe early"
+    // case, not a real error; surfacing it as fatal here is exactly what
+    // made this path flaky under CI's compile-load scheduling jitter.
+    if let Err(e) = write_result {
+        eprintln!("warning: write to '{claude_bin}' stdin did not complete: {e}");
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
