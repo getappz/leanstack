@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod models;
 pub mod pulls;
 pub mod releases;
+pub mod actions;
 
 pub use client::Client;
 pub use identity::RepoId;

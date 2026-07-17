@@ -1,0 +1,71 @@
+//! GitHub Actions operations. `list_runs` unwraps the `{workflow_runs: [...]}`
+//! envelope; `rerun`/`dispatch` ignore their empty response bodies.
+
+use crate::github::models::WorkflowRun;
+use crate::github::{Client, GitHubError, RepoId};
+
+fn parse_runs(envelope: serde_json::Value) -> Result<Vec<WorkflowRun>, GitHubError> {
+    let arr = envelope.get("workflow_runs").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+    serde_json::from_value(arr).map_err(|e| GitHubError::Parse(e.to_string()))
+}
+
+fn dispatch_body(git_ref: &str, inputs: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut v = serde_json::json!({ "ref": git_ref });
+    if let Some(i) = inputs {
+        v["inputs"] = i.clone();
+    }
+    v
+}
+
+pub fn list_runs(client: &Client, repo: &RepoId, branch: Option<&str>) -> Result<Vec<WorkflowRun>, GitHubError> {
+    let mut path = format!("/repos/{}/{}/actions/runs", repo.owner, repo.repo);
+    if let Some(b) = branch {
+        path.push_str(&format!("?branch={b}"));
+    }
+    let envelope = client.request("GET", &path, None)?;
+    parse_runs(envelope)
+}
+
+pub fn get_run(client: &Client, repo: &RepoId, run_id: u64) -> Result<WorkflowRun, GitHubError> {
+    let path = format!("/repos/{}/{}/actions/runs/{run_id}", repo.owner, repo.repo);
+    let json = client.request("GET", &path, None)?;
+    serde_json::from_value(json).map_err(|e| GitHubError::Parse(e.to_string()))
+}
+
+pub fn rerun(client: &Client, repo: &RepoId, run_id: u64) -> Result<(), GitHubError> {
+    let path = format!("/repos/{}/{}/actions/runs/{run_id}/rerun", repo.owner, repo.repo);
+    client.request("POST", &path, Some(serde_json::json!({})))?;
+    Ok(())
+}
+
+/// `workflow` is a workflow file name (e.g. "ci.yml") or numeric id.
+pub fn dispatch(client: &Client, repo: &RepoId, workflow: &str, git_ref: &str, inputs: Option<&serde_json::Value>) -> Result<(), GitHubError> {
+    let path = format!("/repos/{}/{}/actions/workflows/{workflow}/dispatches", repo.owner, repo.repo);
+    client.request("POST", &path, Some(dispatch_body(git_ref, inputs)))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parse_runs_extracts_the_array() {
+        let env = serde_json::json!({ "total_count": 1, "workflow_runs": [{
+            "id": 1, "status": "completed", "conclusion": "success",
+            "html_url": "https://github.com/o/r/actions/runs/1" }] });
+        let runs = parse_runs(env).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].conclusion.as_deref(), Some("success"));
+    }
+    #[test]
+    fn parse_runs_defaults_to_empty_when_key_absent() {
+        assert!(parse_runs(serde_json::json!({})).unwrap().is_empty());
+    }
+    #[test]
+    fn dispatch_body_includes_inputs_only_when_present() {
+        let with = dispatch_body("main", Some(&serde_json::json!({"env": "prod"})));
+        assert_eq!(with["ref"], "main");
+        assert_eq!(with["inputs"]["env"], "prod");
+        assert!(dispatch_body("main", None).get("inputs").is_none());
+    }
+}

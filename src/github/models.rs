@@ -32,6 +32,21 @@ pub struct Release {
     pub prerelease: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkflowRun {
+    pub id: u64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub name: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    pub html_url: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub head_branch: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +91,22 @@ mod release_tests {
         assert_eq!(rel.name, None);
         assert!(!rel.draft);
         assert!(!rel.prerelease);
+    }
+}
+
+#[cfg(test)]
+mod workflow_run_tests {
+    use super::*;
+    #[test]
+    fn workflow_run_deserializes_with_optional_conclusion() {
+        let json = serde_json::json!({
+            "id": 555, "name": "CI", "status": "in_progress", "conclusion": null,
+            "html_url": "https://github.com/o/r/actions/runs/555", "head_branch": "feat/x"
+        });
+        let run: WorkflowRun = serde_json::from_value(json).unwrap();
+        assert_eq!(run.id, 555);
+        assert_eq!(run.status, "in_progress");
+        assert_eq!(run.conclusion, None);
+        assert_eq!(run.head_branch.as_deref(), Some("feat/x"));
     }
 }
