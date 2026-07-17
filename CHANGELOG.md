@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0](https://github.com/getappz/agentflare/compare/v1.3.1...v1.4.0) - 2026-07-17
+
+### Added
+
+- *(github)* `flare_git` GitHub module — PR/issue/release/workflow-run models, auth token resolution, action-dispatch MCP tool, init-auth credential classifier ([#221](https://github.com/getappz/agentflare/pull/221))
+- *(ui)* adopt cliclack for interactive CLI prompts and status output ([#220](https://github.com/getappz/agentflare/pull/220))
+- *(optimize)* reversible-compression retrieve registry + `optimize retrieve` CLI/MCP actions (CCR)
+- *(pm)* PM skill pack v1 — /pm:standup /pm:groom /pm:plan /pm:health
+- *(coaching)* contextual coaching triggers (BM25 auto-match) ([#213](https://github.com/getappz/agentflare/pull/213))
+- *(labels)* MCP list/update/delete + project-scope enforcement on attach ([#205](https://github.com/getappz/agentflare/pull/205))
+- MCP-safe self-upgrade primitive + `agentflare dev-install` ([#206](https://github.com/getappz/agentflare/pull/206))
+- *(maintainability)* adopt LOC gate from lean-ctx ([#218](https://github.com/getappz/agentflare/pull/218))
+- server-side groom/standup/health/plan actions
+
+### Fixed
+
+- *(gateway)* init idempotency check survives malformed sibling entries ([#219](https://github.com/getappz/agentflare/pull/219))
+- *(github)* validate workflow_dispatch inputs, percent-encode query values, detect stored github_token, retry RateLimited instead of erroring
+- *(init)* guarantee a GitHub credential for github repos; skip PAT prompt under -y / non-TTY stdin
+- *(mcp)* return text asset content as UTF-8, not base64; server-derive artifact sender ([#211](https://github.com/getappz/agentflare/pull/211), [#207](https://github.com/getappz/agentflare/pull/207))
+- *(worktree)* skip PR when branch content already merged (squash detection); close ambient CARGO_TARGET_DIR gap for agent builds and CI ([#210](https://github.com/getappz/agentflare/pull/210), [#217](https://github.com/getappz/agentflare/pull/217))
+- *(optimize)* persist retrieve originals in blob store; atomic+locked index; TTL-on-list; resolve clippy -D warnings; address CodeRabbit review (pct panic, list path leak, legacy CCR)
+
+### Other
+
+- site: agentflare.dev landing page + Cloudflare Workers deploy, self-hosted display font, OG social image
+- refactor: consolidate compression into the `optimize` module; fold runtime submodule in
+- hook: deprecate inert PreCompact FTS5 scorer, keep as no-op stub
+- chore: fix pre-existing rustfmt drift; add opencode.json rust-analyzer config; exclude machine-local opencode.json and docs/
+
 ## [1.3.0](https://github.com/getappz/agentflare/compare/agentflare-v1.2.0...agentflare-v1.3.0) - 2026-07-12
 
 ### Added
