@@ -6,6 +6,8 @@
 pub mod auth;
 pub mod client;
 pub mod identity;
+pub mod models;
+pub mod pulls;
 
 pub use client::Client;
 pub use identity::{RepoId, normalize_repo};
