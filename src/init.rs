@@ -141,7 +141,7 @@ fn is_stale_rule(path: &PathBuf, current: &str) -> bool {
             .any(|old| existing.trim_end() == old.trim_end())
 }
 
-fn prompt_yes(message: &str, agent: &str, yes: bool) -> bool {
+pub(crate) fn prompt_yes(message: &str, agent: &str, yes: bool) -> bool {
     if yes {
         return true;
     }
@@ -231,6 +231,8 @@ pub fn run(agent: &str, yes: bool) {
         }
         _ => {}
     }
+
+    crate::github::init_auth::ensure(agent, yes);
 
     confirm_gateway_integrations(agent, yes);
 
