@@ -404,6 +404,21 @@ struct GitHubRequest {
     #[schemars(description = "Assignee logins (issue_create)")]
     #[serde(default)]
     assignees: Option<Vec<String>>,
+    #[schemars(description = "Release id (release_get)")]
+    #[serde(default)]
+    release_id: Option<u64>,
+    #[schemars(description = "Git tag (release_create)")]
+    #[serde(default)]
+    tag: Option<String>,
+    #[schemars(description = "Release name (release_create)")]
+    #[serde(default)]
+    name: Option<String>,
+    #[schemars(description = "Mark release as draft (release_create, default false)")]
+    #[serde(default)]
+    draft: Option<bool>,
+    #[schemars(description = "Mark release as prerelease (release_create, default false)")]
+    #[serde(default)]
+    prerelease: Option<bool>,
 }
 
 #[derive(Default)]
@@ -2394,10 +2409,10 @@ impl AgentflareMcp {
         }
     }
     #[tool(
-        description = "GitHub repo management via the flare_git module. Single action-dispatch tool: action=pr_create|pr_list|pr_get|pr_merge|pr_comment|pr_request_review|issue_create|issue_list|issue_get|issue_comment|issue_close|issue_label. Uses gh/GITHUB_TOKEN credentials; repo defaults to the current repo's origin."
+        description = "GitHub repo management via the flare_git module. Single action-dispatch tool: action=pr_create|pr_list|pr_get|pr_merge|pr_comment|pr_request_review|issue_create|issue_list|issue_get|issue_comment|issue_close|issue_label|release_list|release_get|release_latest|release_create. Uses gh/GITHUB_TOKEN credentials; repo defaults to the current repo's origin."
     )]
     fn flare_git(&self, Parameters(req): Parameters<GitHubRequest>) -> Result<String, ErrorData> {
-        use crate::github::{Client, RepoId, issues, pulls};
+        use crate::github::{Client, RepoId, issues, pulls, releases};
 
         let repo = match &req.repo {
             Some(r) => RepoId::parse(r).ok_or_else(|| ErrorData::invalid_params(format!("bad repo: {r}"), None))?,
@@ -2475,6 +2490,27 @@ impl AgentflareMcp {
                 let labels = req.labels.clone().unwrap_or_default();
                 issues::add_labels(&client, &repo, n, &labels).map_err(to_mcp_error)?;
                 format!("Added {} label(s) to issue #{n}", labels.len())
+            }
+            "release_list" => {
+                let rels = releases::list(&client, &repo).map_err(to_mcp_error)?;
+                serde_json::to_string(&rels.iter().map(|r| &r.tag_name).collect::<Vec<_>>()).unwrap_or_default()
+            }
+            "release_get" => {
+                let id = req.release_id.ok_or_else(|| ErrorData::invalid_params("release_id is required", None))?;
+                let rel = releases::get(&client, &repo, id).map_err(to_mcp_error)?;
+                format!("Release {} [{}]: {}", rel.tag_name, if rel.prerelease { "pre" } else { "stable" }, rel.html_url)
+            }
+            "release_latest" => {
+                let rel = releases::latest(&client, &repo).map_err(to_mcp_error)?;
+                format!("Latest: {} — {}", rel.tag_name, rel.html_url)
+            }
+            "release_create" => {
+                let tag = req.tag.as_deref().ok_or_else(|| ErrorData::invalid_params("tag is required", None))?;
+                let rel = releases::create(
+                    &client, &repo, tag, req.name.as_deref(), req.body.as_deref(),
+                    req.draft.unwrap_or(false), req.prerelease.unwrap_or(false),
+                ).map_err(to_mcp_error)?;
+                format!("Created release {}: {}", rel.tag_name, rel.html_url)
             }
             other => return Err(ErrorData::invalid_params(format!("unknown action: {other}"), None)),
         };
