@@ -9,6 +9,7 @@ use crate::progress::ProgressSender;
 use crate::git::resolve_default_branch;
 use crate::git::run_in as run_git_in;
 use crate::git::run_in_ok as run_git_in_ok;
+use crate::github::identity::RepoId;
 
 pub fn resolve_target_branch(
     conn: &rusqlite::Connection,
@@ -375,48 +376,29 @@ pub fn push_and_open_pr(
         p.send(0.5, Some(1.0), Some("Creating PR...".into()));
     }
     let body = format!("Auto-opened on `item done` for {}.", item.id);
-    let pr_timeout = 60;
-    match run_output_timeout(
-        "gh",
-        &[
-            "pr",
-            "create",
-            "--base",
-            target_branch,
-            "--head",
-            &branch,
-            "--title",
-            &item.name,
-            "--body",
-            &body,
-        ],
-        repo_root,
-        pr_timeout,
-    ) {
-        Ok(out) if out.status.success() => {
-            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if url.is_empty() {
-                None
-            } else {
-                if let Some(p) = progress {
-                    p.send(1.0, Some(1.0), Some("PR created".into()));
-                }
-                Some(url)
-            }
+    let repo = match RepoId::resolve_from_remote(repo_root) {
+        Some(r) => r,
+        None => {
+            eprintln!("worktree: cannot resolve origin remote, skipping PR for item {}", item.id);
+            return None;
         }
-        Ok(out) => {
-            eprintln!(
-                "worktree: gh pr create failed for item {}: {}",
-                item.id,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-            None
+    };
+    let client = match crate::github::Client::new() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("worktree: no GitHub credentials, skipping PR for item {}: {e}", item.id);
+            return None;
+        }
+    };
+    match crate::github::pulls::create(&client, &repo, &item.name, &branch, target_branch, Some(&body)) {
+        Ok(pr) => {
+            if let Some(p) = progress {
+                p.send(1.0, Some(1.0), Some("PR created".into()));
+            }
+            Some(pr.html_url)
         }
         Err(e) => {
-            eprintln!(
-                "worktree: gh unavailable, skipping PR for item {}: {e}",
-                item.id
-            );
+            eprintln!("worktree: PR creation failed for item {}: {e}", item.id);
             None
         }
     }

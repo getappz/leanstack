@@ -69,8 +69,10 @@ fn gh_get(url: &str) -> Result<ureq::Response, String> {
 }
 
 pub(crate) fn latest_version() -> Result<String, String> {
-    let resp = gh_get(API_LATEST)?;
-    let json: serde_json::Value = resp.into_json().map_err(|e| format!("JSON parse: {e}"))?;
+    let client = crate::github::Client::anonymous();
+    let json = client
+        .request("GET", "/repos/getappz/agentflare/releases/latest", None)
+        .map_err(|e| e.to_string())?;
     json["tag_name"]
         .as_str()
         .map(|s| s.to_string())
