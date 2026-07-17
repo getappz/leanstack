@@ -279,6 +279,7 @@ args = []
             let content = fs::read_to_string(&path).unwrap();
             assert!(gateway_registry::parse_config(&content).is_err());
             assert!(already_registered("leanctx"));
+            assert!(!already_registered("nonexistent"));
 
             let msg = register(&LEANCTX);
             assert!(msg.starts_with("skip"), "unexpected: {msg}");
