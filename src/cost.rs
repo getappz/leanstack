@@ -11,7 +11,6 @@ use crate::pricing::{calculate_cost, load_pricing};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
 use std::collections::HashMap;
 
 fn claude_projects_dir() -> PathBuf {
@@ -240,6 +239,19 @@ pub(crate) fn aggregate(
     totals
 }
 
+/// Open the analytics cache, sync it against the Claude Code session
+/// transcripts, and return per-group (model or project) cost totals for the
+/// given inclusive date range. Shared by `run` (CLI) and the dashboard's
+/// `/api/cost` endpoint so both report identical, freshly-synced numbers.
+pub(crate) fn summarize(
+    date_range: (NaiveDate, NaiveDate),
+    group_by: GroupBy,
+) -> HashMap<String, GroupTotals> {
+    let mut conn = crate::rollup::open_or_rebuild();
+    crate::rollup::sync(&mut conn, &claude_projects_dir());
+    crate::rollup::query(&conn, date_range, group_by)
+}
+
 pub fn run(days: Option<u32>, by_project: bool) {
     let today = Local::now().date_naive();
     let window = days.unwrap_or(1).max(1);
@@ -250,9 +262,7 @@ pub fn run(days: Option<u32>, by_project: bool) {
         GroupBy::Model
     };
 
-    let mut conn = crate::rollup::open_or_rebuild();
-    crate::rollup::sync(&mut conn, &claude_projects_dir());
-    let totals = crate::rollup::query(&conn, (start, today), group_by);
+    let totals = summarize((start, today), group_by);
 
     let range_label = if window == 1 {
         format!("today ({today})")

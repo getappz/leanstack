@@ -18,6 +18,7 @@ mod coaching;
 mod compact;
 mod components;
 mod cost;
+mod dashboard;
 mod db;
 mod dev_install;
 mod dev_vars;

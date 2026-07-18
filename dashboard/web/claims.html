@@ -1,0 +1,137 @@
+<!-- @dsCard group="Runtime" -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agentflare dashboard — claims</title>
+  <link rel="stylesheet" href="/tokens.css" />
+  <script defer src="/shell.js"></script>
+  <script defer src="/vendor/alpine.js"></script>
+</head>
+<body>
+  <div class="af-app">
+    <aside class="af-sidebar" x-data="shellNav()" x-init="init()">
+      <div class="af-sidebar-header"><span class="af-logo-mark"></span>agentflare</div>
+
+      <div class="af-nav-section">
+        <label class="af-nav-section-label" for="af-workspace-select">Workspace</label>
+        <select
+          id="af-workspace-select"
+          class="af-select"
+          x-model="workspaceId"
+          @change="onWorkspaceChange()"
+        >
+          <template x-if="!loading && workspaces.length === 0">
+            <option value="">No workspaces</option>
+          </template>
+          <template x-for="w in workspaces" :key="w.id">
+            <option :value="w.id" x-text="w.name"></option>
+          </template>
+        </select>
+      </div>
+
+      <div class="af-nav-section">
+        <label class="af-nav-section-label" for="af-project-select">Project</label>
+        <select
+          id="af-project-select"
+          class="af-select"
+          x-model="projectId"
+          @change="onProjectChange()"
+        >
+          <template x-if="!loading && projects.length === 0">
+            <option value="">No projects</option>
+          </template>
+          <template x-for="p in projects" :key="p.id">
+            <option :value="p.id" x-text="p.identifier + ' — ' + p.name"></option>
+          </template>
+        </select>
+      </div>
+
+      <nav class="af-nav-links">
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/board.html') }" :href="navHref('/board.html')">Board</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/list.html') }" :href="navHref('/list.html')">List</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/webhooks.html') }" :href="navHref('/webhooks.html')">Webhooks</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/claims.html') }" :href="navHref('/claims.html')">Claims</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/cost.html') }" :href="navHref('/cost.html')">Cost</a>
+      </nav>
+    </aside>
+
+    <div class="af-main-col" x-data="claimsView()" x-init="init()">
+      <header class="af-topbar">
+        <h1>Claims</h1>
+        <span class="af-topbar-meta">
+          <span class="af-live" :class="{ 'is-on': connected }"></span>
+          <span x-text="connected ? 'live' : 'connecting…'"></span>
+        </span>
+      </header>
+      <main class="af-content">
+        <template x-if="claims.length === 0">
+          <p class="af-empty">No active claims. Agents holding a repo/target lock will appear here in real time.</p>
+        </template>
+        <div class="af-table-wrap" x-show="claims.length > 0">
+          <table class="af-table">
+            <thead>
+              <tr>
+                <th>Repo</th>
+                <th>Target</th>
+                <th>Owner</th>
+                <th>Status</th>
+                <th>Claimed</th>
+                <th>Last heartbeat</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="c in claims" :key="c.repo + '|' + c.target">
+                <tr>
+                  <td class="af-mono af-truncate" x-text="c.repo"></td>
+                  <td class="af-mono" x-text="c.target"></td>
+                  <td x-text="c.owner"></td>
+                  <td>
+                    <span
+                      class="af-badge"
+                      :class="c.stale ? 'af-prio af-prio-urgent' : ''"
+                      x-text="c.stale ? 'stale' : (c.status || 'active')"
+                    ></span>
+                  </td>
+                  <td x-text="afFormatTime(c.created_at)"></td>
+                  <td x-text="afFormatTime(c.heartbeat_at)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    function claimsView() {
+      return {
+        claims: [],
+        connected: false,
+        source: null,
+
+        init() {
+          // Live feed: the /events SSE stream pushes a full { claims, ... }
+          // snapshot every ~2s, so no polling and no manual refresh.
+          this.source = new EventSource('/events');
+          this.source.onmessage = (e) => {
+            try {
+              const snap = JSON.parse(e.data);
+              this.claims = Array.isArray(snap.claims) ? snap.claims : [];
+              this.connected = true;
+            } catch (_e) {
+              /* ignore a malformed frame; the next tick replaces it */
+            }
+          };
+          this.source.onerror = () => {
+            // EventSource auto-reconnects; just reflect the gap in the UI.
+            this.connected = false;
+          };
+        },
+      };
+    }
+  </script>
+</body>
+</html>

@@ -43,7 +43,7 @@ serde_json = "1"
 dirs = "6"
 chrono = "0.4"
 rmcp = { version = "1.8.0", features = ["server", "transport-io"] }
-tokio = { version = "1", features = ["rt", "macros", "io-util", "io-std", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "io-util", "io-std", "sync", "net", "time"] }
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 hex = "0.4"
@@ -72,6 +72,10 @@ agentflare-backend = { package = "agentflare-backend", path = "crates/agentflare
 db_kit = { package = "agentflare-db-kit", path = "crates/agentflare-db-kit" }
 agent-detector = "0.2.1"
 flare-search-kit = { path = "crates/flare-search-kit" }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace"] }
+rust-embed = "8"
+tokio-stream = { version = "0.1", features = ["sync"] }
 agentflare-store = { path = "crates/agentflare-store" }
 
 [target.'cfg(unix)'.dependencies]
@@ -93,6 +97,7 @@ built = { version = "0.8", features = ["chrono"] }
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
 pretty_assertions = "1"
+reqwest = { version = "0.12", default-features = false }
 
 [lints.rust]
 unsafe_code = "warn"

@@ -1,0 +1,163 @@
+<!-- @dsCard group="PM" -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agentflare dashboard — list</title>
+  <link rel="stylesheet" href="/tokens.css" />
+  <script defer src="/shell.js"></script>
+  <script defer src="/vendor/alpine.js"></script>
+</head>
+<body>
+  <div class="af-app">
+    <aside class="af-sidebar" x-data="shellNav()" x-init="init()">
+      <div class="af-sidebar-header">agentflare</div>
+
+      <div class="af-nav-section">
+        <label class="af-nav-section-label" for="af-workspace-select">Workspace</label>
+        <select
+          id="af-workspace-select"
+          class="af-select"
+          x-model="workspaceId"
+          @change="onWorkspaceChange()"
+        >
+          <template x-if="!loading && workspaces.length === 0">
+            <option value="">No workspaces</option>
+          </template>
+          <template x-for="w in workspaces" :key="w.id">
+            <option :value="w.id" x-text="w.name"></option>
+          </template>
+        </select>
+      </div>
+
+      <div class="af-nav-section">
+        <label class="af-nav-section-label" for="af-project-select">Project</label>
+        <select
+          id="af-project-select"
+          class="af-select"
+          x-model="projectId"
+          @change="onProjectChange()"
+        >
+          <template x-if="!loading && projects.length === 0">
+            <option value="">No projects</option>
+          </template>
+          <template x-for="p in projects" :key="p.id">
+            <option :value="p.id" x-text="p.identifier + ' — ' + p.name"></option>
+          </template>
+        </select>
+      </div>
+
+      <nav class="af-nav-links">
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/board.html') }" :href="navHref('/board.html')">Board</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/list.html') }" :href="navHref('/list.html')">List</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/webhooks.html') }" :href="navHref('/webhooks.html')">Webhooks</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/claims.html') }" :href="navHref('/claims.html')">Claims</a>
+        <a class="af-nav-link" :class="{ 'is-active': isActive('/cost.html') }" :href="navHref('/cost.html')">Cost</a>
+      </nav>
+    </aside>
+
+    <div class="af-main-col">
+      <header class="af-topbar">
+        <h1>List</h1>
+      </header>
+      <main
+        class="af-content"
+        x-data="listView()"
+        x-init="init()"
+      >
+        <template x-if="!loading && !projectId">
+          <p class="af-empty">No project selected — create a workspace and project first.</p>
+        </template>
+        <template x-if="!loading && projectId && items.length === 0">
+          <p class="af-empty">No items.</p>
+        </template>
+        <div class="af-table-wrap" x-show="!loading && items.length > 0">
+          <table class="af-table">
+            <thead>
+              <tr>
+                <th @click="sortBy('name')">Name</th>
+                <th @click="sortBy('priority')">Priority</th>
+                <th @click="sortBy('state_name')">State</th>
+                <th @click="sortBy('assignee_agent')">Assignee</th>
+                <th @click="sortBy('created_at')">Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="item in sortedItems()" :key="item.id">
+                <tr class="is-clickable" @click="window.location.href = itemHref(item)">
+                  <td x-text="item.name"></td>
+                  <td><span class="af-badge" x-text="item.priority"></span></td>
+                  <td x-text="stateName(item.state_id)"></td>
+                  <td x-text="item.assignee_agent || '—'"></td>
+                  <td x-text="afFormatTime(item.created_at)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    function listView() {
+      return {
+        projectId: '',
+        states: [],
+        items: [],
+        loading: true,
+        sortField: 'created_at',
+        sortDir: 'desc',
+
+        async init() {
+          const params = afParams();
+          const scope = await afResolveScope(params.get('workspace_id'), params.get('project_id'));
+          this.projectId = scope.projectId;
+          if (!this.projectId) {
+            this.loading = false;
+            return;
+          }
+          const [states, items] = await Promise.all([
+            afGetJson(`/api/pm/states?project_id=${encodeURIComponent(this.projectId)}`, []),
+            afGetJson(`/api/pm/items?project_id=${encodeURIComponent(this.projectId)}`, []),
+          ]);
+          this.states = states;
+          this.items = items;
+          this.loading = false;
+        },
+
+        stateName(stateId) {
+          const state = this.states.find((s) => s.id === stateId);
+          return state ? state.name : stateId;
+        },
+
+        sortBy(field) {
+          if (this.sortField === field) {
+            this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+          } else {
+            this.sortField = field;
+            this.sortDir = 'asc';
+          }
+        },
+
+        sortedItems() {
+          const field = this.sortField;
+          const dir = this.sortDir === 'asc' ? 1 : -1;
+          const value = (item) => (field === 'state_name' ? this.stateName(item.state_id) : item[field]);
+          return this.items.slice().sort((a, b) => {
+            const av = value(a);
+            const bv = value(b);
+            if (av === bv) return 0;
+            return av > bv ? dir : -dir;
+          });
+        },
+
+        itemHref(item) {
+          return afLink('/item.html', { project_id: this.projectId, id: item.id });
+        },
+      };
+    }
+  </script>
+</body>
+</html>
