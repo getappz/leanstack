@@ -1,10 +1,14 @@
 /target
 /.docs/
 /domain-research/
+/skills/
 /.worktrees/
 
 # Machine-local docs output / notes, not part of the project
 /docs/
+
+# Competitive audit clones and reports — large, transient, per-machine
+/.competitive-audit/
 
 # Local opencode config — carries per-machine MCP server paths, not shared
 /opencode.json
@@ -22,3 +26,11 @@
 /install_onpush.ps1
 /run_onpush.bat
 /serve_docs.py
+
+# Claude Code local runtime artifacts (machine-local, not shared)
+# NOTE: do NOT ignore .claude/ wholesale — .claude/skills/pm/ is tracked/shared.
+.claude/worktrees/
+.claude/projects/
+.claude/history/
+.claude/todos/
+.claude/stats.json

@@ -3,7 +3,7 @@ name = "agentflare-backend"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
-license = "MIT"
+license = "Apache-2.0"
 description = "Universal agent backend: workspace/project/item schema + CRUD, ported from Plane's domain model."
 publish = false
 
