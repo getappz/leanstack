@@ -41,6 +41,18 @@ pub fn handle_remember(input: RememberInput) -> Result<String, String> {
         observations::SaveOutcome::Updated(id) => ("updated", id),
         observations::SaveOutcome::Duplicate(id) => ("duplicate", id),
     };
+    // Best-effort semantic index; failure must never fail the remember.
+    // Duplicates keep their existing vector — content is unchanged by definition.
+    if status != "duplicate" {
+        if let Some(vec) =
+            super::engine::embed_doc(&format!("{}\n{}", input.title, input.content))
+        {
+            let model = super::engine::model_name().unwrap_or_default();
+            if let Err(e) = super::embeddings::upsert(&conn, id, &vec, &model) {
+                eprintln!("[memory] embedding upsert failed for obs {id}: {e}");
+            }
+        }
+    }
     Ok(json!({"status": status, "id": id}).to_string())
 }
 

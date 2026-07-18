@@ -1,4 +1,5 @@
 pub mod embeddings;
+pub mod engine;
 pub mod mcp;
 pub mod observations;
 pub mod prompts;

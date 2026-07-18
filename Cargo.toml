@@ -90,6 +90,10 @@ process-tree = ["sysinfo"]
 # Measured to save ~900 tokens/turn of context-window space, but that's
 # mostly cache-read traffic (cheap) — no confirmed $ savings yet.
 skill-overrides-sync = []
+# Local ONNX embeddings for hybrid memory recall. Off by default: pulls the
+# ort runtime via agentflare-store. Without it (or without a downloaded
+# model) recall is FTS-only — byte-identical to pre-semantic behavior.
+semantic = ["agentflare-store/embeddings"]
 
 [build-dependencies]
 built = { version = "0.8", features = ["chrono"] }
