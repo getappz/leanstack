@@ -1,7 +1,7 @@
 name: pr-title
 
 on:
-  pull_request_target:
+  pull_request:
     types:
       - opened
       - edited
@@ -15,10 +15,11 @@ jobs:
       pull-requests: read
     steps:
       # Types mirror cliff.toml's commit_parsers so the changelog and this
-      # gate agree on the same vocabulary. No checkout here — this only
-      # reads github.event.pull_request.title via the API, so
-      # pull_request_target (needed for this to work on fork PRs) carries no
-      # untrusted-checkout risk.
+      # gate agree on the same vocabulary. Plain pull_request (not
+      # pull_request_target) — this only reads the title, needs no elevated
+      # fork-PR token/permissions, and zizmor flags pull_request_target as
+      # almost-always-insecure by default regardless of payload; no reason
+      # to opt into that scrutiny for a check this narrow.
       - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
