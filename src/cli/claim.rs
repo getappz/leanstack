@@ -160,7 +160,9 @@ fn report(res: rusqlite::Result<bool>, verb: &str, repo: &str, target: &str, own
     match res {
         Ok(true) => println!("{verb} {repo} {target}"),
         Ok(false) => {
-            crate::ui::error(&format!("{repo} {target} not held by {owner} — nothing changed"));
+            crate::ui::error(&format!(
+                "{repo} {target} not held by {owner} — nothing changed"
+            ));
             std::process::exit(1);
         }
         Err(e) => fail(e),
@@ -169,7 +171,9 @@ fn report(res: rusqlite::Result<bool>, verb: &str, repo: &str, target: &str, own
 
 fn require_repo(explicit: Option<String>) -> String {
     crate::claims::resolve_repo(explicit).unwrap_or_else(|| {
-        crate::ui::error("claim: could not determine repo — run inside a git repo or pass --repo owner/name");
+        crate::ui::error(
+            "claim: could not determine repo — run inside a git repo or pass --repo owner/name",
+        );
         std::process::exit(1);
     })
 }

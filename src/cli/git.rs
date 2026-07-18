@@ -73,7 +73,9 @@ fn install_hooks(opts: InstallHooksArgs) {
     let repo_root = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
-            crate::ui::error(&format!("agentflare git install-hooks: cannot resolve cwd: {e}"));
+            crate::ui::error(&format!(
+                "agentflare git install-hooks: cannot resolve cwd: {e}"
+            ));
             return;
         }
     };
@@ -82,18 +84,24 @@ fn install_hooks(opts: InstallHooksArgs) {
     if !repo_root.join(".git").exists()
         && run_git(&repo_root, &["rev-parse", "--git-dir"]).is_none()
     {
-        crate::ui::error("agentflare git install-hooks: not a git repository (run inside a repo root)");
+        crate::ui::error(
+            "agentflare git install-hooks: not a git repository (run inside a repo root)",
+        );
         return;
     }
 
     if let Err(e) = ensure_shared_templates() {
-        crate::ui::error(&format!("agentflare git install-hooks: cannot write shared templates: {e}"));
+        crate::ui::error(&format!(
+            "agentflare git install-hooks: cannot write shared templates: {e}"
+        ));
         return;
     }
 
     let local_dir = repo_root.join(".githooks");
     if let Err(e) = fs::create_dir_all(&local_dir) {
-        crate::ui::error(&format!("agentflare git install-hooks: cannot create {local_dir:?}: {e}"));
+        crate::ui::error(&format!(
+            "agentflare git install-hooks: cannot create {local_dir:?}: {e}"
+        ));
         return;
     }
 

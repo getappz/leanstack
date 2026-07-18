@@ -797,7 +797,9 @@ pub fn isolate_add_with(agent: &str, profile: &str, shallow: bool, json: bool) {
                 serde_json::json!({"error": "isolated profile already exists"})
             );
         } else {
-            crate::ui::error(&format!("isolated profile '{agent}/{profile}' already exists"));
+            crate::ui::error(&format!(
+                "isolated profile '{agent}/{profile}' already exists"
+            ));
         }
         return;
     }

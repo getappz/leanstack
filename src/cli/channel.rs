@@ -47,7 +47,7 @@ impl ChannelArgs {
                 match crate::channels::send_message(&conn, platform, &target, &message) {
                     Ok(()) => println!("sent to {to}:{target}"),
                     Err(e) => {
-                        crate::ui::error(&format!("error: {e}"));
+                        crate::ui::error(&e.to_string());
                         std::process::exit(1);
                     }
                 }

@@ -33,7 +33,7 @@ pub fn run(release: bool, dry_run: bool) {
             std::process::exit(1);
         }
         Err(e) => {
-            crate::ui::error(&format!("error: {e}"));
+            crate::ui::error(&e.to_string());
             std::process::exit(1);
         }
     };
@@ -41,14 +41,14 @@ pub fn run(release: bool, dry_run: bool) {
     // Verify the fresh build runs *before* replacing anything, so a broken
     // build never overwrites a working install.
     if let Err(e) = verify_runs(&built) {
-        crate::ui::error(&format!("error: built binary failed verification: {e}"));
+        crate::ui::error(&format!("built binary failed verification: {e}"));
         std::process::exit(1);
     }
 
     let target = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            crate::ui::error(&format!("error: cannot determine current binary path: {e}"));
+            crate::ui::error(&format!("cannot determine current binary path: {e}"));
             std::process::exit(1);
         }
     };
