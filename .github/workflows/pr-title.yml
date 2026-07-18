@@ -1,0 +1,37 @@
+name: pr-title
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+
+jobs:
+  lint-pr-title:
+    name: Validate PR title
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # Types mirror cliff.toml's commit_parsers so the changelog and this
+      # gate agree on the same vocabulary. Plain pull_request (not
+      # pull_request_target) — this only reads the title, needs no elevated
+      # fork-PR token/permissions, and zizmor flags pull_request_target as
+      # almost-always-insecure by default regardless of payload; no reason
+      # to opt into that scrutiny for a check this narrow.
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            perf
+            refactor
+            style
+            test
+            chore
+            ci
+          requireScope: false
