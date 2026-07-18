@@ -2427,6 +2427,27 @@ impl AgentflareMcp {
             )),
         }
     }
+
+    /// Rejects PR titles that don't start with a conventional-commit type,
+    /// mirroring `.github/workflows/pr-title.yml`'s
+    /// `amannn/action-semantic-pull-request` config so the check fires here
+    /// instead of only after push+PR-open. Keep this type list in sync with
+    /// that workflow file if it changes.
+    fn validate_conventional_pr_title(title: &str) -> Result<(), String> {
+        const TYPES: &[&str] = &[
+            "feat", "fix", "docs", "perf", "refactor", "style", "test", "chore", "ci",
+        ];
+        let pattern = format!(r"^(?:{})(?:\([^)]+\))?!?:\s", TYPES.join("|"));
+        let re = regex::Regex::new(&pattern).expect("valid conventional-commit regex");
+        if re.is_match(title) {
+            Ok(())
+        } else {
+            Err(format!(
+                "PR title must start with a conventional-commit type ({}), e.g. \"chore: ...\" — got {title:?}",
+                TYPES.join(", ")
+            ))
+        }
+    }
     #[tool(
         description = "GitHub repo management via the flare_git module. Single action-dispatch tool: action=pr_create|pr_list|pr_get|pr_merge|pr_comment|pr_request_review|issue_create|issue_list|issue_get|issue_comment|issue_close|issue_label|release_list|release_get|release_latest|release_create|run_list|run_get|run_rerun|workflow_dispatch. Uses gh/GITHUB_TOKEN credentials; repo defaults to the current repo's origin."
     )]
@@ -2452,6 +2473,8 @@ impl AgentflareMcp {
                     .title
                     .as_deref()
                     .ok_or_else(|| ErrorData::invalid_params("title is required", None))?;
+                Self::validate_conventional_pr_title(title)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
                 let head = req
                     .head
                     .as_deref()
@@ -3572,6 +3595,32 @@ mod tests {
         );
         assert_eq!(parse_flared_port("port = not-a-number\n"), None);
         assert_eq!(parse_flared_port(""), None);
+    }
+
+    #[test]
+    fn validate_conventional_pr_title_accepts_known_types_rejects_others() {
+        for good in [
+            "feat: add thing",
+            "fix(scope): bug",
+            "chore!: breaking rename",
+            "docs: update readme",
+        ] {
+            assert!(
+                AgentflareMcp::validate_conventional_pr_title(good).is_ok(),
+                "expected {good:?} to pass"
+            );
+        }
+        for bad in [
+            "Add thing",
+            "Relicense repo from MIT to Apache-2.0",
+            "Feat: wrong case",
+            "unknown: not a real type",
+        ] {
+            assert!(
+                AgentflareMcp::validate_conventional_pr_title(bad).is_err(),
+                "expected {bad:?} to fail"
+            );
+        }
     }
 
     #[test]
