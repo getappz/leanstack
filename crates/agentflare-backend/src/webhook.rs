@@ -113,6 +113,23 @@ fn row_to_webhook(row: &rusqlite::Row) -> rusqlite::Result<Webhook> {
     })
 }
 
+fn row_to_webhook_log(row: &rusqlite::Row) -> rusqlite::Result<WebhookLog> {
+    Ok(WebhookLog {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        webhook_id: row.get(2)?,
+        event_type: row.get(3)?,
+        request_method: row.get(4)?,
+        request_headers: row.get(5)?,
+        request_body: row.get(6)?,
+        response_status: row.get(7)?,
+        response_headers: row.get(8)?,
+        response_body: row.get(9)?,
+        retry_count: row.get(10)?,
+        created_at: row.get(11)?,
+    })
+}
+
 /// Blocks loopback, unspecified, multicast, and private/link-local ranges
 /// (RFC1918, 169.254.0.0/16, IPv6 link-local fe80::/10, IPv6 ULA fc00::/7) —
 /// the ranges an SSRF'd webhook could use to reach internal services.
@@ -241,6 +258,17 @@ pub fn list_active_matching(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![workspace_id], row_to_webhook)?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// Delivery log entries for a workspace, most recent first — the audit
+/// trail the dashboard's `/api/pm/events` view reads.
+pub fn list_logs_by_workspace(conn: &Connection, workspace_id: &str) -> Result<Vec<WebhookLog>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, workspace_id, webhook_id, event_type, request_method, request_headers, request_body, response_status, response_headers, response_body, retry_count, created_at
+         FROM webhook_logs WHERE workspace_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![workspace_id], row_to_webhook_log)?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
@@ -604,6 +632,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(log_count, 1, "a log row must be created even on failure");
+    }
+
+    #[test]
+    fn list_logs_by_workspace_returns_delivery_history() {
+        let conn = db::open_in_memory().unwrap();
+        let wid = seed_workspace(&conn);
+        let wh = create(
+            &conn,
+            CreateWebhook {
+                workspace_id: wid.clone(),
+                url: "https://example.invalid/hook".into(),
+                secret_key: "s3cret".into(),
+                on_item: Some(true),
+                on_state: None,
+                on_project: None,
+            },
+        )
+        .unwrap();
+        deliver(&conn, &wh, "item", "create", serde_json::json!({"id": "123"})).unwrap();
+        let logs = list_logs_by_workspace(&conn, &wid).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].webhook_id, wh.id);
+        assert_eq!(logs[0].event_type.as_deref(), Some("item"));
+        let empty = list_logs_by_workspace(&conn, "nonexistent-workspace").unwrap();
+        assert!(empty.is_empty());
     }
 
     #[test]

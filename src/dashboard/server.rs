@@ -56,6 +56,41 @@ async fn pm_states_handler(Query(q): Query<ProjectScope>) -> Response {
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct ItemScope {
+    item_id: String,
+}
+
+async fn pm_comments_handler(Query(q): Query<ItemScope>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        crate::dashboard::data::comments_json(&q.item_id),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct LabelScope {
+    workspace_id: Option<String>,
+    project_id: Option<String>,
+}
+
+async fn pm_labels_handler(Query(q): Query<LabelScope>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        crate::dashboard::data::labels_json(q.workspace_id.as_deref(), q.project_id.as_deref()),
+    )
+        .into_response()
+}
+
+async fn pm_events_handler(Query(q): Query<WorkspaceScope>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        crate::dashboard::data::events_json(&q.workspace_id),
+    )
+        .into_response()
+}
+
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
@@ -84,6 +119,9 @@ pub fn router() -> Router {
         .route("/api/pm/projects", get(pm_projects_handler))
         .route("/api/pm/items", get(pm_items_handler))
         .route("/api/pm/states", get(pm_states_handler))
+        .route("/api/pm/comments", get(pm_comments_handler))
+        .route("/api/pm/labels", get(pm_labels_handler))
+        .route("/api/pm/events", get(pm_events_handler))
         .fallback(static_handler)
 }
 
