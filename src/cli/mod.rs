@@ -17,6 +17,7 @@ mod memory;
 mod optimize;
 mod review;
 mod run;
+mod serve;
 mod uninstall;
 mod update;
 
@@ -63,6 +64,7 @@ pub enum Commands {
     Claim(claim::ClaimArgs),
     Review(review::ReviewArgs),
     Memory(memory::MemoryArgs),
+    Serve(serve::ServeArgs),
 }
 
 impl Commands {
@@ -89,6 +91,7 @@ impl Commands {
             Self::Claim(cmd) => cmd.run(),
             Self::Review(cmd) => cmd.run(),
             Self::Memory(cmd) => cmd.run(),
+            Self::Serve(cmd) => cmd.run(),
         }
     }
 }
