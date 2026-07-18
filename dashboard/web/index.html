@@ -1,0 +1,28 @@
+<!-- @dsCard group="Shell" -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agentflare dashboard</title>
+  <script defer src="/vendor/alpine.js"></script>
+</head>
+<body>
+  <main x-data="claims()" x-init="load()">
+    <h1>Claims</h1>
+    <p x-show="rows.length === 0">No active claims.</p>
+    <ul>
+      <template x-for="c in rows" :key="c.repo + c.target">
+        <li><span x-text="c.repo"></span> / <span x-text="c.target"></span>
+          — <span x-text="c.owner"></span> <em x-show="c.stale">(stale)</em></li>
+      </template>
+    </ul>
+  </main>
+  <script>
+    function claims() {
+      return { rows: [],
+        async load() { this.rows = await (await fetch('/api/claims')).json(); } };
+    }
+  </script>
+</body>
+</html>
