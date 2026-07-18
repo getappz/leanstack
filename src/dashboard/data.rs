@@ -164,6 +164,19 @@ pub fn cost_json(days: u32, by: &str) -> String {
     cost_totals_to_json(&crate::cost::summarize((start, today), group_by))
 }
 
+/// A full snapshot of the volatile surfaces the `/events` SSE stream pushes:
+/// `{ claims, cost_today }`. Reuses `claims_json` and today's `cost_json`
+/// (grouped by model), re-parsing each so they nest as JSON values rather
+/// than embedded strings. On any error the reused fns already yield `[]`/an
+/// empty summary, so this never fails.
+pub fn live_snapshot_json() -> String {
+    let claims: serde_json::Value =
+        serde_json::from_str(&claims_json()).unwrap_or_else(|_| serde_json::json!([]));
+    let cost_today: serde_json::Value =
+        serde_json::from_str(&cost_json(1, "model")).unwrap_or_else(|_| serde_json::json!({}));
+    serde_json::json!({ "claims": claims, "cost_today": cost_today }).to_string()
+}
+
 /// Shape per-group cost totals into the `/api/cost` JSON. Split out from
 /// `cost_json` so it can be unit-tested without opening the analytics cache
 /// or touching the filesystem. Groups are sorted by key for stable output.
@@ -248,6 +261,23 @@ mod tests {
 
         assert_eq!(v["total_cost_usd"], 1.25, "total is the sum of group costs");
         assert_eq!(v["any_unpriced"], true, "flagged when any group is unpriced");
+    }
+
+    #[test]
+    fn live_snapshot_json_bundles_claims_and_cost_today() {
+        crate::paths::test_support::with_temp_home(|| {
+            let json = live_snapshot_json();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert!(v["claims"].is_array(), "claims must be a JSON array: {json}");
+            assert!(
+                v["cost_today"].is_object(),
+                "cost_today must be the cost summary object: {json}"
+            );
+            assert!(
+                v["cost_today"]["groups"].is_array(),
+                "cost_today carries the grouped rows: {json}"
+            );
+        });
     }
 
     #[test]

@@ -7,6 +7,7 @@ use axum::{
 };
 use rust_embed::RustEmbed;
 use serde::Deserialize;
+use axum::response::sse::{Event, KeepAlive, Sse};
 
 #[derive(RustEmbed)]
 #[folder = "dashboard/web/"]
@@ -107,6 +108,21 @@ async fn cost_handler(Query(q): Query<CostQuery>) -> Response {
         .into_response()
 }
 
+/// Server-Sent Events stream of the volatile surfaces (claims + today's
+/// cost), pushing a fresh `data::live_snapshot_json()` snapshot every ~2s so
+/// the Claims and Cost views update without a manual refresh. The first tick
+/// fires immediately, so a connecting client gets a snapshot right away.
+async fn events_handler()
+-> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let ticks = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+        std::time::Duration::from_secs(2),
+    ));
+    let stream = tokio_stream::StreamExt::map(ticks, |_| {
+        Ok(Event::default().data(crate::dashboard::data::live_snapshot_json()))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
@@ -139,6 +155,7 @@ pub fn router() -> Router {
         .route("/api/pm/labels", get(pm_labels_handler))
         .route("/api/webhooks", get(webhooks_handler))
         .route("/api/cost", get(cost_handler))
+        .route("/events", get(events_handler))
         .fallback(static_handler)
 }
 
