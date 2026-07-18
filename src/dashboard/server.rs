@@ -1,10 +1,12 @@
 use axum::{
     Router,
+    extract::Query,
     http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 use rust_embed::RustEmbed;
+use serde::Deserialize;
 
 #[derive(RustEmbed)]
 #[folder = "dashboard/web/"]
@@ -12,6 +14,24 @@ struct WebAssets;
 
 async fn claims_handler() -> Response {
     ([(header::CONTENT_TYPE, "application/json")], crate::dashboard::data::claims_json())
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct WorkspaceScope {
+    workspace_id: String,
+}
+
+async fn pm_workspaces_handler() -> Response {
+    ([(header::CONTENT_TYPE, "application/json")], crate::dashboard::data::workspaces_json())
+        .into_response()
+}
+
+async fn pm_projects_handler(Query(q): Query<WorkspaceScope>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        crate::dashboard::data::projects_json(&q.workspace_id),
+    )
         .into_response()
 }
 
@@ -37,7 +57,11 @@ fn mime_for(p: &str) -> &'static str {
 }
 
 pub fn router() -> Router {
-    Router::new().route("/api/claims", get(claims_handler)).fallback(static_handler)
+    Router::new()
+        .route("/api/claims", get(claims_handler))
+        .route("/api/pm/workspaces", get(pm_workspaces_handler))
+        .route("/api/pm/projects", get(pm_projects_handler))
+        .fallback(static_handler)
 }
 
 pub async fn run(host: &str, port: u16, open: bool) {

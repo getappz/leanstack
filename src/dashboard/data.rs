@@ -24,6 +24,38 @@ pub fn claims_json() -> String {
     }
 }
 
+/// All PM workspaces as a JSON array string; reuses
+/// `agentflare_backend::workspace::list`. "[]" on error.
+pub fn workspaces_json() -> String {
+    match pm_db_readonly() {
+        Ok(conn) => workspaces_json_from(&conn),
+        Err(_) => "[]".into(),
+    }
+}
+
+fn workspaces_json_from(conn: &Connection) -> String {
+    match agentflare_backend::workspace::list(conn) {
+        Ok(rows) => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into()),
+        Err(_) => "[]".into(),
+    }
+}
+
+/// Projects in a workspace as a JSON array string; reuses
+/// `agentflare_backend::project::list_by_workspace`. "[]" on error.
+pub fn projects_json(workspace_id: &str) -> String {
+    match pm_db_readonly() {
+        Ok(conn) => projects_json_from(&conn, workspace_id),
+        Err(_) => "[]".into(),
+    }
+}
+
+fn projects_json_from(conn: &Connection, workspace_id: &str) -> String {
+    match agentflare_backend::project::list_by_workspace(conn, workspace_id) {
+        Ok(rows) => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into()),
+        Err(_) => "[]".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +91,52 @@ mod tests {
             let err = ro.execute("INSERT INTO t (x) VALUES (1)", []).unwrap_err();
             assert!(format!("{err}").contains("read"), "must reject writes: {err}");
         });
+    }
+
+    #[test]
+    fn workspaces_json_from_serializes_backend_rows() {
+        let conn = agentflare_backend::db::open_in_memory().unwrap();
+        agentflare_backend::workspace::create(
+            &conn,
+            agentflare_backend::workspace::CreateWorkspace {
+                name: "Acme".into(),
+                slug: "acme".into(),
+                owner_agent: None,
+                item_label: None,
+            },
+        )
+        .unwrap();
+        let json = workspaces_json_from(&conn);
+        assert!(json.contains("\"slug\":\"acme\""), "expected acme workspace in {json}");
+    }
+
+    #[test]
+    fn projects_json_from_scopes_to_workspace() {
+        let conn = agentflare_backend::db::open_in_memory().unwrap();
+        let ws = agentflare_backend::workspace::create(
+            &conn,
+            agentflare_backend::workspace::CreateWorkspace {
+                name: "Acme".into(),
+                slug: "acme".into(),
+                owner_agent: None,
+                item_label: None,
+            },
+        )
+        .unwrap();
+        agentflare_backend::project::create(
+            &conn,
+            agentflare_backend::project::CreateProject {
+                workspace_id: ws.id.clone(),
+                name: "Rocket".into(),
+                identifier: "ROCK".into(),
+                external_source: None,
+                external_id: None,
+            },
+        )
+        .unwrap();
+        let json = projects_json_from(&conn, &ws.id);
+        assert!(json.contains("\"identifier\":\"ROCK\""), "expected ROCK project in {json}");
+        let empty = projects_json_from(&conn, "nonexistent-workspace");
+        assert_eq!(empty, "[]");
     }
 }
