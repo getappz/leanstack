@@ -79,11 +79,10 @@ fn install_hooks(opts: InstallHooksArgs) {
     };
 
     // Sanity: must be inside a git repo.
-    if !repo_root.join(".git").exists() && run_git(&repo_root, &["rev-parse", "--git-dir"]).is_none()
+    if !repo_root.join(".git").exists()
+        && run_git(&repo_root, &["rev-parse", "--git-dir"]).is_none()
     {
-        eprintln!(
-            "agentflare git install-hooks: not a git repository (run inside a repo root)"
-        );
+        eprintln!("agentflare git install-hooks: not a git repository (run inside a repo root)");
         return;
     }
 
