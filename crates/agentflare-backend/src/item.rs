@@ -194,7 +194,8 @@ pub fn get(conn: &Connection, id: &str) -> Result<Item> {
 /// When `project_id` is `Some`, scopes the sequence_id lookup to that project;
 /// when `None`, searches across all projects (returns the first match).
 pub fn resolve_id(conn: &Connection, project_id: Option<&str>, id_or_seq: &str) -> Result<String> {
-    if let Ok(seq) = id_or_seq.parse::<i64>() {
+    let numeric_part = id_or_seq.strip_prefix('#').unwrap_or(id_or_seq);
+    if let Ok(seq) = numeric_part.parse::<i64>() {
         let sql = match project_id {
             Some(_) => {
                 "SELECT id FROM items WHERE project_id = ?1 AND sequence_id = ?2 AND deleted_at IS NULL"
@@ -1664,5 +1665,57 @@ mod tests {
 
         assert!(crate::claim::heartbeat(&conn, &item.id, "agent:1", 1100).unwrap());
         assert!(crate::claim::done(&conn, &item.id, "agent:1", 1200).unwrap());
+    }
+
+    #[test]
+    fn resolve_id_passes_through_uuid_unchanged() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+
+        let resolved = resolve_id(&conn, Some(&pid), &item.id).unwrap();
+        assert_eq!(resolved, item.id);
+    }
+
+    #[test]
+    fn resolve_id_resolves_bare_numeric_sequence_id() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+
+        let resolved = resolve_id(&conn, Some(&pid), &item.sequence_id.to_string()).unwrap();
+        assert_eq!(resolved, item.id);
+    }
+
+    #[test]
+    fn resolve_id_resolves_hash_prefixed_sequence_id() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let item = make_item(&conn, &pid, &sid);
+
+        let resolved = resolve_id(&conn, Some(&pid), &format!("#{}", item.sequence_id)).unwrap();
+        assert_eq!(resolved, item.id);
+    }
+
+    #[test]
+    fn resolve_id_numeric_not_found_returns_not_found_error() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        let _item = make_item(&conn, &pid, &sid);
+
+        let err = resolve_id(&conn, Some(&pid), "999999").unwrap_err();
+        assert!(matches!(err, crate::error::Error::NotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn resolve_id_scopes_numeric_lookup_to_project() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid_a, sid_a) = seed_project(&conn, "a");
+        let (pid_b, _sid_b) = seed_project(&conn, "b");
+        let item = make_item(&conn, &pid_a, &sid_a);
+
+        // The item's sequence_id exists in project A but not project B.
+        let err = resolve_id(&conn, Some(&pid_b), &item.sequence_id.to_string()).unwrap_err();
+        assert!(matches!(err, crate::error::Error::NotFound(_)), "{err:?}");
     }
 }

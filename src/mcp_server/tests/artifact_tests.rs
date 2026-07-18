@@ -339,9 +339,13 @@ fn handoff_tool_requires_recipient_and_assigns_item() {
 
         let assets = item_assets(&s, &item_id);
         assert_eq!(assets.as_array().unwrap().len(), 1);
+        // Match production's actual transform (AgentflareMcp::slugify), not
+        // just .to_lowercase() -- nanoid ids can contain `_`, which slugify
+        // collapses to `-` but to_lowercase() leaves untouched, making the
+        // naive comparison flaky whenever a generated id contains one.
         assert_eq!(
             assets[0]["filename"],
-            format!("{}.md", item_id.to_lowercase())
+            format!("{}.md", AgentflareMcp::slugify(&item_id))
         );
     });
 }

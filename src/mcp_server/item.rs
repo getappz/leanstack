@@ -198,13 +198,14 @@ impl AgentflareMcp {
     }
 
     pub(super) fn item_get(&self, req: ItemRequest) -> Result<String, ErrorData> {
-        let id = req
+        let raw = req
             .id
             .ok_or_else(|| ErrorData::invalid_params("id is required for get", None))?;
-        if id.trim().is_empty() {
+        if raw.trim().is_empty() {
             return Err(ErrorData::invalid_params("id is required", None));
         }
         self.with_backend_db(|conn| {
+            let id = self.resolve_item_id(conn, &raw)?;
             let item = agentflare_backend::item::get(conn, &id).map_err(map_backend_err)?;
             Ok(serde_json::to_string_pretty(&item).unwrap_or_default())
         })?
