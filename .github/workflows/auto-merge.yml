@@ -13,7 +13,18 @@ jobs:
     # Toggle repo-wide without touching this file:
     #   gh variable set AUTO_MERGE_ENABLED --body false   (disable)
     #   gh variable set AUTO_MERGE_ENABLED --body true    (re-enable, or just delete the variable — unset defaults to enabled)
-    if: vars.AUTO_MERGE_ENABLED != 'false' && github.event.pull_request.draft == false
+    #
+    # head.repo.full_name == repository excludes forks explicitly — CI
+    # passing is not the same as a human having reviewed what an external
+    # PR's code actually does, so third-party contributions never get
+    # auto-merge auto-enabled here regardless of check status. (GitHub also
+    # blocks secrets from fork-triggered pull_request runs by default, so
+    # AUTOMERGE_TOKEN wouldn't be reachable from a fork either way — this
+    # check makes that explicit instead of relying on it silently.)
+    if: >-
+      vars.AUTO_MERGE_ENABLED != 'false' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
