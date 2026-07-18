@@ -551,7 +551,13 @@ pub fn search(
         return Ok(results);
     }
 
-    let like_pat = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+    let like_pat = format!(
+        "%{}%",
+        query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
     let mut like_stmt = conn.prepare(
         "SELECT items.id, items.project_id, items.state_id, items.name, items.description,
                 items.priority, items.parent_id, items.assignee_agent, items.sequence_id,
@@ -1576,6 +1582,43 @@ mod tests {
         let results = search(&conn, &pid, "flare-store", None).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].name.contains("agentflare-store"));
+    }
+
+    #[test]
+    fn search_like_fallback_matches_literal_backslash_in_query() {
+        let conn = db::open_in_memory().unwrap();
+        let (pid, sid) = seed_project(&conn, "");
+        create(
+            &conn,
+            CreateItem {
+                project_id: pid.clone(),
+                state_id: sid,
+                name: r"agentflare\filter setup".into(),
+                description: Some("unrelated".into()),
+                priority: None,
+                parent_id: None,
+                assignee_agent: None,
+                sort_order: None,
+                external_source: None,
+                external_id: None,
+                metadata: None,
+                label_ids: vec![],
+                assignee_ids: vec![],
+                dependency_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        // FTS5 tokenizes on the backslash the same way it does on a hyphen
+        // (see the suffix-of-compound-token test above), so "flare\filter"
+        // has no whole-token FTS match and only the LIKE fallback can find
+        // it. Before escaping backslashes first, `format!` left the query's
+        // real `\` in the pattern un-doubled, so SQLite's `ESCAPE '\\'`
+        // silently swallowed it as an (undefined) escape prefix for the
+        // next character instead of matching it literally — the fallback
+        // then missed a hit it should have found.
+        let results = search(&conn, &pid, r"flare\filter", None).unwrap();
+        assert_eq!(results.len(), 1);
     }
 
     #[test]
