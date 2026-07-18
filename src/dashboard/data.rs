@@ -148,10 +148,107 @@ fn webhooks_json_from(conn: &Connection, workspace_id: &str) -> String {
     }
 }
 
+/// Cost summary for the last `days` days (inclusive of today), grouped by
+/// `by` — "project" groups by project, anything else by model — as a JSON
+/// object `{ groups: [...], total_cost_usd, any_unpriced }`. Reuses
+/// `crate::cost::summarize`, so it opens+syncs the same analytics cache the
+/// `agentflare cost` CLI does and reports identical numbers.
+pub fn cost_json(days: u32, by: &str) -> String {
+    let today = chrono::Local::now().date_naive();
+    let window = days.max(1);
+    let start = today - chrono::Duration::days(window as i64 - 1);
+    let group_by = match by {
+        "project" => crate::cost::GroupBy::Project,
+        _ => crate::cost::GroupBy::Model,
+    };
+    cost_totals_to_json(&crate::cost::summarize((start, today), group_by))
+}
+
+/// Shape per-group cost totals into the `/api/cost` JSON. Split out from
+/// `cost_json` so it can be unit-tested without opening the analytics cache
+/// or touching the filesystem. Groups are sorted by key for stable output.
+fn cost_totals_to_json(
+    totals: &std::collections::HashMap<String, crate::cost::GroupTotals>,
+) -> String {
+    let mut rows: Vec<_> = totals.iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut total_cost_usd = 0.0_f64;
+    let mut any_unpriced = false;
+    let groups: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(key, g)| {
+            total_cost_usd += g.cost_usd;
+            any_unpriced |= g.has_unpriced_usage;
+            serde_json::json!({
+                "key": key,
+                "input_tokens": g.tokens.input_tokens,
+                "output_tokens": g.tokens.output_tokens,
+                "cache_read_tokens": g.tokens.cache_read_tokens,
+                "cache_creation_tokens": g.tokens.cache_creation_tokens,
+                "cost_usd": g.cost_usd,
+                "has_unpriced_usage": g.has_unpriced_usage,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "groups": groups,
+        "total_cost_usd": total_cost_usd,
+        "any_unpriced": any_unpriced,
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn cost_totals_to_json_shapes_groups_total_and_unpriced() {
+        use crate::cost::GroupTotals;
+        use crate::pricing::TokenUsage;
+        let mut totals = std::collections::HashMap::new();
+        totals.insert(
+            "claude-opus-4-8".to_string(),
+            GroupTotals {
+                tokens: TokenUsage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    ..Default::default()
+                },
+                cost_usd: 1.25,
+                has_unpriced_usage: false,
+            },
+        );
+        totals.insert(
+            "some-unpriced-model".to_string(),
+            GroupTotals {
+                tokens: TokenUsage {
+                    input_tokens: 10,
+                    ..Default::default()
+                },
+                cost_usd: 0.0,
+                has_unpriced_usage: true,
+            },
+        );
+
+        let json = cost_totals_to_json(&totals);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let groups = v["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2, "one row per group");
+        // Sorted by key: opus first, unpriced second.
+        assert_eq!(groups[0]["key"], "claude-opus-4-8");
+        assert_eq!(groups[0]["input_tokens"], 100);
+        assert_eq!(groups[0]["output_tokens"], 50);
+        assert_eq!(groups[0]["cost_usd"], 1.25);
+        assert_eq!(groups[1]["key"], "some-unpriced-model");
+
+        assert_eq!(v["total_cost_usd"], 1.25, "total is the sum of group costs");
+        assert_eq!(v["any_unpriced"], true, "flagged when any group is unpriced");
+    }
 
     #[test]
     fn open_readonly_rejects_writes() {

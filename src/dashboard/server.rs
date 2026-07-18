@@ -91,6 +91,22 @@ async fn webhooks_handler(Query(q): Query<WorkspaceScope>) -> Response {
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct CostQuery {
+    days: Option<u32>,
+    by: Option<String>,
+}
+
+async fn cost_handler(Query(q): Query<CostQuery>) -> Response {
+    let days = q.days.unwrap_or(1);
+    let by = q.by.as_deref().unwrap_or("model");
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        crate::dashboard::data::cost_json(days, by),
+    )
+        .into_response()
+}
+
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
@@ -122,6 +138,7 @@ pub fn router() -> Router {
         .route("/api/pm/comments", get(pm_comments_handler))
         .route("/api/pm/labels", get(pm_labels_handler))
         .route("/api/webhooks", get(webhooks_handler))
+        .route("/api/cost", get(cost_handler))
         .fallback(static_handler)
 }
 
