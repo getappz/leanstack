@@ -23,7 +23,14 @@ fn colorize(s: &str) -> String {
     if !interactive() || std::env::var_os("NO_COLOR").is_some() {
         return s.to_string();
     }
-    s.lines()
+    colorize_lines(s)
+}
+
+/// Colorize every line unconditionally (no interactivity/env checks) — split
+/// out so the trailing-newline behavior is testable without a real TTY.
+fn colorize_lines(s: &str) -> String {
+    let mut out = s
+        .lines()
         .map(|line| {
             if line.starts_with('━') {
                 format!("\x1b[2;36m{line}\x1b[0m")
@@ -32,5 +39,20 @@ fn colorize(s: &str) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    if s.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colorize_lines_preserves_trailing_newline() {
+        assert!(colorize_lines(BANNER).ends_with('\n'));
+        assert!(!colorize_lines("no trailing newline").ends_with('\n'));
+    }
 }
