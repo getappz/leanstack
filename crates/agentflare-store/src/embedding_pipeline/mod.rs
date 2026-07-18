@@ -33,7 +33,7 @@ struct InputNames {
 
 impl EmbeddingEngine {
     pub fn load(model_dir: &Path) -> anyhow::Result<Self> {
-        let selected = model_registry::resolve_model();
+        let selected = model_registry::resolve_model()?;
         Self::load_model(model_dir, selected)
     }
 
@@ -60,33 +60,52 @@ impl EmbeddingEngine {
             .iter()
             .map(|i| i.name().to_string())
             .collect();
+        let output_names_list: Vec<String> = session
+            .outputs()
+            .iter()
+            .map(|o| o.name().to_string())
+            .collect();
+
+        // Resolved by name first — ONNX export order isn't guaranteed
+        // stable across model versions — with a positional fallback only
+        // for the two inputs every embedding model has.
+        let input_ids_name = find_input_name(&input_names_list, "input_ids")
+            .or_else(|| input_names_list.first().cloned())
+            .ok_or_else(|| anyhow::anyhow!("Model {} has no inputs", config.name))?;
+        let attention_mask_name = find_input_name(&input_names_list, "attention_mask")
+            .or_else(|| input_names_list.get(1).cloned())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Model {} is missing an attention_mask input", config.name)
+            })?;
+        let named_token_type_ids = find_input_name(&input_names_list, "token_type_ids");
 
         let token_type_ids = if config.needs_token_type_ids {
-            if input_names_list.len() < 3 {
-                anyhow::bail!(
-                    "Model {} requires token_type_ids but only has {} inputs",
-                    config.name,
-                    input_names_list.len()
-                );
-            }
-            Some(input_names_list[2].clone())
-        } else if input_names_list.len() >= 3 {
-            Some(input_names_list[2].clone())
+            Some(
+                named_token_type_ids
+                    .clone()
+                    .or_else(|| input_names_list.get(2).cloned())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Model {} requires token_type_ids but only has {} inputs",
+                            config.name,
+                            input_names_list.len()
+                        )
+                    })?,
+            )
         } else {
-            None
+            named_token_type_ids
         };
 
-        let output_name = session
-            .outputs()
-            .first()
-            .map(|o| o.name().to_string())
+        let output_name = find_output_name(&output_names_list)
+            .or_else(|| output_names_list.first().cloned())
             .ok_or_else(|| anyhow::anyhow!("Model has no named outputs"))?;
 
         let dimensions = detect_dimensions(
             &config,
             &model_path,
             &tokenizer,
-            &input_names_list,
+            &input_ids_name,
+            &attention_mask_name,
             &token_type_ids,
             &output_name,
         )?;
@@ -99,8 +118,8 @@ impl EmbeddingEngine {
             model_id,
             model_config: config,
             input_names: InputNames {
-                input_ids: input_names_list[0].clone(),
-                attention_mask: input_names_list[1].clone(),
+                input_ids: input_ids_name,
+                attention_mask: attention_mask_name,
                 token_type_ids,
             },
             output_name,
@@ -236,11 +255,37 @@ fn tokenize(tokenizer: &TokenizerKind, text: &str, max_len: usize) -> TokenizedI
     }
 }
 
+/// Finds an input/output whose ONNX-declared name matches `keyword` (exact
+/// match preferred, substring as a fallback) — case-insensitive since
+/// exporters aren't consistent about casing.
+fn find_input_name(names: &[String], keyword: &str) -> Option<String> {
+    names
+        .iter()
+        .find(|n| n.eq_ignore_ascii_case(keyword))
+        .or_else(|| {
+            names
+                .iter()
+                .find(|n| n.to_ascii_lowercase().contains(keyword))
+        })
+        .cloned()
+}
+
+fn find_output_name(names: &[String]) -> Option<String> {
+    const PREFERRED: &[&str] = &[
+        "last_hidden_state",
+        "sentence_embedding",
+        "hidden_state",
+        "embedding",
+    ];
+    PREFERRED.iter().find_map(|kw| find_input_name(names, kw))
+}
+
 fn detect_dimensions(
     config: &ModelConfig,
     model_path: &Path,
     tokenizer: &TokenizerKind,
-    input_names: &[String],
+    input_ids_name: &str,
+    attention_mask_name: &str,
     token_type_ids: &Option<String>,
     output_name: &str,
 ) -> anyhow::Result<usize> {
@@ -269,14 +314,14 @@ fn detect_dimensions(
         let type_array = ndarray::Array2::from_shape_vec((1, seq_len), type_vec)?;
         let type_tensor = ort::value::Tensor::from_array(type_array)?;
         session.run(ort::inputs![
-            input_names[0].as_str() => ids_tensor,
-            input_names[1].as_str() => mask_tensor,
+            input_ids_name => ids_tensor,
+            attention_mask_name => mask_tensor,
             type_id.as_str() => type_tensor,
         ])?
     } else {
         session.run(ort::inputs![
-            input_names[0].as_str() => ids_tensor,
-            input_names[1].as_str() => mask_tensor,
+            input_ids_name => ids_tensor,
+            attention_mask_name => mask_tensor,
         ])?
     };
 

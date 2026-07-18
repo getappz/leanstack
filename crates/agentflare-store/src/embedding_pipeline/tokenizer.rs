@@ -166,8 +166,10 @@ impl WordPieceTokenizer {
                 end -= 1;
             }
             if !matched {
-                tokens.push(self.unk_id);
-                start += 1;
+                // Standard WordPiece: a word that can't be fully segmented
+                // maps to a single [UNK], not one UNK per unmatched
+                // character interleaved with whatever subwords did match.
+                return vec![self.unk_id];
             }
         }
         tokens
@@ -310,6 +312,18 @@ pub enum HfTokenizerInner {
     Bpe(BpeTokenizer),
 }
 
+/// Parses only `model.type`/`model.vocab`/`model.merges` from a HF
+/// `tokenizer.json`; pre-tokenization always runs this crate's own
+/// whitespace/BERT-punctuation splitter + lowercasing (see
+/// [`WordPieceTokenizer::pre_tokenize`]), not the file's own `normalizer`,
+/// `pre_tokenizer`, or `post_processor` sections (NFD/accent-stripping,
+/// byte-level/Metaspace pre-tokenizers, template special-token insertion,
+/// etc). This matches the built-in MiniLM/Nomic models, which use plain
+/// BERT-style WordPiece, but a custom `hf:owner/repo` model that relies on a
+/// non-default normalizer or pre-tokenizer will tokenize differently than
+/// the reference HF implementation. Full parity would mean implementing the
+/// whole tokenizers normalizer/pre-tokenizer/post-processor grammar, which
+/// is out of scope here — known limitation, not a bug in the common path.
 pub struct HfTokenizerWrapper {
     inner: HfTokenizerInner,
 }
@@ -476,6 +490,17 @@ mod tests {
         let out = tok.encode("hello", 32);
         // [CLS]=2, hello=4, [SEP]=3
         assert_eq!(out.input_ids, vec![2, 4, 3]);
+    }
+
+    #[test]
+    fn wordpiece_unsegmentable_word_is_single_unk() {
+        let tok = HfTokenizerWrapper::from_json(WORDPICE_JSON).unwrap();
+        // "helloz" greedily matches "hello" then fails on the trailing "z"
+        // (no "##z" in vocab) — the whole word should collapse to one
+        // [UNK], not "hello" followed by a stray [UNK].
+        let out = tok.encode("helloz", 32);
+        // [CLS]=2, [UNK]=1, [SEP]=3
+        assert_eq!(out.input_ids, vec![2, 1, 3]);
     }
 
     #[test]
