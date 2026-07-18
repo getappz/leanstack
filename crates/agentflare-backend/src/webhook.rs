@@ -262,7 +262,7 @@ pub fn list_active_matching(
 }
 
 /// Delivery log entries for a workspace, most recent first — the audit
-/// trail the dashboard's `/api/pm/events` view reads.
+/// trail the dashboard's `/api/webhooks` view reads.
 pub fn list_logs_by_workspace(conn: &Connection, workspace_id: &str) -> Result<Vec<WebhookLog>> {
     let mut stmt = conn.prepare(
         "SELECT id, workspace_id, webhook_id, event_type, request_method, request_headers, request_body, response_status, response_headers, response_body, retry_count, created_at

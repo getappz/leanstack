@@ -83,10 +83,10 @@ async fn pm_labels_handler(Query(q): Query<LabelScope>) -> Response {
         .into_response()
 }
 
-async fn pm_events_handler(Query(q): Query<WorkspaceScope>) -> Response {
+async fn webhooks_handler(Query(q): Query<WorkspaceScope>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        crate::dashboard::data::events_json(&q.workspace_id),
+        crate::dashboard::data::webhooks_json(&q.workspace_id),
     )
         .into_response()
 }
@@ -121,7 +121,7 @@ pub fn router() -> Router {
         .route("/api/pm/states", get(pm_states_handler))
         .route("/api/pm/comments", get(pm_comments_handler))
         .route("/api/pm/labels", get(pm_labels_handler))
-        .route("/api/pm/events", get(pm_events_handler))
+        .route("/api/webhooks", get(webhooks_handler))
         .fallback(static_handler)
 }
 

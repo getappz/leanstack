@@ -134,14 +134,14 @@ fn labels_json_from(
 /// Webhook delivery log entries for a workspace as a JSON array string — the
 /// closest thing to a PM "events" audit trail on this backend; reuses
 /// `agentflare_backend::webhook::list_logs_by_workspace`. "[]" on error.
-pub fn events_json(workspace_id: &str) -> String {
+pub fn webhooks_json(workspace_id: &str) -> String {
     match pm_db_readonly() {
-        Ok(conn) => events_json_from(&conn, workspace_id),
+        Ok(conn) => webhooks_json_from(&conn, workspace_id),
         Err(_) => "[]".into(),
     }
 }
 
-fn events_json_from(conn: &Connection, workspace_id: &str) -> String {
+fn webhooks_json_from(conn: &Connection, workspace_id: &str) -> String {
     match agentflare_backend::webhook::list_logs_by_workspace(conn, workspace_id) {
         Ok(rows) => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into()),
         Err(_) => "[]".into(),
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn events_json_from_scopes_to_workspace() {
+    fn webhooks_json_from_scopes_to_workspace() {
         let conn = agentflare_backend::db::open_in_memory().unwrap();
         let ws = agentflare_backend::workspace::create(
             &conn,
@@ -446,9 +446,9 @@ mod tests {
             serde_json::json!({"id": "1"}),
         )
         .unwrap();
-        let json = events_json_from(&conn, &ws.id);
+        let json = webhooks_json_from(&conn, &ws.id);
         assert!(json.contains("\"event_type\":\"item\""), "expected event log in {json}");
-        let empty = events_json_from(&conn, "nonexistent-workspace");
+        let empty = webhooks_json_from(&conn, "nonexistent-workspace");
         assert_eq!(empty, "[]");
     }
 }
