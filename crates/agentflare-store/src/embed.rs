@@ -21,7 +21,7 @@ pub fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
 
 /// Little-endian byte blob → f32 vec. None if length isn't a multiple of 4.
 pub fn bytes_to_vec(b: &[u8]) -> Option<Vec<f32>> {
-    if b.len() % 4 != 0 {
+    if !b.len().is_multiple_of(4) {
         return None;
     }
     Some(

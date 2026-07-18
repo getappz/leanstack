@@ -12,7 +12,13 @@ pub fn upsert(conn: &Connection, obs_id: i64, vec: &[f32], model: &str) -> rusql
          ON CONFLICT(obs_id) DO UPDATE SET
            embedding = excluded.embedding, dim = excluded.dim,
            model = excluded.model, updated_at = excluded.updated_at",
-        params![obs_id, vec_to_bytes(vec), vec.len() as i64, model, now_iso()],
+        params![
+            obs_id,
+            vec_to_bytes(vec),
+            vec.len() as i64,
+            model,
+            now_iso()
+        ],
     )?;
     Ok(())
 }
@@ -121,7 +127,10 @@ mod tests {
         let hits = candidates(&conn, &[1.0, 0.0], Some("p"), None, 10).unwrap();
         assert_eq!(hits[0].0, a);
         assert!(hits[0].1 > 0.99);
-        assert!(!hits.iter().any(|(id, _)| *id == c), "project filter leaked");
+        assert!(
+            !hits.iter().any(|(id, _)| *id == c),
+            "project filter leaked"
+        );
     }
 
     #[test]

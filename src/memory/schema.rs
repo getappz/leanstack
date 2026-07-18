@@ -1,4 +1,3 @@
-use rusqlite::Connection;
 use rusqlite_migration::{M, Migrations};
 
 /// Frozen v1 DDL — the exact pre-migration brain schema. Never edit this
@@ -130,8 +129,10 @@ pub fn migrations() -> Migrations<'static> {
     ])
 }
 
-/// Bring a connection (usually in-memory, in tests) to the latest schema.
-pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
+/// Bring a connection (usually in-memory) to the latest schema. Only used by
+/// tests — production opens through `db_kit::open_file(_, &migrations())`.
+#[cfg(test)]
+pub fn migrate(conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
     migrations()
         .to_latest(conn)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))

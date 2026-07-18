@@ -132,10 +132,10 @@ pub fn search_hybrid(
     let mut by_id: std::collections::HashMap<i64, Observation> =
         fts.into_iter().map(|(o, _)| (o.id, o)).collect();
     for (id, _) in &merged {
-        if !by_id.contains_key(id) {
-            if let Some(o) = super::observations::get(conn, *id)? {
-                by_id.insert(*id, o);
-            }
+        if !by_id.contains_key(id)
+            && let Some(o) = super::observations::get(conn, *id)?
+        {
+            by_id.insert(*id, o);
         }
     }
     merged.retain(|(id, _)| by_id.contains_key(id));
@@ -217,7 +217,15 @@ mod tests {
         let conn = new_db();
         for (title, content) in [("widget rollout", "shipping"), ("widget outage", "boom")] {
             observations::save(
-                &conn, None, "note", title, content, None, Some("p"), None, None,
+                &conn,
+                None,
+                "note",
+                title,
+                content,
+                None,
+                Some("p"),
+                None,
+                None,
             )
             .unwrap();
         }
