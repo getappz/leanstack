@@ -52,7 +52,7 @@ impl MemoryArgs {
                 };
                 match crate::memory::mcp::handle_context(input) {
                     Ok(out) => println!("{out}"),
-                    Err(e) => eprintln!("error: {e}"),
+                    Err(e) => crate::ui::error(&format!("error: {e}")),
                 }
             }
             MemoryCommands::Search {
@@ -69,23 +69,23 @@ impl MemoryArgs {
                 };
                 match crate::memory::mcp::handle_recall(input) {
                     Ok(out) => println!("{out}"),
-                    Err(e) => eprintln!("error: {e}"),
+                    Err(e) => crate::ui::error(&format!("error: {e}")),
                 }
             }
             MemoryCommands::Sessions { project, limit } => match crate::memory::store::open() {
-                Err(e) => eprintln!("error: {e}"),
+                Err(e) => crate::ui::error(&format!("error: {e}")),
                 Ok(conn) => {
                     match crate::memory::sessions::list_recent(&conn, project.as_deref(), limit) {
                         Ok(sessions) => println!(
                             "{}",
                             serde_json::to_string_pretty(&sessions).unwrap_or_default()
                         ),
-                        Err(e) => eprintln!("error: {e}"),
+                        Err(e) => crate::ui::error(&format!("error: {e}")),
                     }
                 }
             },
             MemoryCommands::Observations { project, limit } => match crate::memory::store::open() {
-                Err(e) => eprintln!("error: {e}"),
+                Err(e) => crate::ui::error(&format!("error: {e}")),
                 Ok(conn) => match crate::memory::observations::list_recent(
                     &conn,
                     project.as_deref(),
@@ -95,7 +95,7 @@ impl MemoryArgs {
                     Ok(obs) => {
                         println!("{}", serde_json::to_string_pretty(&obs).unwrap_or_default())
                     }
-                    Err(e) => eprintln!("error: {e}"),
+                    Err(e) => crate::ui::error(&format!("error: {e}")),
                 },
             },
         }

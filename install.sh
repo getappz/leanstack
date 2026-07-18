@@ -20,7 +20,7 @@ set -eu
 print_banner() {
   # Suppress for non-interactive, NO_COLOR, or quiet install.
   case "${AGENTFLARE_QUIET_INSTALL:-}" in 1|true) return 0 ;; esac
-  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  if [ -t 1 ] && [ -z "${NO_COLOR+x}" ]; then
     CY=$'\033[2;36m'; MG=$'\033[1;35m'; RS=$'\033[0m'
   else
     CY=""; MG=""; RS=""

@@ -19,8 +19,8 @@ $ErrorActionPreference = 'Stop'
 
 # --- branding banner (mirror of assets/banner.txt; keep in sync) ---
 function Write-Banner {
-    if ($env:AGENTFLARE_QUIET_INSTALL -eq '1') { return }
-    $useColor = (-not [Console]::IsOutputRedirected) -and (-not $env:NO_COLOR)
+    if ($env:AGENTFLARE_QUIET_INSTALL -eq '1' -or $env:AGENTFLARE_QUIET_INSTALL -eq 'true') { return }
+    $useColor = (-not [Console]::IsOutputRedirected) -and (-not (Test-Path Env:NO_COLOR))
     $line = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
     $text = '  agentflare  ·  Optimize AI CLI agents for cost & performance'
     if ($useColor) {

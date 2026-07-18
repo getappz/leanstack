@@ -1,15 +1,15 @@
+mod about;
 mod agent_install;
 mod agent_launch;
 mod agents;
 mod alias;
 mod artifacts;
-mod about;
-mod banner;
 mod atomic_fs;
 mod auth;
 mod auth_crypt;
 mod auth_db;
 mod auth_runner;
+mod banner;
 mod build_time;
 mod channels;
 mod claims;
