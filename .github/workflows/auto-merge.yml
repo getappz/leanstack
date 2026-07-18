@@ -14,17 +14,24 @@ jobs:
     #   gh variable set AUTO_MERGE_ENABLED --body false   (disable)
     #   gh variable set AUTO_MERGE_ENABLED --body true    (re-enable, or just delete the variable — unset defaults to enabled)
     #
-    # head.repo.full_name == repository excludes forks explicitly — CI
-    # passing is not the same as a human having reviewed what an external
-    # PR's code actually does, so third-party contributions never get
-    # auto-merge auto-enabled here regardless of check status. (GitHub also
-    # blocks secrets from fork-triggered pull_request runs by default, so
-    # AUTOMERGE_TOKEN wouldn't be reachable from a fork either way — this
-    # check makes that explicit instead of relying on it silently.)
+    # Two exclusions, both deliberate:
+    # - head.repo.full_name == repository: excludes forks. CI passing isn't
+    #   the same as a human having reviewed external code.
+    # - pull_request.user.login is in TRUSTED_PR_AUTHORS (default: getappz):
+    #   excludes anyone/anything else with direct write access too — e.g.
+    #   Devin opens PRs straight into this repo (not a fork), so the fork
+    #   check alone wouldn't catch it. Common practice for solo/small-team
+    #   repos isn't a custom review-enforcement bot (that just adds a
+    #   self-modifying exploit surface under pull_request triggers, since
+    #   the check's own logic would live in a file the PR can edit) — it's
+    #   simply not auto-merging anyone else's PRs, and reviewing those by
+    #   hand before merging when ready.
+    #   gh variable set TRUSTED_PR_AUTHORS --body "getappz,some-other-login"
     if: >-
       vars.AUTO_MERGE_ENABLED != 'false' &&
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(format(',{0},', vars.TRUSTED_PR_AUTHORS || 'getappz'), format(',{0},', github.event.pull_request.user.login))
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
