@@ -1,4 +1,4 @@
-use crate::github::models::PullRequest;
+use crate::github::models::{PullRequest, Review, ReviewComment};
 use crate::github::{Client, GitHubError, RepoId};
 
 fn create_body(title: &str, head: &str, base: &str, body: Option<&str>) -> serde_json::Value {
@@ -74,6 +74,26 @@ pub fn request_review(
         Some(serde_json::json!({ "reviewers": reviewers })),
     )?;
     Ok(())
+}
+
+/// Review verdicts (approve/request-changes/comment) — includes bot reviewers
+/// like CodeRabbit, which submit as ordinary PR reviews.
+pub fn list_reviews(client: &Client, repo: &RepoId, number: u64) -> Result<Vec<Review>, GitHubError> {
+    let path = format!("/repos/{}/{}/pulls/{number}/reviews", repo.owner, repo.repo);
+    let json = client.get_paginated(&path, crate::github::client::as_array)?;
+    serde_json::from_value(json).map_err(|e| GitHubError::Parse(e.to_string()))
+}
+
+/// Line-anchored review comments (diff comments), separate from general
+/// issue-style comments returned by `issues::list_comments`.
+pub fn list_review_comments(
+    client: &Client,
+    repo: &RepoId,
+    number: u64,
+) -> Result<Vec<ReviewComment>, GitHubError> {
+    let path = format!("/repos/{}/{}/pulls/{number}/comments", repo.owner, repo.repo);
+    let json = client.get_paginated(&path, crate::github::client::as_array)?;
+    serde_json::from_value(json).map_err(|e| GitHubError::Parse(e.to_string()))
 }
 
 #[cfg(test)]
@@ -177,5 +197,37 @@ mod tests {
         let sent: serde_json::Value = serde_json::from_str(&reqs[0].body).unwrap();
         assert_eq!(sent["reviewers"][0], "alice");
         assert_eq!(sent["reviewers"][1], "bob");
+    }
+
+    #[test]
+    fn list_reviews_fetches_and_parses() {
+        let server = MockServer::start(vec![MockResponse::json(
+            200,
+            r#"[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","body":"lgtm","submitted_at":"2026-07-19T00:00:00Z"}]"#,
+        )]);
+        let client = server.client(None);
+        let reviews = list_reviews(&client, &repo(), 5).unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].user.login, "coderabbitai[bot]");
+        assert_eq!(
+            server.requests()[0].path,
+            "/repos/o/r/pulls/5/reviews?per_page=100&page=1"
+        );
+    }
+
+    #[test]
+    fn list_review_comments_fetches_and_parses() {
+        let server = MockServer::start(vec![MockResponse::json(
+            200,
+            r#"[{"user":{"login":"bob"},"path":"src/x.rs","line":42,"body":"nit"}]"#,
+        )]);
+        let client = server.client(None);
+        let comments = list_review_comments(&client, &repo(), 5).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].line, Some(42));
+        assert_eq!(
+            server.requests()[0].path,
+            "/repos/o/r/pulls/5/comments?per_page=100&page=1"
+        );
     }
 }

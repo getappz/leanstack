@@ -4,7 +4,7 @@
 //! Note: GitHub's issues endpoint also returns pull requests (a PR is an
 //! issue); `list` does not filter them out.
 
-use crate::github::models::Issue;
+use crate::github::models::{Comment, Issue};
 use crate::github::{Client, GitHubError, RepoId};
 
 fn create_body(
@@ -67,6 +67,17 @@ pub fn comment(client: &Client, repo: &RepoId, number: u64, body: &str) -> Resul
     );
     client.request("POST", &path, Some(serde_json::json!({ "body": body })))?;
     Ok(())
+}
+
+/// General (non-line-anchored) comments — where bots like CodeRabbit post
+/// their PR summary/walkthrough (a PR is also an issue on this endpoint).
+pub fn list_comments(client: &Client, repo: &RepoId, number: u64) -> Result<Vec<Comment>, GitHubError> {
+    let path = format!(
+        "/repos/{}/{}/issues/{number}/comments",
+        repo.owner, repo.repo
+    );
+    let json = client.get_paginated(&path, crate::github::client::as_array)?;
+    serde_json::from_value(json).map_err(|e| GitHubError::Parse(e.to_string()))
 }
 
 pub fn close(client: &Client, repo: &RepoId, number: u64) -> Result<Issue, GitHubError> {
@@ -173,6 +184,22 @@ mod tests {
         assert_eq!(reqs[0].path, "/repos/o/r/issues/4/comments");
         let sent: serde_json::Value = serde_json::from_str(&reqs[0].body).unwrap();
         assert_eq!(sent["body"], "hi");
+    }
+
+    #[test]
+    fn list_comments_fetches_and_parses() {
+        let server = MockServer::start(vec![MockResponse::json(
+            200,
+            r#"[{"user":{"login":"coderabbitai[bot]"},"body":"walkthrough...","created_at":"2026-07-19T00:00:00Z"}]"#,
+        )]);
+        let client = server.client(None);
+        let comments = list_comments(&client, &repo(), 4).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].user.login, "coderabbitai[bot]");
+        assert_eq!(
+            server.requests()[0].path,
+            "/repos/o/r/issues/4/comments?per_page=100&page=1"
+        );
     }
 
     #[test]
