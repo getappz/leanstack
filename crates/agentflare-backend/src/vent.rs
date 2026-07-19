@@ -24,6 +24,7 @@ pub struct UpsertOutcome {
     pub was_actionable: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn upsert(
     conn: &Connection,
     project_id: &str,
@@ -71,7 +72,17 @@ pub fn upsert(
         "INSERT INTO vents (id, project_id, message, severity, tags, topic_key,
              seen_count, actionable, item_id, first_event_id, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL, ?8, ?9, ?9)",
-        params![id, project_id, message, severity, tags_json, topic_key, seen_delta, first_event_id, now],
+        params![
+            id,
+            project_id,
+            message,
+            severity,
+            tags_json,
+            topic_key,
+            seen_delta,
+            first_event_id,
+            now
+        ],
     )?;
     Ok(UpsertOutcome {
         id,
@@ -120,7 +131,8 @@ pub fn list(conn: &Connection, project_id: &str, actionable_only: bool) -> Resul
             updated_at: r.get(11)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -138,10 +150,32 @@ mod tests {
     fn upsert_dedups_by_topic_and_accumulates_seen_count() {
         let conn = open_in_memory().unwrap();
         let p = seed_project(&conn);
-        let a = upsert(&conn, &p, "disk full", "medium", "[]", "disk full", "ev1", 1, 100).unwrap();
+        let a = upsert(
+            &conn,
+            &p,
+            "disk full",
+            "medium",
+            "[]",
+            "disk full",
+            "ev1",
+            1,
+            100,
+        )
+        .unwrap();
         assert_eq!(a.seen_count, 1);
         assert!(a.existing_item_id.is_none());
-        let b = upsert(&conn, &p, "disk full", "high", "[]", "disk full", "ev2", 5, 200).unwrap();
+        let b = upsert(
+            &conn,
+            &p,
+            "disk full",
+            "high",
+            "[]",
+            "disk full",
+            "ev2",
+            5,
+            200,
+        )
+        .unwrap();
         assert_eq!(a.id, b.id, "same topic → same row");
         assert_eq!(b.seen_count, 6, "1 + delta 5");
         assert_eq!(list(&conn, &p, false).unwrap().len(), 1);

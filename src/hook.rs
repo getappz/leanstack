@@ -231,6 +231,18 @@ pub fn pre_tool_use(_agent: &str) {
             "systemMessage": format!("agentflare: {}", nudges.join(" "))
         });
         println!("{out}");
+
+        // Triage the previous turn's buffered vents (best-effort; never blocks
+        // the hook or surfaces errors to the agent).
+        let _ = std::panic::catch_unwind(|| {
+            let r = crate::vent::consolidate::consolidate();
+            if !r.items_created.is_empty() {
+                eprintln!(
+                    "[agentflare] vent: filed {} item(s) from friction",
+                    r.items_created.len()
+                );
+            }
+        });
     }
 }
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `vent` MCP tool + `agentflare vent` CLI: agents log tooling friction to an append-only per-repo JSONL; a deterministic classifier consolidates them once per turn (via the PromptSubmit hook) and auto-files actionable vents as backlog items. No new dependencies; fully auditable (raw `vents.jsonl` + `vent list`).
+
 ### Changed
 
 - *(memory)* brain.db now opens through the shared db-kit engine (versioned migrations, WAL, FK enforcement); recall gains optional hybrid semantic search (BM25+vector merge, 30-day temporal decay, MMR) behind `--features semantic`, with `agentflare memory backfill-embeddings` to index existing observations. FTS-only behavior is byte-identical without an embedding model.
