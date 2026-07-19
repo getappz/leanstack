@@ -43,12 +43,25 @@ pub fn handle_remember(input: RememberInput) -> Result<String, String> {
     };
     // Best-effort semantic index; failure must never fail the remember.
     // Duplicates keep their existing vector — content is unchanged by definition.
-    if status != "duplicate"
-        && let Some(vec) = super::engine::embed_doc(&format!("{}\n{}", input.title, input.content))
-    {
-        let model = super::engine::model_name().unwrap_or_default();
-        if let Err(e) = super::embeddings::upsert(&conn, id, &vec, &model) {
-            eprintln!("[memory] embedding upsert failed for obs {id}: {e}");
+    if status != "duplicate" {
+        let text = format!("{}\n{}", input.title, input.content);
+        match super::engine::embed_doc(&text) {
+            Some(vec) => {
+                let model = super::engine::model_name().unwrap_or_default();
+                if let Err(e) = super::embeddings::upsert(&conn, id, &vec, &model) {
+                    eprintln!("[memory] embedding upsert failed for obs {id}: {e}");
+                    // Refresh failed — drop any stale vector so recall never ranks
+                    // on outdated content; `missing` re-surfaces it for backfill.
+                    let _ = super::embeddings::delete(&conn, id);
+                }
+            }
+            // No embedder available. A prior vector (from when a model was present)
+            // would now point at stale content on an update — remove it. Created
+            // rows have no vector yet, so this is a no-op for them.
+            None if status == "updated" => {
+                let _ = super::embeddings::delete(&conn, id);
+            }
+            None => {}
         }
     }
     Ok(json!({"status": status, "id": id}).to_string())
@@ -402,6 +415,7 @@ mod tests {
 
     fn new_db() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
         super::super::schema::migrate(&mut conn).unwrap();
         conn
     }

@@ -23,6 +23,17 @@ pub fn upsert(conn: &Connection, obs_id: i64, vec: &[f32], model: &str) -> rusql
     Ok(())
 }
 
+/// Drop an observation's vector. Used when an update can't be reindexed, so a
+/// stale embedding never outlives the content it described — `missing` then
+/// re-surfaces the row for the next backfill. No-op if no vector exists.
+pub fn delete(conn: &Connection, obs_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM observations_vec WHERE obs_id = ?1",
+        params![obs_id],
+    )?;
+    Ok(())
+}
+
 /// Live observations that have no embedding yet, as (id, "title\ncontent").
 pub fn missing(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<(i64, String)>> {
     let mut stmt = conn.prepare(
@@ -77,6 +88,7 @@ mod tests {
 
     fn new_db() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
         schema::migrate(&mut conn).unwrap();
         conn
     }
@@ -145,5 +157,23 @@ mod tests {
                 .is_empty()
         );
         assert!(missing(&conn, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_drops_vector_and_resurfaces_in_missing() {
+        let conn = new_db();
+        let a = save_note(&conn, "stale", "p");
+        upsert(&conn, a, &[1.0, 0.0], "m").unwrap();
+        assert!(missing(&conn, 10).unwrap().is_empty());
+        delete(&conn, a).unwrap();
+        // vector gone → no longer a candidate, and backfill sees it again
+        assert!(
+            candidates(&conn, &[1.0, 0.0], None, None, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(missing(&conn, 10).unwrap().len(), 1);
+        // deleting a row with no vector is a harmless no-op
+        delete(&conn, a).unwrap();
     }
 }

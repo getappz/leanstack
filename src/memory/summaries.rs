@@ -76,6 +76,7 @@ mod tests {
 
     fn new_db() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
         schema::migrate(&mut conn).unwrap();
         conn
     }
