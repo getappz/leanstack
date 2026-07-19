@@ -354,7 +354,7 @@ pub fn openai_chunk_to_anthropic_sse(chunk: &Value, buffer: &mut AnthropicStream
             }
             if let Some(args) = tc.pointer("/function/arguments").and_then(|v| v.as_str()) {
                 if !args.is_empty() {
-                    let parsed = serde_json::from_str::<Value>(args).unwrap_or(json!({}));
+                    let _parsed: Value = serde_json::from_str(args).unwrap_or_default();
                     emit_event(&mut out, "content_block_delta", &json!({
                         "type": "content_block_delta",
                         "index": idx,
