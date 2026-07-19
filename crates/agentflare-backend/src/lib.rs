@@ -8,6 +8,7 @@ pub mod item;
 pub mod label;
 pub mod project;
 pub mod state;
+pub mod vent;
 pub mod webhook;
 pub mod workspace;
 
