@@ -296,43 +296,55 @@ pub fn openai_chunk_to_anthropic_sse(chunk: &Value, buffer: &mut AnthropicStream
         let block_id = format!("cb_{}", ts);
         buffer.block_id = Some(block_id.clone());
 
-        emit_event(&mut out, "message_start", &json!({
-            "type": "message_start",
-            "message": {
-                "id": msg_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": chunk.get("model"),
-                "stop_reason": null,
-                "stop_sequence": null,
-                "usage": {
-                    "input_tokens": chunk.pointer("/usage/prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                    "output_tokens": 0
+        emit_event(
+            &mut out,
+            "message_start",
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": chunk.get("model"),
+                    "stop_reason": null,
+                    "stop_sequence": null,
+                    "usage": {
+                        "input_tokens": chunk.pointer("/usage/prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                        "output_tokens": 0
+                    }
                 }
-            }
-        }));
-        emit_event(&mut out, "content_block_start", &json!({
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {
-                "type": "text",
-                "text": ""
-            }
-        }));
+            }),
+        );
+        emit_event(
+            &mut out,
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "text",
+                    "text": ""
+                }
+            }),
+        );
         emit_event(&mut out, "ping", &json!({ "type": "ping" }));
     }
 
     if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
         if !text.is_empty() {
-            emit_event(&mut out, "content_block_delta", &json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {
-                    "type": "text_delta",
-                    "text": text
-                }
-            }));
+            emit_event(
+                &mut out,
+                "content_block_delta",
+                &json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "text_delta",
+                        "text": text
+                    }
+                }),
+            );
         }
     }
 
@@ -341,28 +353,36 @@ pub fn openai_chunk_to_anthropic_sse(chunk: &Value, buffer: &mut AnthropicStream
             let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             if let Some(name) = tc.pointer("/function/name").and_then(|v| v.as_str()) {
                 let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                emit_event(&mut out, "content_block_start", &json!({
-                    "type": "content_block_start",
-                    "index": idx,
-                    "content_block": {
-                        "type": "tool_use",
-                        "id": tc_id,
-                        "name": name,
-                        "input": {}
-                    }
-                }));
+                emit_event(
+                    &mut out,
+                    "content_block_start",
+                    &json!({
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": tc_id,
+                            "name": name,
+                            "input": {}
+                        }
+                    }),
+                );
             }
             if let Some(args) = tc.pointer("/function/arguments").and_then(|v| v.as_str()) {
                 if !args.is_empty() {
                     let _parsed: Value = serde_json::from_str(args).unwrap_or_default();
-                    emit_event(&mut out, "content_block_delta", &json!({
-                        "type": "content_block_delta",
-                        "index": idx,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": args
-                        }
-                    }));
+                    emit_event(
+                        &mut out,
+                        "content_block_delta",
+                        &json!({
+                            "type": "content_block_delta",
+                            "index": idx,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": args
+                            }
+                        }),
+                    );
                 }
             }
         }
@@ -375,23 +395,35 @@ pub fn openai_chunk_to_anthropic_sse(chunk: &Value, buffer: &mut AnthropicStream
             "tool_calls" => "tool_use",
             _ => "end_turn",
         };
-        emit_event(&mut out, "content_block_stop", &json!({
-            "type": "content_block_stop",
-            "index": 0
-        }));
-        emit_event(&mut out, "message_delta", &json!({
-            "type": "message_delta",
-            "delta": {
-                "stop_reason": sr,
-                "stop_sequence": null
-            },
-            "usage": {
-                "output_tokens": chunk.pointer("/usage/completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
-            }
-        }));
-        emit_event(&mut out, "message_stop", &json!({
-            "type": "message_stop"
-        }));
+        emit_event(
+            &mut out,
+            "content_block_stop",
+            &json!({
+                "type": "content_block_stop",
+                "index": 0
+            }),
+        );
+        emit_event(
+            &mut out,
+            "message_delta",
+            &json!({
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": sr,
+                    "stop_sequence": null
+                },
+                "usage": {
+                    "output_tokens": chunk.pointer("/usage/completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
+                }
+            }),
+        );
+        emit_event(
+            &mut out,
+            "message_stop",
+            &json!({
+                "type": "message_stop"
+            }),
+        );
     }
 
     out

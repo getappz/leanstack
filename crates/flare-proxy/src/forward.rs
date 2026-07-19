@@ -93,6 +93,7 @@ pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Re
             serde_json::from_str(&body).unwrap_or(json!({"error": {"message": body}}));
         return (
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
             serde_json::to_string(&shape_xlat::error_to_anthropic(&err_val)).unwrap_or_default(),
         )
             .into_response();

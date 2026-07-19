@@ -4,8 +4,8 @@ pub mod providers;
 pub mod shape_xlat;
 pub mod think;
 
+use axum::{extract::State, response::Response, routing::post, Router};
 pub use providers::ProviderConfig;
-use axum::{Router, extract::State, response::Response, routing::post};
 
 pub fn router() -> Router {
     Router::new()

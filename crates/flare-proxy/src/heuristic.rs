@@ -29,12 +29,13 @@ pub fn try_extract_tool_call(text: &str) -> Option<HeuristicToolCall> {
 }
 
 fn extract_invoke_meal(text: &str) -> Option<HeuristicToolCall> {
-    let re = Regex::new(r#"<invoke_meal\s+name="([^"]+)"\s*>\s*(\{.*?\})\s*</invoke_meal>"#).ok()?;
+    let re =
+        Regex::new(r#"<invoke_meal\s+name="([^"]+)"\s*>\s*(\{.*?\})\s*</invoke_meal>"#).ok()?;
     let cap = re.captures(text)?;
     let name = cap.get(1)?.as_str().to_string();
     let args_str = cap.get(2)?.as_str();
     let args: serde_json::Value = serde_json::from_str(args_str).ok()?;
-    let id = format!("call_{}", nanoid());
+    let id = format!("call_{}", nanoid::nanoid!());
     Some(HeuristicToolCall { name, args, id })
 }
 
@@ -44,8 +45,11 @@ fn extract_code_fence_json(text: &str) -> Option<HeuristicToolCall> {
     let json_str = cap.get(1)?.as_str();
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let name = parsed.get("name")?.as_str()?.to_string();
-    let args = parsed.get("arguments").or_else(|| parsed.get("args"))?.clone();
-    let id = format!("call_{}", nanoid());
+    let args = parsed
+        .get("arguments")
+        .or_else(|| parsed.get("args"))?
+        .clone();
+    let id = format!("call_{}", nanoid::nanoid!());
     Some(HeuristicToolCall { name, args, id })
 }
 
@@ -61,7 +65,7 @@ fn extract_json_tool_block(text: &str) -> Option<HeuristicToolCall> {
             let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
             let name = parsed.get("name")?.as_str()?.to_string();
             let args = parsed.get("arguments")?.clone();
-            let id = format!("call_{}", nanoid());
+            let id = format!("call_{}", nanoid::nanoid!());
             return Some(HeuristicToolCall { name, args, id });
         }
     }
@@ -87,15 +91,6 @@ fn find_balanced_brace(s: &str) -> Option<usize> {
         }
     }
     None
-}
-
-fn nanoid() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:x}", nanos)
 }
 
 /// Check if output needs heuristic tool parsing (free-tier models often

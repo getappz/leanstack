@@ -114,7 +114,9 @@ impl ProviderConfig {
     }
 
     pub fn route_for(&self, anthropic_model: &str) -> Option<&ModelRoute> {
-        self.routing.iter().find(|r| r.anthropic_model == anthropic_model)
+        self.routing
+            .iter()
+            .find(|r| r.anthropic_model == anthropic_model)
     }
 
     pub fn provider(&self, id: &str) -> Option<&ProviderEntry> {
