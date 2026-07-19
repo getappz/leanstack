@@ -3,10 +3,12 @@ use serde_json::{json, Value};
 pub fn messages_to_chat(anthropic: &Value) -> Option<Value> {
     let model = anthropic.get("model")?.as_str()?;
     let mut messages = Vec::new();
-    let mut system = None;
 
     if let Some(s) = anthropic.get("system") {
-        system = Some(system_text(s));
+        messages.push(json!({
+            "role": "system",
+            "content": system_text(s)
+        }));
     }
 
     let anthropic_messages = anthropic.get("messages")?.as_array()?;
@@ -46,9 +48,6 @@ pub fn messages_to_chat(anthropic: &Value) -> Option<Value> {
     if let Some(stop) = anthropic.get("stop_sequences") {
         body["stop"] = stop.clone();
     }
-    if let Some(s) = system {
-        body["system"] = json!(s);
-    }
     if let Some(tc) = anthropic.get("tool_choice") {
         body["tool_choice"] = translate_tool_choice(tc);
     }
@@ -80,20 +79,24 @@ fn translate_user_content(content: &Value) -> Value {
                 .filter_map(|block| {
                     let type_ = block.get("type")?.as_str()?;
                     match type_ {
-                        "text" => Some(json!({ "type": "text", "text": block["text"] })),
+                        "text" => {
+                            let text = block.get("text")?.as_str()?;
+                            Some(json!({ "type": "text", "text": text }))
+                        }
                         "image" => {
                             let source = block.get("source")?;
-                            let media_type = source.get("media_type")?;
-                            let data = source.get("data")?;
+                            let media_type =
+                                source.get("media_type")?.as_str().unwrap_or("image/png");
+                            let data = source.get("data")?.as_str()?;
                             Some(json!({
                                 "type": "image_url",
                                 "image_url": {
-                                    "url": format!("data:{};base64,{}", media_type.as_str().unwrap_or("image/png"), data)
+                                    "url": format!("data:{};base64,{}", media_type, data)
                                 }
                             }))
                         }
                         "tool_result" => {
-                            let tool_use_id = block.get("tool_use_id")?;
+                            let tool_use_id = block.get("tool_use_id")?.as_str()?;
                             let content_val = block.get("content")?;
                             let text = match content_val {
                                 Value::String(s) => s.clone(),
@@ -474,6 +477,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_translate_user_content_image_and_tool_result_not_quoted() {
+        let anthropic = json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": { "media_type": "image/png", "data": "abc123" }
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01",
+                        "content": "result text"
+                    }
+                ]
+            }]
+        });
+        let openai = messages_to_chat(&anthropic).unwrap();
+        let parts = openai["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["image_url"]["url"], "data:image/png;base64,abc123");
+        assert_eq!(parts[1]["text"], "[tool_result id=toolu_01]\nresult text");
+    }
+
+    #[test]
     fn test_messages_to_chat_basic() {
         let anthropic = json!({
             "model": "claude-sonnet-4-20250514",
@@ -495,7 +523,10 @@ mod tests {
             "messages": [{"role": "user", "content": "Hi"}]
         });
         let openai = messages_to_chat(&anthropic).unwrap();
-        assert_eq!(openai["system"], "You are helpful.");
+        assert_eq!(openai["messages"][0]["role"], "system");
+        assert_eq!(openai["messages"][0]["content"], "You are helpful.");
+        assert_eq!(openai["messages"][1]["role"], "user");
+        assert_eq!(openai["messages"][1]["content"], "Hi");
     }
 
     #[test]

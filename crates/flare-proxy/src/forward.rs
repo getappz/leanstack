@@ -6,7 +6,11 @@ use axum::response::{IntoResponse, Response};
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
-pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Response {
+pub async fn proxy_request(
+    anthropic_body: Value,
+    config: &ProviderConfig,
+    client: &reqwest::Client,
+) -> Response {
     let model = anthropic_body
         .get("model")
         .and_then(|v| v.as_str())
@@ -58,7 +62,6 @@ pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Re
     let needs_heuristic = route.requires_heuristic_tools;
     let needs_think = route.requires_think_parsing;
 
-    let client = reqwest::Client::new();
     let mut req_builder = client
         .post(provider.base_url.trim_end_matches('/').to_string() + "/chat/completions")
         .json(&openai_req);
@@ -103,7 +106,7 @@ pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Re
     let stream = resp.bytes_stream();
     let mut buffer = AnthropicStreamBuffer::default();
     let mut accumulated_text = String::new();
-    let mut line_buf = String::new();
+    let mut line_buf: Vec<u8> = Vec::new();
 
     let sse_stream = stream.filter_map(move |chunk_result| {
         let chunk = match chunk_result {
@@ -111,12 +114,14 @@ pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Re
             Err(_) => return futures::future::ready(None),
         };
 
-        // SSE lines don't align with raw TCP/HTTP chunk boundaries — buffer
-        // any trailing partial line across chunks instead of silently
-        // dropping the truncated JSON it would otherwise produce.
-        line_buf.push_str(&String::from_utf8_lossy(&chunk));
-        let split_at = line_buf.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let complete: String = line_buf.drain(..split_at).collect();
+        line_buf.extend_from_slice(&chunk);
+        let split_at = line_buf
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let complete_bytes: Vec<u8> = line_buf.drain(..split_at).collect();
+        let complete = String::from_utf8_lossy(&complete_bytes).into_owned();
 
         let mut out = Vec::new();
 
@@ -134,7 +139,6 @@ pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Re
                 Err(_) => continue,
             };
 
-            // Accumulate text for heuristic tool parsing
             if let Some(delta) = val.pointer("/choices/0/delta/content").and_then(|v| v.as_str()) {
                 accumulated_text.push_str(delta);
             }
@@ -148,10 +152,6 @@ pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Re
             out.extend_from_slice(&anthropic_sse);
 
             if is_finish {
-                // Heuristic tool extraction on accumulated text. This must
-                // open+close its own content block (using a fresh index)
-                // before finish_stream runs below, since finish_stream ends
-                // the message with message_stop.
                 if needs_heuristic && !accumulated_text.is_empty() {
                     if let Some(tc) = crate::heuristic::try_extract_tool_call(&accumulated_text) {
                         let idx = buffer.next_index;
@@ -176,15 +176,17 @@ pub async fn proxy_request(anthropic_body: Value, config: &ProviderConfig) -> Re
                     }
                 }
 
-                // Think tag stripping on accumulated text
+                // Think tag stripping on accumulated text. NOTE: the raw
+                // deltas above are already streamed out via
+                // openai_chunk_to_anthropic_sse before this point runs, so
+                // this pass over accumulated_text cannot retroactively
+                // remove think-tag content from what the client already
+                // received. Properly suppressing think tags requires
+                // buffering deltas and delaying emission, which is a larger
+                // change tracked separately; this block intentionally does
+                // not claim to do that suppression.
                 if needs_think && !accumulated_text.is_empty() {
-                    let (_clean, thoughts) = crate::think::strip_think_tags(&accumulated_text);
-                    if !thoughts.is_empty() {
-                        // We've already streamed the text with think tags.
-                        // In a real implementation, we'd buffer and re-stream.
-                        // For v1, we strip in post-processing of accumulated text.
-                        // The SSE events already went out; this is best-effort cleanup.
-                    }
+                    let _ = crate::think::strip_think_tags(&accumulated_text);
                 }
 
                 let finish_bytes = shape_xlat::finish_stream(&val, &mut buffer);

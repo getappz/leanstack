@@ -25,7 +25,12 @@ pub fn strip_think_tags(text: &str) -> (String, Vec<String>) {
 
 /// Check if output needs think-tag parsing (free-tier models sometimes emit them).
 pub fn needs_think_parsing(model: &str) -> bool {
-    model.contains("deepseek") || model.contains("qwen") || model.contains("llama")
+    let model = model.to_lowercase();
+    model.contains("deepseek")
+        || model.contains("qwen")
+        || model.contains("llama")
+        || model.contains("mistral")
+        || model.contains("mixtral")
 }
 
 #[cfg(test)]
