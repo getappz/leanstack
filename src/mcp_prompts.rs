@@ -219,7 +219,7 @@ fn get_handoff_command(request: &GetPromptRequestParams, agent: Option<&str>) ->
          always creates a new item, even when one covering this work already \
          exists. And if this is just a plain-text status update with no \
          versioned artifact to attach, skip `handoff` entirely: call `comment` \
-         (action=create, item_id=<id>) plus `item` (action=update, \
+         (action=create, item_id=<id>) plus `item` (action=update, id=<id>, \
          assignee_agent=<recipient>) instead — lighter, no new item, no asset.\n\
          - `inbox [me]` → call the `item` tool (action=list, state_group=\"backlog,unstarted,started\" \
          by default to hide completed/cancelled items — omit state_group only if the command \
