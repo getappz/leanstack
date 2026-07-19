@@ -50,6 +50,13 @@ fn parse_model_string(s: &str) -> (String, String) {
     }
 }
 
+fn unsupported_provider_type(provider_types: &[String]) -> Option<&str> {
+    provider_types
+        .iter()
+        .map(String::as_str)
+        .find(|pt| !matches!(*pt, "nvidia_nim" | "open_router" | "lmstudio"))
+}
+
 impl ProviderConfig {
     pub fn from_env() -> Self {
         let default_model = std::env::var("MODEL").ok().filter(|s| !s.is_empty());
@@ -75,6 +82,18 @@ impl ProviderConfig {
             if !pt.is_empty() && !provider_types.contains(&pt) {
                 provider_types.push(pt);
             }
+        }
+
+        // Fail fast on a typo'd provider prefix: without this, an unsupported
+        // prefix silently drops out of `providers` (see the `_ => continue`
+        // below) while the route referencing it survives, so misconfiguration
+        // looks like a successful startup and only errors later, at request
+        // time, with an opaque "unknown provider".
+        if let Some(bad) = unsupported_provider_type(&provider_types) {
+            eprintln!(
+                "agentflare: unsupported provider prefix '{bad}' in MODEL/MODEL_OPUS/MODEL_SONNET/MODEL_HAIKU -- falling back to default_free() config. Supported prefixes: nvidia_nim, open_router, lmstudio."
+            );
+            return Self::default_free();
         }
 
         let mut providers = Vec::new();
@@ -300,5 +319,21 @@ mod tests {
         // return None, it should fall through to the empty-keyed default route.
         let route = config.resolve_model("claude-opus-4-20250514").unwrap();
         assert_eq!(route.upstream_model, "meta/llama-3.1-405b-instruct");
+    }
+
+    #[test]
+    fn unsupported_provider_type_detects_bad_prefix() {
+        let types = vec!["nvidia_nim".to_string(), "made_up_provider".to_string()];
+        assert_eq!(unsupported_provider_type(&types), Some("made_up_provider"));
+    }
+
+    #[test]
+    fn unsupported_provider_type_accepts_all_known_prefixes() {
+        let types = vec![
+            "nvidia_nim".to_string(),
+            "open_router".to_string(),
+            "lmstudio".to_string(),
+        ];
+        assert_eq!(unsupported_provider_type(&types), None);
     }
 }
