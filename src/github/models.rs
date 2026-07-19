@@ -22,6 +22,7 @@ pub struct PullRequest {
     #[serde(default)]
     pub draft: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub mergeable: Option<bool>,
     #[serde(default)]
     pub mergeable_state: Option<String>,
@@ -91,11 +92,13 @@ pub struct Review {
     #[serde(default)]
     pub body: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub submitted_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewComment {
+    pub id: u64,
     pub user: User,
     pub path: String,
     #[serde(default)]
@@ -108,6 +111,7 @@ pub struct Comment {
     pub user: User,
     pub body: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub created_at: Option<String>,
 }
 
@@ -219,7 +223,7 @@ mod pr_status_model_tests {
     #[test]
     fn review_comment_line_is_optional() {
         let json = serde_json::json!({
-            "user": {"login": "alice"}, "path": "src/x.rs", "line": null, "body": "nit"
+            "id": 900, "user": {"login": "alice"}, "path": "src/x.rs", "line": null, "body": "nit"
         });
         let c: ReviewComment = serde_json::from_value(json).unwrap();
         assert_eq!(c.line, None);

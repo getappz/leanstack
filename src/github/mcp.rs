@@ -14,46 +14,91 @@ pub fn is_client_error(err: &GitHubError) -> bool {
     )
 }
 
-/// Assembles the `pr_status` payload: one JSON blob covering everything a
-/// review-and-fix loop otherwise pulls with separate `pr_get` / `run_list` /
-/// review-comment / issue-comment round trips.
+/// Assembles the `pr_status` payload: everything a review-and-fix loop needs
+/// to decide its next move, in one call instead of separate `pr_get` /
+/// `run_list` / review-comment / issue-comment round trips — and trimmed to
+/// just that: no timestamps, no passing checks, no resolved comment threads,
+/// no superseded review verdicts. Ask for a bigger window with `since`
+/// (passed down to the REST comment fetches) instead of re-reading history
+/// the caller already has.
 ///
-/// Known gap: the REST API doesn't expose review-thread resolution (only
-/// GraphQL's `isResolved` does), so `review_comments` includes resolved
-/// threads too — callers should treat old/superseded comments with
-/// judgment, not as unconditionally outstanding.
+/// - `checks`: only non-passing ones; `checks_ok` carries the passing count.
+/// - `reviews`: one entry per reviewer — the latest verdict only.
+/// - `unresolved`: review comments whose thread GraphQL reports as *not*
+///   resolved (`resolved_ids` — see `pulls::resolved_review_comment_ids`).
 pub fn pr_status_json(
     pr: &PullRequest,
     checks: &[CheckRun],
     reviews: &[Review],
     review_comments: &[ReviewComment],
+    resolved_ids: &std::collections::HashSet<u64>,
     comments: &[Comment],
 ) -> String {
+    let checks_ok = checks
+        .iter()
+        .filter(|c| c.conclusion.as_deref() == Some("success"))
+        .count();
+    let checks_open: Vec<_> = checks
+        .iter()
+        .filter(|c| c.conclusion.as_deref() != Some("success"))
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "state": c.conclusion.clone().unwrap_or_else(|| c.status.clone()),
+            })
+        })
+        .collect();
+
+    // GitHub returns reviews oldest-first, so overwriting by login keeps the
+    // most recent verdict per reviewer.
+    let mut latest_reviews: std::collections::BTreeMap<&str, &Review> =
+        std::collections::BTreeMap::new();
+    for r in reviews {
+        latest_reviews.insert(r.user.login.as_str(), r);
+    }
+    let reviews_out: Vec<_> = latest_reviews
+        .values()
+        .map(|r| {
+            let mut o = serde_json::json!({ "by": r.user.login, "state": r.state });
+            if !r.body.trim().is_empty() {
+                o["body"] = serde_json::Value::String(r.body.clone());
+            }
+            o
+        })
+        .collect();
+
+    let unresolved: Vec<_> = review_comments
+        .iter()
+        .filter(|c| !resolved_ids.contains(&c.id))
+        .map(|c| {
+            serde_json::json!({
+                "by": c.user.login, "path": c.path, "line": c.line, "body": c.body,
+            })
+        })
+        .collect();
+
+    let comments_out: Vec<_> = comments
+        .iter()
+        .map(|c| serde_json::json!({ "by": c.user.login, "body": c.body }))
+        .collect();
+
     let value = serde_json::json!({
-        "number": pr.number,
+        "n": pr.number,
         "title": pr.title,
         "state": pr.state,
         "draft": pr.draft,
-        "mergeable": pr.mergeable,
-        "mergeable_state": pr.mergeable_state,
-        "additions": pr.additions,
-        "deletions": pr.deletions,
-        "changed_files": pr.changed_files,
-        "html_url": pr.html_url,
-        "head_ref": pr.head.as_ref().map(|h| &h.git_ref),
-        "base_ref": pr.base.as_ref().map(|h| &h.git_ref),
-        "checks": checks.iter().map(|c| serde_json::json!({
-            "name": c.name, "status": c.status, "conclusion": c.conclusion,
-        })).collect::<Vec<_>>(),
-        "reviews": reviews.iter().map(|r| serde_json::json!({
-            "author": r.user.login, "state": r.state, "body": r.body, "submitted_at": r.submitted_at,
-        })).collect::<Vec<_>>(),
-        "review_comments": review_comments.iter().map(|c| serde_json::json!({
-            "author": c.user.login, "path": c.path, "line": c.line, "body": c.body,
-        })).collect::<Vec<_>>(),
-        "comments": comments.iter().map(|c| serde_json::json!({
-            "author": c.user.login, "body": c.body, "created_at": c.created_at,
-        })).collect::<Vec<_>>(),
+        "mergeable": pr.mergeable_state,
+        "adds": pr.additions,
+        "dels": pr.deletions,
+        "files": pr.changed_files,
+        "head": pr.head.as_ref().map(|h| &h.git_ref),
+        "base": pr.base.as_ref().map(|h| &h.git_ref),
+        "url": pr.html_url,
+        "checks_ok": checks_ok,
+        "checks": checks_open,
+        "reviews": reviews_out,
+        "unresolved": unresolved,
+        "comments": comments_out,
     });
     serde_json::to_string(&value).unwrap_or_default()
 }
@@ -81,41 +126,64 @@ mod tests {
     }
 
     #[test]
-    fn pr_status_json_bundles_every_section() {
+    fn pr_status_json_drops_passing_checks_but_counts_them() {
         let pr = sample_pr();
         let checks: Vec<CheckRun> = serde_json::from_value(serde_json::json!([
-            {"name": "ci", "status": "completed", "conclusion": "success"}
-        ]))
-        .unwrap();
-        let reviews: Vec<Review> = serde_json::from_value(serde_json::json!([
-            {"user": {"login": "coderabbitai[bot]"}, "state": "CHANGES_REQUESTED", "body": "", "submitted_at": null}
-        ]))
-        .unwrap();
-        let review_comments: Vec<ReviewComment> = serde_json::from_value(serde_json::json!([
-            {"user": {"login": "bob"}, "path": "src/x.rs", "line": 10, "body": "nit"}
-        ]))
-        .unwrap();
-        let comments: Vec<Comment> = serde_json::from_value(serde_json::json!([
-            {"user": {"login": "coderabbitai[bot]"}, "body": "walkthrough", "created_at": null}
+            {"name": "ci", "status": "completed", "conclusion": "success"},
+            {"name": "lint", "status": "completed", "conclusion": "failure"},
+            {"name": "deploy", "status": "in_progress", "conclusion": null}
         ]))
         .unwrap();
 
-        let out = pr_status_json(&pr, &checks, &reviews, &review_comments, &comments);
+        let out = pr_status_json(&pr, &checks, &[], &[], &Default::default(), &[]);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["number"], 42);
-        assert_eq!(v["mergeable_state"], "clean");
-        assert_eq!(v["checks"][0]["conclusion"], "success");
-        assert_eq!(v["reviews"][0]["author"], "coderabbitai[bot]");
-        assert_eq!(v["review_comments"][0]["line"], 10);
-        assert_eq!(v["comments"][0]["author"], "coderabbitai[bot]");
+        assert_eq!(v["checks_ok"], 1);
+        assert_eq!(v["checks"].as_array().unwrap().len(), 2);
+        assert_eq!(v["checks"][0]["name"], "lint");
+        assert_eq!(v["checks"][0]["state"], "failure");
+        assert_eq!(v["checks"][1]["state"], "in_progress");
     }
 
     #[test]
-    fn pr_status_json_handles_empty_sections() {
+    fn pr_status_json_keeps_only_the_latest_review_per_author() {
         let pr = sample_pr();
-        let out = pr_status_json(&pr, &[], &[], &[], &[]);
+        let reviews: Vec<Review> = serde_json::from_value(serde_json::json!([
+            {"user": {"login": "alice"}, "state": "CHANGES_REQUESTED", "body": "fix x"},
+            {"user": {"login": "alice"}, "state": "APPROVED", "body": ""}
+        ]))
+        .unwrap();
+
+        let out = pr_status_json(&pr, &[], &reviews, &[], &Default::default(), &[]);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert!(v["checks"].as_array().unwrap().is_empty());
-        assert!(v["reviews"].as_array().unwrap().is_empty());
+        let out_reviews = v["reviews"].as_array().unwrap();
+        assert_eq!(out_reviews.len(), 1);
+        assert_eq!(out_reviews[0]["state"], "APPROVED");
+        assert!(out_reviews[0].get("body").is_none());
+    }
+
+    #[test]
+    fn pr_status_json_filters_out_resolved_review_comments() {
+        let pr = sample_pr();
+        let review_comments: Vec<ReviewComment> = serde_json::from_value(serde_json::json!([
+            {"id": 1, "user": {"login": "bob"}, "path": "src/x.rs", "line": 10, "body": "fixed already"},
+            {"id": 2, "user": {"login": "bob"}, "path": "src/y.rs", "line": 5, "body": "still open"}
+        ]))
+        .unwrap();
+        let resolved: std::collections::HashSet<u64> = [1].into_iter().collect();
+
+        let out = pr_status_json(&pr, &[], &[], &review_comments, &resolved, &[]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let unresolved = v["unresolved"].as_array().unwrap();
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0]["body"], "still open");
+    }
+
+    #[test]
+    fn pr_status_json_has_no_timestamps_or_html_url_noise() {
+        let pr = sample_pr();
+        let out = pr_status_json(&pr, &[], &[], &[], &Default::default(), &[]);
+        assert!(!out.contains("submitted_at"));
+        assert!(!out.contains("created_at"));
+        assert!(!out.contains("html_url"));
     }
 }

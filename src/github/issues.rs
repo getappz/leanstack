@@ -71,11 +71,20 @@ pub fn comment(client: &Client, repo: &RepoId, number: u64, body: &str) -> Resul
 
 /// General (non-line-anchored) comments — where bots like CodeRabbit post
 /// their PR summary/walkthrough (a PR is also an issue on this endpoint).
-pub fn list_comments(client: &Client, repo: &RepoId, number: u64) -> Result<Vec<Comment>, GitHubError> {
-    let path = format!(
+/// `since` (ISO8601) filters server-side, same as `pulls::list_review_comments`.
+pub fn list_comments(
+    client: &Client,
+    repo: &RepoId,
+    number: u64,
+    since: Option<&str>,
+) -> Result<Vec<Comment>, GitHubError> {
+    let mut path = format!(
         "/repos/{}/{}/issues/{number}/comments",
         repo.owner, repo.repo
     );
+    if let Some(s) = since {
+        path.push_str(&format!("?since={}", crate::github::encode_query(s)));
+    }
     let json = client.get_paginated(&path, crate::github::client::as_array)?;
     serde_json::from_value(json).map_err(|e| GitHubError::Parse(e.to_string()))
 }
@@ -193,12 +202,23 @@ mod tests {
             r#"[{"user":{"login":"coderabbitai[bot]"},"body":"walkthrough...","created_at":"2026-07-19T00:00:00Z"}]"#,
         )]);
         let client = server.client(None);
-        let comments = list_comments(&client, &repo(), 4).unwrap();
+        let comments = list_comments(&client, &repo(), 4, None).unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].user.login, "coderabbitai[bot]");
         assert_eq!(
             server.requests()[0].path,
             "/repos/o/r/issues/4/comments?per_page=100&page=1"
+        );
+    }
+
+    #[test]
+    fn list_comments_appends_since_query() {
+        let server = MockServer::start(vec![MockResponse::json(200, "[]")]);
+        let client = server.client(None);
+        list_comments(&client, &repo(), 4, Some("2026-07-19T00:00:00Z")).unwrap();
+        assert_eq!(
+            server.requests()[0].path,
+            "/repos/o/r/issues/4/comments?since=2026-07-19T00%3A00%3A00Z&per_page=100&page=1"
         );
     }
 

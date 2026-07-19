@@ -426,6 +426,11 @@ pub(crate) struct GitHubRequest {
     #[schemars(description = "JSON inputs object for workflow_dispatch")]
     #[serde(default)]
     pub(crate) inputs: Option<serde_json::Value>,
+    #[schemars(
+        description = "ISO8601 timestamp — pr_status only returns comments newer than this (GitHub filters server-side); omit for full history"
+    )]
+    #[serde(default)]
+    pub(crate) since: Option<String>,
 }
 
 /// All local artifact backends (flared, another session, or our own
