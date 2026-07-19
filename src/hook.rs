@@ -33,6 +33,19 @@ fn read_stdin_or_skip(label: &str) -> Option<String> {
 
 pub fn session_start(agent: &str) {
     let msg = session_start_message(agent);
+
+    // Flush any vents buffered since the last turn/session (best-effort;
+    // never blocks the hook or surfaces errors to the agent).
+    let _ = std::panic::catch_unwind(|| {
+        let r = crate::vent::consolidate::consolidate();
+        if !r.items_created.is_empty() {
+            eprintln!(
+                "[agentflare] vent: filed {} item(s) from friction",
+                r.items_created.len()
+            );
+        }
+    });
+
     // Plain stdout reaches Claude's context for this event (see module
     // comment) but is NOT shown to the user in the terminal. `systemMessage`
     // is the only field that renders visibly, so emit both: the user sees
@@ -341,6 +354,18 @@ pub fn prompt_submit(agent: &str) {
     if !s.active {
         return;
     }
+
+    // Triage the previous turn's buffered vents once per turn (best-effort;
+    // never blocks the hook or surfaces errors to the agent).
+    let _ = std::panic::catch_unwind(|| {
+        let r = crate::vent::consolidate::consolidate();
+        if !r.items_created.is_empty() {
+            eprintln!(
+                "[agentflare] vent: filed {} item(s) from friction",
+                r.items_created.len()
+            );
+        }
+    });
 
     let mut bits = vec![
         "AGENTFLARE ACTIVE.".to_string(),

@@ -473,7 +473,7 @@ impl AgentflareMcp {
     /// across multiple linked projects depending on which subdirectory a
     /// tool was invoked from. Falls back to raw cwd only when nothing is
     /// found anywhere above it.
-    fn repo_root() -> std::path::PathBuf {
+    pub(crate) fn repo_root() -> std::path::PathBuf {
         let cwd = std::env::current_dir().unwrap_or_default();
         if let Some(root) = crate::git::repo_toplevel(&cwd) {
             return root;
@@ -1003,6 +1003,23 @@ impl AgentflareMcp {
     )]
     fn memory(&self, Parameters(req): Parameters<MemoryRequest>) -> Result<String, ErrorData> {
         self.memory_impl(req)
+    }
+
+    #[tool(
+        description = "Vent friction when the TOOLING blocks you (not the task) — a wrong/missing tool, a fabricated assumption, an environment gap. Actionable vents auto-file a DX item once per turn; noise is just logged. Use sparingly, exactly when you're genuinely blocked. DO: \"The $CLAUDE_JOB_DIR I assumed exists is empty — I fabricated it; there's no such env var and my temp writes went to /.\" DON'T: \"This build is slow to compile.\" Inputs: message (required), severity (low|medium|high), tags."
+    )]
+    fn vent(&self, Parameters(req): Parameters<VentRequest>) -> Result<String, ErrorData> {
+        if req.message.trim().is_empty() {
+            return Err(ErrorData::invalid_params("message is required", None));
+        }
+        let severity = crate::vent::classify::normalize_severity(req.severity.as_deref());
+        let tags = req.tags.unwrap_or_default();
+        let log = crate::vent::paths::log_path();
+        let event_id =
+            crate::vent::capture::append(&log, None, severity, &tags, req.message.trim()).map_err(
+                |e| ErrorData::internal_error(format!("vent capture failed: {e}"), None),
+            )?;
+        Ok(serde_json::json!({ "ok": true, "event_id": event_id }).to_string())
     }
 
     /// Rejects PR titles that don't start with a conventional-commit type,
