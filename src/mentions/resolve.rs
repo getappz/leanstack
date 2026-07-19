@@ -51,8 +51,8 @@ pub fn resolve_mentions(
         .iter()
         .map(|m| {
             let content = match m.kind {
-                MentionKind::Item => resolve_item(conn, &m.value),
-                MentionKind::Asset => resolve_asset(conn, &m.value),
+                MentionKind::Item => resolve_item(conn, project_id, &m.value),
+                MentionKind::Asset => resolve_asset(conn, project_id, &m.value),
                 MentionKind::Search => resolve_search(conn, project_id, &m.value),
             };
             ResolvedMention {
@@ -70,10 +70,13 @@ fn state_name(conn: &Connection, state_id: &str) -> String {
         .unwrap_or_else(|_| state_id.to_string())
 }
 
-fn resolve_item(conn: &Connection, id: &str) -> ResolvedContent {
+fn resolve_item(conn: &Connection, project_id: &str, id: &str) -> ResolvedContent {
     let Ok(item) = agentflare_backend::item::get(conn, id) else {
         return ResolvedContent::NotFound;
     };
+    if item.project_id != project_id {
+        return ResolvedContent::NotFound;
+    }
     ResolvedContent::Item(ResolvedItem {
         sequence_id: item.sequence_id,
         name: item.name,
@@ -83,10 +86,13 @@ fn resolve_item(conn: &Connection, id: &str) -> ResolvedContent {
     })
 }
 
-fn resolve_asset(conn: &Connection, id: &str) -> ResolvedContent {
+fn resolve_asset(conn: &Connection, project_id: &str, id: &str) -> ResolvedContent {
     let Ok(asset) = agentflare_backend::asset::get(conn, id) else {
         return ResolvedContent::NotFound;
     };
+    if !asset_in_project(conn, &asset, project_id) {
+        return ResolvedContent::NotFound;
+    }
     let base_path = crate::paths::home().join(".agentflare");
     let content = agentflare_backend::asset::read_file(&base_path, &asset.storage_path)
         .ok()
@@ -105,6 +111,22 @@ fn resolve_asset(conn: &Connection, id: &str) -> ResolvedContent {
         entity_id: asset.entity_id,
         content,
     })
+}
+
+/// Assets attach to either an item or a project (`entity_type`) — resolve
+/// the owning project either way and compare against the caller's.
+fn asset_in_project(
+    conn: &Connection,
+    asset: &agentflare_backend::asset::Asset,
+    project_id: &str,
+) -> bool {
+    match asset.entity_type.as_str() {
+        "item_attachment" => agentflare_backend::item::get(conn, &asset.entity_id)
+            .map(|item| item.project_id == project_id)
+            .unwrap_or(false),
+        "project_attachment" => asset.entity_id == project_id,
+        _ => false,
+    }
 }
 
 fn resolve_search(conn: &Connection, project_id: &str, query: &str) -> ResolvedContent {
@@ -218,7 +240,7 @@ mod tests {
             let item = item::create(
                 &conn,
                 item::CreateItem {
-                    project_id,
+                    project_id: project_id.clone(),
                     state_id,
                     name: "with asset".into(),
                     description: None,
@@ -258,7 +280,7 @@ mod tests {
                 kind: MentionKind::Asset,
                 value: created.id.clone(),
             }];
-            let resolved = resolve_mentions(&conn, "unused", &mentions);
+            let resolved = resolve_mentions(&conn, &project_id, &mentions);
             match &resolved[0].content {
                 ResolvedContent::Asset(a) => {
                     assert_eq!(a.filename, "big.txt");
@@ -311,5 +333,134 @@ mod tests {
             }
             _ => panic!("expected search results"),
         }
+    }
+
+    #[test]
+    fn item_mention_is_scoped_to_project() {
+        let conn = agentflare_backend::db::open_in_memory().unwrap();
+        let (project_a, state_a) = seed_project(&conn);
+        let ws_b = workspace::create(
+            &conn,
+            workspace::CreateWorkspace {
+                name: "ws2".into(),
+                slug: "ws2".into(),
+                owner_agent: None,
+                item_label: None,
+            },
+        )
+        .unwrap();
+        let project_b = project::create(
+            &conn,
+            project::CreateProject {
+                workspace_id: ws_b.id,
+                name: "proj2".into(),
+                identifier: "proj2".into(),
+                external_source: None,
+                external_id: None,
+            },
+        )
+        .unwrap()
+        .id;
+        let item = item::create(
+            &conn,
+            item::CreateItem {
+                project_id: project_a,
+                state_id: state_a,
+                name: "Only visible in project A".into(),
+                description: None,
+                priority: None,
+                parent_id: None,
+                assignee_agent: None,
+                sort_order: None,
+                external_source: None,
+                external_id: None,
+                metadata: None,
+                label_ids: vec![],
+                assignee_ids: vec![],
+                dependency_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        let mentions = vec![Mention {
+            kind: MentionKind::Item,
+            value: item.id.clone(),
+        }];
+        let resolved = resolve_mentions(&conn, &project_b, &mentions);
+        assert!(matches!(resolved[0].content, ResolvedContent::NotFound));
+    }
+
+    #[test]
+    fn asset_mention_is_scoped_to_project() {
+        with_temp_home(|| {
+            let conn = agentflare_backend::db::open_in_memory().unwrap();
+            let (project_a, state_a) = seed_project(&conn);
+            let ws_b = workspace::create(
+                &conn,
+                workspace::CreateWorkspace {
+                    name: "ws2".into(),
+                    slug: "ws2".into(),
+                    owner_agent: None,
+                    item_label: None,
+                },
+            )
+            .unwrap();
+            let project_b = project::create(
+                &conn,
+                project::CreateProject {
+                    workspace_id: ws_b.id,
+                    name: "proj2".into(),
+                    identifier: "proj2".into(),
+                    external_source: None,
+                    external_id: None,
+                },
+            )
+            .unwrap()
+            .id;
+            let item = item::create(
+                &conn,
+                item::CreateItem {
+                    project_id: project_a,
+                    state_id: state_a,
+                    name: "with asset".into(),
+                    description: None,
+                    priority: None,
+                    parent_id: None,
+                    assignee_agent: None,
+                    sort_order: None,
+                    external_source: None,
+                    external_id: None,
+                    metadata: None,
+                    label_ids: vec![],
+                    assignee_ids: vec![],
+                    dependency_ids: vec![],
+                },
+            )
+            .unwrap();
+
+            let base_path = crate::paths::home().join(".agentflare");
+            asset::write_file(&base_path, "assets/secret.txt", b"secret").unwrap();
+            let created = asset::create(
+                &conn,
+                asset::CreateAsset {
+                    workspace_id: None,
+                    entity_type: "item_attachment".into(),
+                    entity_id: item.id.clone(),
+                    filename: "secret.txt".into(),
+                    size: 6,
+                    mime_type: Some("text/plain".into()),
+                    metadata: None,
+                    storage_path: Some("assets/secret.txt".into()),
+                },
+            )
+            .unwrap();
+
+            let mentions = vec![Mention {
+                kind: MentionKind::Asset,
+                value: created.id.clone(),
+            }];
+            let resolved = resolve_mentions(&conn, &project_b, &mentions);
+            assert!(matches!(resolved[0].content, ResolvedContent::NotFound));
+        });
     }
 }
