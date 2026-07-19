@@ -14,6 +14,12 @@ impl AgentflareMcp {
             thread_id,
             reply_to,
             description,
+            facts,
+            summary,
+            findings,
+            decisions,
+            files_touched,
+            evidence,
         }: HandoffRequest,
     ) -> Result<String, ErrorData> {
         if recipient.trim().is_empty() {
@@ -36,6 +42,41 @@ impl AgentflareMcp {
             Some("text") => "txt",
             _ => "md",
         };
+
+        // Knowledge fact import: persist each fact into the recipient's memory.
+        if let Some(ref facts) = facts {
+            let sender = self.agent.as_deref().unwrap_or("unknown");
+            for fact in facts {
+                let title = fact
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("handoff fact");
+                let body = fact.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let fact_type = fact
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("discovery");
+                if body.is_empty() {
+                    continue;
+                }
+                let input = crate::memory::mcp::RememberInput {
+                    title: format!("[{sender}] {title}"),
+                    content: body.to_string(),
+                    r#type: fact_type.to_string(),
+                    session_id: None,
+                    project: None,
+                    topic_key: fact
+                        .get("topic_key")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    scope: None,
+                };
+                if let Err(e) = crate::memory::mcp::handle_remember(input) {
+                    // Fact import is best-effort — never fail the handoff for a memory write
+                    eprintln!("[handoff] fact import failed: {e}");
+                }
+            }
+        }
 
         self.with_backend_db(|conn| {
             let project = self.resolve_project(conn)?;
@@ -103,6 +144,22 @@ impl AgentflareMcp {
             }
             if let Some(r) = &reply_to {
                 meta["reply_to"] = serde_json::json!(r);
+            }
+            // Session snapshot — lets the recipient see context without extra round-trips.
+            if let Some(s) = summary {
+                meta["session_summary"] = serde_json::json!(s);
+            }
+            if let Some(f) = findings {
+                meta["findings"] = serde_json::json!(f);
+            }
+            if let Some(d) = decisions {
+                meta["decisions"] = serde_json::json!(d);
+            }
+            if let Some(f) = files_touched {
+                meta["files_touched"] = serde_json::json!(f);
+            }
+            if let Some(e) = evidence {
+                meta["evidence"] = serde_json::json!(e);
             }
             let asset = agentflare_backend::asset::create(
                 conn,
