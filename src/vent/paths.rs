@@ -1,0 +1,76 @@
+use std::path::PathBuf;
+
+pub fn repo_key() -> String {
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        && out.status.success()
+    {
+        let remote = String::from_utf8_lossy(&out.stdout);
+        let remote = remote.trim();
+        if !remote.is_empty() {
+            return format!("git:{}", crate::claims::normalize_repo(remote));
+        }
+    }
+    let root = repo_root();
+    let canonical = std::fs::canonicalize(&root).unwrap_or(root);
+    format!("path:{}", canonical.to_string_lossy())
+}
+
+pub fn repo_root() -> PathBuf {
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        && out.status.success()
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        let s = s.trim();
+        if !s.is_empty() {
+            return PathBuf::from(s);
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn repo_slug() -> String {
+    repo_key()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+pub fn log_path() -> PathBuf {
+    crate::state::state_dir()
+        .join("vents")
+        .join(format!("{}.jsonl", repo_slug()))
+}
+
+pub fn cursor_path() -> PathBuf {
+    crate::state::state_dir()
+        .join("vents")
+        .join(format!("{}.cursor", repo_slug()))
+}
+
+pub fn backend_db_path() -> PathBuf {
+    crate::paths::home().join(".agentflare").join("backend.db")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_and_cursor_are_siblings_under_state_dir() {
+        let log = log_path();
+        let cur = cursor_path();
+        assert!(log.to_string_lossy().contains("vents"));
+        assert_eq!(cur.extension().unwrap(), "cursor");
+        assert_eq!(log.parent(), cur.parent());
+        assert_eq!(log.file_stem(), cur.file_stem());
+    }
+
+    #[test]
+    fn repo_key_is_stable() {
+        assert_eq!(repo_key(), repo_key());
+    }
+}
