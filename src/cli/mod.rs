@@ -20,6 +20,7 @@ mod run;
 mod serve;
 mod uninstall;
 mod update;
+mod work;
 
 use clap::{Parser, Subcommand};
 use std::sync::LazyLock;
@@ -67,6 +68,7 @@ pub enum Commands {
     Review(review::ReviewArgs),
     Memory(memory::MemoryArgs),
     Serve(serve::ServeArgs),
+    Work(work::WorkArgs),
 }
 
 impl Commands {
@@ -95,6 +97,7 @@ impl Commands {
             Self::Review(cmd) => cmd.run(),
             Self::Memory(cmd) => cmd.run(),
             Self::Serve(cmd) => cmd.run(),
+            Self::Work(cmd) => cmd.run(),
         }
     }
 }
