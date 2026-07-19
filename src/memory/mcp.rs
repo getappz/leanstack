@@ -41,6 +41,29 @@ pub fn handle_remember(input: RememberInput) -> Result<String, String> {
         observations::SaveOutcome::Updated(id) => ("updated", id),
         observations::SaveOutcome::Duplicate(id) => ("duplicate", id),
     };
+    // Best-effort semantic index; failure must never fail the remember.
+    // Duplicates keep their existing vector — content is unchanged by definition.
+    if status != "duplicate" {
+        let text = format!("{}\n{}", input.title, input.content);
+        match super::engine::embed_doc(&text) {
+            Some(vec) => {
+                let model = super::engine::model_name().unwrap_or_default();
+                if let Err(e) = super::embeddings::upsert(&conn, id, &vec, &model) {
+                    eprintln!("[memory] embedding upsert failed for obs {id}: {e}");
+                    // Refresh failed — drop any stale vector so recall never ranks
+                    // on outdated content; `missing` re-surfaces it for backfill.
+                    let _ = super::embeddings::delete(&conn, id);
+                }
+            }
+            // No embedder available. A prior vector (from when a model was present)
+            // would now point at stale content on an update — remove it. Created
+            // rows have no vector yet, so this is a no-op for them.
+            None if status == "updated" => {
+                let _ = super::embeddings::delete(&conn, id);
+            }
+            None => {}
+        }
+    }
     Ok(json!({"status": status, "id": id}).to_string())
 }
 
@@ -67,12 +90,13 @@ fn recall_with_conn(conn: &rusqlite::Connection, input: RecallInput) -> Result<S
     }
     let limit = input.limit.unwrap_or(10).min(50);
     let results = if let Some(ref q) = input.query.filter(|q| !q.trim().is_empty()) {
-        search::search(
+        search::search_hybrid(
             conn,
             q,
             input.project.as_deref(),
             input.r#type.as_deref(),
             limit,
+            super::engine::embed_query,
         )
         .map_err(|e| format!("search failed: {e}"))?
     } else {
@@ -390,8 +414,9 @@ mod tests {
     use rusqlite::Connection;
 
     fn new_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        super::super::schema::migrate(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        super::super::schema::migrate(&mut conn).unwrap();
         conn
     }
 

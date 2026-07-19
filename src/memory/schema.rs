@@ -1,8 +1,8 @@
-use rusqlite::Connection;
+use rusqlite_migration::{M, Migrations};
 
-pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "
+/// Frozen v1 DDL — the exact pre-migration brain schema. Never edit this
+/// string; schema changes are new `M::up` entries in `migrations()`.
+pub const V1_DDL: &str = "
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             project TEXT, directory TEXT,
@@ -112,7 +112,28 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_summaries_project ON session_summaries(project);
         CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id);
-        ",
-    )?;
-    Ok(())
+        ";
+
+pub fn migrations() -> Migrations<'static> {
+    Migrations::new(vec![
+        M::up(V1_DDL),
+        M::up(
+            "CREATE TABLE IF NOT EXISTS observations_vec (
+                obs_id INTEGER PRIMARY KEY REFERENCES observations(id),
+                embedding BLOB NOT NULL,
+                dim INTEGER NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );",
+        ),
+    ])
+}
+
+/// Bring a connection (usually in-memory) to the latest schema. Only used by
+/// tests — production opens through `db_kit::open_file(_, &migrations())`.
+#[cfg(test)]
+pub fn migrate(conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
+    migrations()
+        .to_latest(conn)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }

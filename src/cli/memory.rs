@@ -37,6 +37,12 @@ pub enum MemoryCommands {
         #[arg(long, default_value = "10")]
         limit: usize,
     },
+    /// Compute embeddings for observations missing them.
+    /// Requires a build with --features semantic and a downloaded model.
+    BackfillEmbeddings {
+        #[arg(long, default_value = "200")]
+        batch: usize,
+    },
 }
 
 impl MemoryArgs {
@@ -98,6 +104,38 @@ impl MemoryArgs {
                     Err(e) => crate::ui::error(&e.to_string()),
                 },
             },
+            MemoryCommands::BackfillEmbeddings { batch } => {
+                let Some(model) = crate::memory::engine::model_name() else {
+                    crate::ui::error(
+                        "embedding engine unavailable — build with --features semantic and ensure the model is downloaded",
+                    );
+                    return;
+                };
+                match crate::memory::store::open() {
+                    Err(e) => crate::ui::error(&e.to_string()),
+                    Ok(conn) => match crate::memory::embeddings::missing(&conn, batch) {
+                        Err(e) => crate::ui::error(&e.to_string()),
+                        Ok(todo) => {
+                            let total = todo.len();
+                            let mut ok = 0usize;
+                            for (id, text) in todo {
+                                match crate::memory::engine::embed_doc(&text) {
+                                    Some(vec) => {
+                                        match crate::memory::embeddings::upsert(
+                                            &conn, id, &vec, &model,
+                                        ) {
+                                            Ok(()) => ok += 1,
+                                            Err(e) => eprintln!("obs {id}: store failed: {e}"),
+                                        }
+                                    }
+                                    None => eprintln!("obs {id}: embed failed"),
+                                }
+                            }
+                            println!("backfilled {ok}/{total} embeddings (model: {model})");
+                        }
+                    },
+                }
+            }
         }
     }
 }

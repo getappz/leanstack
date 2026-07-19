@@ -109,8 +109,9 @@ mod tests {
     use crate::memory::{observations, schema};
 
     fn new_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        schema::migrate(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        schema::migrate(&mut conn).unwrap();
         conn
     }
 
@@ -121,6 +122,27 @@ mod tests {
             observations::SaveOutcome::Created(id) => id,
             other => panic!("expected Created, got {other:?}"),
         }
+    }
+
+    // Contract test for blocker A (FK enforcement): a relation pointing at a
+    // nonexistent observation must be rejected. Fails if the connection didn't
+    // enable `PRAGMA foreign_keys = ON`.
+    #[test]
+    fn relation_to_missing_observation_is_rejected() {
+        let conn = new_db();
+        let source = make_obs(&conn, "real obs");
+        let missing_target = source + 9999;
+        let err = create(
+            &conn,
+            source,
+            missing_target,
+            "related",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(err.is_err(), "FK violation should reject orphan relation");
     }
 
     // Regression test: re-relating the same (source, target, relation)
