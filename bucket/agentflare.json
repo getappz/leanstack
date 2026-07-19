@@ -1,10 +1,10 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Run AI coding agents efficiently, and coordinate more than one of them.",
   "homepage": "https://github.com/getappz/agentflare",
   "license": "MIT",
-  "url": "https://github.com/getappz/agentflare/releases/download/v1.4.0/agentflare-x86_64-pc-windows-msvc.zip",
-  "hash": "sha256:f664219e308bcfcb91daec142e7d9ce0e2094f669bbe76dfeff60d2fdb99640b",
+  "url": "https://github.com/getappz/agentflare/releases/download/v1.5.0/agentflare-x86_64-pc-windows-msvc.zip",
+  "hash": "sha256:97008f38687ab2a860ca830d509c6f49eb0b663aaf2cd768c1af719b39a39bca",
   "bin": "agentflare.exe",
   "checkver": "github",
   "autoupdate": {
