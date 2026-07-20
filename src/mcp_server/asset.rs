@@ -87,7 +87,7 @@ impl AgentflareMcp {
                         .unwrap_or("");
                     let mime = Self::infer_mime_type(ext);
 
-                    let path = crate::asset_store::entity_path(&entity_type, &entity_id, &fn_val);
+                    let path = crate::asset_store::entity_path(entity_type, &entity_id, &fn_val);
 
                     let result = self.with_store(|store| -> Result<serde_json::Value, ErrorData> {
                         let blob_hash = store
