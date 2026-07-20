@@ -28,7 +28,12 @@ pub struct SnapshotMeta {
 /// `git <args>` with a temporary `GIT_INDEX_FILE`, so staging for a
 /// snapshot never touches the caller's real index.
 fn run_git_with_index(repo_root: &Path, index_file: &Path, args: &[&str]) -> Result<String, String> {
+    // A snapshot must capture exactly what's on disk right now -- `-c
+    // core.autocrlf=false` stops git silently converting line endings
+    // while staging, regardless of the caller's ambient/global git config
+    // (autocrlf=true is the common default on Windows).
     let out = Command::new(crate::shell::git_binary())
+        .args(["-c", "core.autocrlf=false"])
         .args(args)
         .current_dir(repo_root)
         .env("GIT_INDEX_FILE", index_file)
@@ -68,11 +73,19 @@ pub fn snapshot_before(repo_root: &Path, reason: &str) -> Result<SnapshotId, Str
 }
 
 /// Restores paths from a snapshot into the current working tree and index.
-/// Only restores paths that existed at snapshot time — files created after
+/// Only restores paths that existed at snapshot time -- files created after
 /// the snapshot are untouched and survive.
+///
+/// "-c core.autocrlf=false" for the same reason run_git_with_index sets it
+/// on the capture side: a restore is a promise of exact recovery, and git
+/// silently rewriting LF to CRLF on checkout (autocrlf=true, common on
+/// Windows) breaks that promise regardless of what was actually snapshotted.
 pub fn restore(repo_root: &Path, id: &SnapshotId) -> Result<(), String> {
     let refname = format!("{SNAPSHOT_REF_PREFIX}{}", id.0);
-    run_in(repo_root, &["checkout", &refname, "--", "."])?;
+    run_in(
+        repo_root,
+        &["-c", "core.autocrlf=false", "checkout", &refname, "--", "."],
+    )?;
     Ok(())
 }
 
@@ -151,6 +164,34 @@ mod tests {
         assert!(
             repo.path.join("new_after_snapshot.txt").exists(),
             "file created after snapshot must survive restore"
+        );
+    }
+
+    #[test]
+    fn snapshot_then_restore_is_byte_exact_regardless_of_autocrlf() {
+        // Regression: without an explicit "-c core.autocrlf=false" on both
+        // the capture and restore sides, a repo/global config of
+        // core.autocrlf=true (the common Windows default -- this is exactly
+        // what tripped CI on windows-latest) makes git checkout silently
+        // rewrite LF to CRLF on restore, breaking the "exact recovery"
+        // promise this feature exists for. Sets core.autocrlf=true locally
+        // on the test repo rather than relying on the host's ambient config,
+        // so this reproduces the CI failure deterministically everywhere.
+        let repo = init_repo_with_branch("master");
+        run_in(&repo.path, &["config", "core.autocrlf", "true"]).unwrap();
+        std::fs::write(repo.path.join("tracked.txt"), "before\n").unwrap();
+        run_in(&repo.path, &["add", "tracked.txt"]).unwrap();
+        run_in(&repo.path, &["commit", "-m", "add tracked"]).unwrap();
+        std::fs::write(repo.path.join("tracked.txt"), "modified\n").unwrap();
+
+        let id = snapshot_before(&repo.path, "pre reset --hard").unwrap();
+        run_in(&repo.path, &["checkout", "--", "tracked.txt"]).unwrap();
+        restore(&repo.path, &id).unwrap();
+
+        let bytes = std::fs::read(repo.path.join("tracked.txt")).unwrap();
+        assert_eq!(
+            bytes, b"modified\n",
+            "restore must not let core.autocrlf touch recovered bytes"
         );
     }
 
