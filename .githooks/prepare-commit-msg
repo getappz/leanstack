@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# agentflare provenance trailers (prepare-commit-msg).
+#
+# Appends Agentflare-Agent/Agentflare-Branch/Agentflare-Item trailers to
+# every commit message, so it's clear afterward which agent (if any) made
+# it and what work item it belongs to. Self-reported, not cryptographically
+# attested -- matches every other AGENTFLARE_AGENT-based identity check in
+# this codebase (see claims::owner_id). Idempotent: re-running on an
+# already-stamped message (e.g. `commit --amend`) is a no-op.
+#
+# Fail-open by design: if the agentflare binary isn't on PATH or errors,
+# the commit proceeds with its message unchanged.
+#
+# Installed into a project via `agentflare git install-hooks`, same as
+# pre-commit/pre-push (agentflare stores the canonical copy under
+# ~/.agentflare/githooks/).
+
+msg_file="$1"
+
+if command -v agentflare >/dev/null 2>&1; then
+    agentflare git trailer-inject "$msg_file" || true
+fi
+
+exit 0

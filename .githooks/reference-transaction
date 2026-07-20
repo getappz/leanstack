@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# agentflare reference-transaction journal.
+#
+# Backstop audit trail independent of the git-shim's own interception: this
+# fires for EVERY ref move in this repo, whether git was invoked through
+# the agentflare git shim, bare git, or any other path -- unlike the shim's
+# own audit log (crates/flare-git-core/src/audit.rs), which only sees
+# invocations that actually went through it.
+#
+# Git invokes this hook once per state ("prepared", "committed", "aborted")
+# with ref-update lines (`<old-oid> <new-oid> <refname>`) on stdin; only
+# "committed" (the transaction that actually succeeded) is logged.
+#
+# Fail-open by design: if the agentflare binary isn't on PATH or errors,
+# the underlying git operation is completely unaffected either way -- this
+# hook cannot block anything, it only observes.
+#
+# Installed into a project via `agentflare git install-hooks`, same as
+# pre-commit/pre-push/prepare-commit-msg.
+
+state="$1"
+
+if [ "$state" != "committed" ]; then
+    exit 0
+fi
+
+if command -v agentflare >/dev/null 2>&1; then
+    agentflare git ref-transaction-log || true
+fi
+
+exit 0
