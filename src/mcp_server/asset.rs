@@ -68,6 +68,10 @@ impl AgentflareMcp {
                 // attach always nests with_store inside with_backend_db below, which
                 // skips the one-time legacy backfill to avoid a non-reentrant-mutex
                 // deadlock -- so trigger it here first, while backend_db is unlocked.
+                // Open backend_db first (lock is released immediately after) so the
+                // backfill's try_lock below sees a real connection on a totally fresh
+                // instance's very first attach call, not just on the second+.
+                self.with_backend_db(|_| ())?;
                 self.with_store(|_| ())?;
 
                 self.with_backend_db(|conn| {
@@ -217,14 +221,18 @@ impl AgentflareMcp {
                         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
                         .ok_or_else(|| ErrorData::invalid_params("asset not found", None))?;
 
+                    // Delete the document row before releasing the blob ref: if
+                    // blob_unref ran first and doc_delete then failed, the last
+                    // reference's content would already be gone while the asset
+                    // still showed up as live (not soft-deleted).
+                    store
+                        .doc_delete(&id)
+                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                     if let Some(ref hash) = doc.blob_hash {
                         store
                             .blob_unref(hash)
                             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                     }
-                    store
-                        .doc_delete(&id)
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
                     Ok(serde_json::json!({"deleted": true, "id": id}).to_string())
                 })?

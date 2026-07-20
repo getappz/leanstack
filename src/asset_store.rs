@@ -47,38 +47,50 @@ pub fn backfill_legacy_assets(
     }
 
     let assets = agentflare_backend::asset::list_all(backend_conn)?;
-    if assets.is_empty() {
-        let now = db_kit::ids::now();
-        store.kv_set("_asset_backfill_done", &serde_json::to_vec(&now)?)?;
-        return Ok(0);
-    }
+    let mut migrated = 0usize;
 
+    // A single unreadable/corrupt legacy asset must not abort the whole
+    // batch: that would leave the marker unwritten, so every later
+    // with_store() call would replay it -- re-upserting the assets that
+    // already migrated fine and bumping their version/history each time.
     for asset in &assets {
-        let path = entity_path(&asset.entity_type, &asset.entity_id, &asset.filename);
-        let bytes = agentflare_backend::asset::read_file(asset_base_path, &asset.storage_path)?;
-        let blob_hash = store.blob_store(&bytes)?;
-
-        store.doc_upsert_with_opts(
-            &asset.workspace_id.clone().unwrap_or_default(),
-            &path,
-            "",
-            agentflare_store::documents::DocUpsertOpts {
-                title: Some(asset.filename.clone()),
-                doc_type: Some("asset".into()),
-                blob_hash: Some(blob_hash),
-                mime: Some(asset.mime_type.clone().unwrap_or_default()),
-                source: Some("backfill".into()),
-                metadata: Some(asset.metadata.clone()),
-                size: Some(asset.size),
-                ..Default::default()
-            },
-        )?;
+        match backfill_one(store, asset_base_path, asset) {
+            Ok(()) => migrated += 1,
+            Err(e) => eprintln!("[asset-store backfill] skipping asset {}: {e}", asset.id),
+        }
     }
 
     let now = db_kit::ids::now();
     store.kv_set("_asset_backfill_done", &serde_json::to_vec(&now)?)?;
 
-    Ok(assets.len())
+    Ok(migrated)
+}
+
+fn backfill_one(
+    store: &Store,
+    asset_base_path: &std::path::Path,
+    asset: &agentflare_backend::asset::Asset,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = entity_path(&asset.entity_type, &asset.entity_id, &asset.filename);
+    let bytes = agentflare_backend::asset::read_file(asset_base_path, &asset.storage_path)?;
+    let blob_hash = store.blob_store(&bytes)?;
+
+    store.doc_upsert_with_opts(
+        &asset.workspace_id.clone().unwrap_or_default(),
+        &path,
+        "",
+        agentflare_store::documents::DocUpsertOpts {
+            title: Some(asset.filename.clone()),
+            doc_type: Some("asset".into()),
+            blob_hash: Some(blob_hash),
+            mime: Some(asset.mime_type.clone().unwrap_or_default()),
+            source: Some("backfill".into()),
+            metadata: Some(asset.metadata.clone()),
+            size: Some(asset.size),
+            ..Default::default()
+        },
+    )?;
+    Ok(())
 }
 
 pub fn get_blob_content(
@@ -91,5 +103,64 @@ pub fn get_blob_content(
             let content = doc.content.as_bytes().to_vec();
             Ok(Some(content))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backfill_skips_bad_asset_and_still_marks_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base_path = tmp.path().join("home");
+        std::fs::create_dir_all(&base_path).unwrap();
+
+        let conn = agentflare_backend::db::open_db(&tmp.path().join("backend.db")).unwrap();
+        let good_storage = "ws/assets/good-hash.txt";
+        agentflare_backend::asset::write_file(&base_path, good_storage, b"hello").unwrap();
+        agentflare_backend::asset::create(
+            &conn,
+            agentflare_backend::asset::CreateAsset {
+                workspace_id: Some("ws".into()),
+                entity_type: "item_attachment".into(),
+                entity_id: "item-good".into(),
+                filename: "good.txt".into(),
+                size: 5,
+                mime_type: Some("text/plain".into()),
+                metadata: None,
+                storage_path: Some(good_storage.into()),
+            },
+        )
+        .unwrap();
+        // No file written for this one -- read_file will fail, simulating a
+        // corrupt/missing legacy asset.
+        agentflare_backend::asset::create(
+            &conn,
+            agentflare_backend::asset::CreateAsset {
+                workspace_id: Some("ws".into()),
+                entity_type: "item_attachment".into(),
+                entity_id: "item-bad".into(),
+                filename: "bad.txt".into(),
+                size: 5,
+                mime_type: Some("text/plain".into()),
+                metadata: None,
+                storage_path: Some("ws/assets/missing-hash.txt".into()),
+            },
+        )
+        .unwrap();
+
+        let store = Store::open_memory().unwrap();
+        let migrated = backfill_legacy_assets(&store, &conn, &base_path).unwrap();
+        assert_eq!(migrated, 1, "only the readable asset should migrate");
+
+        let docs = store.doc_list("ws").unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].path, "item_attachment/item-good/good.txt");
+
+        // The completion marker must be written even though one asset
+        // failed, so a later with_store() call doesn't replay this batch.
+        let err = backfill_legacy_assets(&store, &conn, &base_path).unwrap_err();
+        assert!(err.to_string().contains("already ran"));
     }
 }
