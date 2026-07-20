@@ -2,11 +2,15 @@
 //! <subcommand> <args>` invocation gets classified into exactly one
 //! disposition before the shim decides whether to exec real git.
 //!
-//! Fail-closed by default: a subcommand this policy doesn't explicitly
-//! recognize is `Deny`, not `Passthrough`. A shim that silently passes
-//! through anything it doesn't recognize defeats its own purpose the
-//! moment git grows a new subcommand this policy hasn't been taught about.
-//! `RedirectToWorktree` exists in the `Disposition` enum for API
+//! Fail-OPEN by default: a subcommand this policy doesn't explicitly
+//! recognize is `Passthrough`, not `Deny`. This is a live shim sitting in
+//! front of someone's daily-driver git usage -- it must never block a
+//! legitimate operation just because its allowlist hasn't caught up with
+//! git's full subcommand surface (submodule, bisect, notes, gc, lfs, ...).
+//! Only the specific, deliberately-chosen cases below (protected-branch
+//! checkout/switch, trust-root push, low-level plumbing, `worktree`) are
+//! ever denied -- those are known and intentional, not "doesn't recognize
+//! it". `RedirectToWorktree` exists in the `Disposition` enum for API
 //! completeness (mirroring the inspiration project's 4-way model) but v1's
 //! policy never produces it — agentflare has no per-agent worktree binding
 //! data available at classify time yet.
@@ -157,11 +161,10 @@ pub fn classify_pure(
         "worktree" => Disposition::Deny {
             reason: "'git worktree' is orchestrator-managed by agentflare — use the `item` MCP tool's claim flow instead of calling it directly.".to_string(),
         },
-        _ => Disposition::Deny {
-            reason: format!(
-                "'git {subcommand}' is not a recognized command for the agentflare git shim (fail-closed default) — if this is legitimate day-to-day usage, it needs to be added to flare-git-core::classify's policy."
-            ),
-        },
+        // Fail-open: anything not explicitly matched above is allowed through
+        // unchanged. This shim must never block a git subcommand it simply
+        // hasn't been taught about yet.
+        _ => Disposition::Passthrough,
     }
 }
 
@@ -230,11 +233,25 @@ mod tests {
     }
 
     #[test]
-    fn unknown_subcommand_denies_by_default() {
-        assert!(matches!(
+    fn unknown_subcommand_passes_through_by_default() {
+        // Fail-open: this shim must never block a subcommand it hasn't
+        // been explicitly taught to deny.
+        assert_eq!(
             classify_pure("some-future-subcommand", &[], "master", false),
-            Disposition::Deny { .. }
-        ));
+            Disposition::Passthrough
+        );
+        assert_eq!(
+            classify_pure("submodule", &args(&["update"]), "master", false),
+            Disposition::Passthrough
+        );
+        assert_eq!(
+            classify_pure("bisect", &args(&["start"]), "master", false),
+            Disposition::Passthrough
+        );
+        assert_eq!(
+            classify_pure("lfs", &args(&["pull"]), "master", false),
+            Disposition::Passthrough
+        );
     }
 
     #[test]

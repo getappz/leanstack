@@ -62,11 +62,15 @@ fn checkout_to_protected_branch_is_denied_and_real_git_never_runs() {
 }
 
 #[test]
-fn unrecognized_subcommand_is_denied() {
+fn unrecognized_subcommand_passes_through_to_real_git() {
+    // Fail-open: a subcommand this shim doesn't recognize is not denied by
+    // the shim -- it's handed to real git unchanged, which then rejects it
+    // for its OWN reason ("not a git command"), not "denied by the shim".
     let repo = init_repo();
     let home = tempfile::TempDir::new().unwrap();
     let out = shim(repo.path(), home.path(), &["some-made-up-subcommand"]);
-    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("denied"), "{stderr}");
 }
 
 #[test]
@@ -91,30 +95,38 @@ fn outside_a_git_repo_passes_through() {
 fn bypass_env_var_skips_classification_even_for_a_denied_command() {
     let repo = init_repo();
     let home = tempfile::TempDir::new().unwrap();
+    assert!(flare_git_core::shell::run_in_ok(
+        repo.path(),
+        &["checkout", "-b", "feature/x"]
+    ));
     let out = Command::new(env!("CARGO_BIN_EXE_git"))
-        .args(["some-made-up-subcommand"])
+        .args(["checkout", "master"])
         .current_dir(repo.path())
         .env("AGENTFLARE_HOME_OVERRIDE", home.path())
         .env("AGENTFLARE_GIT_BYPASS", "1")
         .output()
         .unwrap();
-    // Real git also rejects the made-up subcommand, but for a DIFFERENT
-    // reason (unknown git command, not "denied by the shim") -- assert on
-    // stderr content, not just a nonzero exit, so this test would fail if
-    // bypass silently started denying again.
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("denied"), "{stderr}");
+    // Without bypass this exact command is the explicit protected-branch
+    // deny case (see checkout_to_protected_branch_is_denied_and_real_git_never_runs);
+    // with bypass it must run unconditionally.
+    assert!(out.status.success(), "{out:?}");
+    let branch = flare_git_core::shell::run_in(repo.path(), &["branch", "--show-current"]).unwrap();
+    assert_eq!(branch.trim(), "master");
 }
 
 #[test]
 fn denied_command_is_logged_to_the_audit_log() {
     let repo = init_repo();
     let home = tempfile::TempDir::new().unwrap();
-    let out = shim(repo.path(), home.path(), &["some-made-up-subcommand"]);
+    assert!(flare_git_core::shell::run_in_ok(
+        repo.path(),
+        &["checkout", "-b", "feature/x"]
+    ));
+    let out = shim(repo.path(), home.path(), &["checkout", "master"]);
     assert!(!out.status.success());
 
     let audit_log = home.path().join(".agentflare").join("audit").join("git.jsonl");
     let content = std::fs::read_to_string(&audit_log).expect("audit log must exist");
-    assert!(content.contains("some-made-up-subcommand"), "{content}");
+    assert!(content.contains("checkout"), "{content}");
     assert!(content.contains("Deny"), "{content}");
 }
