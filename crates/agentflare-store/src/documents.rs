@@ -280,7 +280,7 @@ impl Store {
         conn.query_row(
             "SELECT id, project_id, path, content, title, doc_type, blob_hash, mime, tags,
                         session_id, source, version, metadata, size, created_at, updated_at, deleted_at
-                 FROM store_documents WHERE id = ?1",
+                 FROM store_documents WHERE id = ?1 AND deleted_at IS NULL",
             params![id],
             Self::row_to_document,
         )
@@ -606,6 +606,10 @@ mod tests {
         let list = s.doc_list("p").unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].path, "/a.md");
+
+        // doc_get must not resurrect a soft-deleted row -- callers (e.g. the
+        // asset MCP tool) rely on this to report "not found" post-delete.
+        assert!(s.doc_get(&b.id).unwrap().is_none());
     }
 
     #[test]

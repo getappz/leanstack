@@ -639,9 +639,10 @@ impl AgentflareMcp {
         if let Ok(bg) = self.backend_db.try_lock() {
             if let Some(ref conn) = *bg {
                 let base_path = crate::paths::home().join(".agentflare");
-                let s = self.store.lock().unwrap();
-                if let Some(ref store) = *s {
-                    let _ = crate::asset_store::backfill_legacy_assets(store, conn, &base_path);
+                if let Ok(s) = self.store.lock() {
+                    if let Some(ref store) = *s {
+                        let _ = crate::asset_store::backfill_legacy_assets(store, conn, &base_path);
+                    }
                 }
             }
         }

@@ -65,6 +65,11 @@ impl AgentflareMcp {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let meta = metadata.unwrap_or_else(|| "{}".to_string());
 
+                // attach always nests with_store inside with_backend_db below, which
+                // skips the one-time legacy backfill to avoid a non-reentrant-mutex
+                // deadlock -- so trigger it here first, while backend_db is unlocked.
+                self.with_store(|_| ())?;
+
                 self.with_backend_db(|conn| {
                     let ws_id = Self::resolve_workspace_id(conn)?;
                     let (entity_type, entity_id) = if has_item {

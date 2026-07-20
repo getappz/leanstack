@@ -162,6 +162,69 @@ fn asset_get_rejects_missing_id() {
 }
 
 #[test]
+fn asset_get_and_delete_after_delete_return_not_found() {
+    crate::paths::test_support::with_temp_home(|| {
+        let (_tmp, s) = harness();
+        let home = crate::paths::home();
+        let staging = home.join(".agentflare").join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let item: serde_json::Value =
+            serde_json::from_str(&s.item(Parameters(empty_item_create("gone"))).unwrap()).unwrap();
+        let item_id = item["id"].as_str().unwrap().to_string();
+
+        std::fs::write(staging.join("gone.txt"), b"bye").unwrap();
+        let attached: serde_json::Value = serde_json::from_str(
+            &s.asset(Parameters(AssetRequest {
+                action: "attach".into(),
+                id: None,
+                item_id: Some(item_id),
+                project_id: None,
+                filename: Some("gone.txt".into()),
+                metadata: None,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let asset_id = attached["id"].as_str().unwrap().to_string();
+
+        s.asset(Parameters(AssetRequest {
+            action: "delete".into(),
+            id: Some(asset_id.clone()),
+            item_id: None,
+            project_id: None,
+            filename: None,
+            metadata: None,
+        }))
+        .unwrap();
+
+        // A deleted asset must not be gettable, matching the pre-#185
+        // agentflare_backend::asset::get contract (deleted_at IS NULL).
+        s.asset(Parameters(AssetRequest {
+            action: "get".into(),
+            id: Some(asset_id.clone()),
+            item_id: None,
+            project_id: None,
+            filename: None,
+            metadata: None,
+        }))
+        .unwrap_err();
+
+        // Deleting an already-deleted asset must also report not-found,
+        // not silently double-unref an already-purged blob.
+        s.asset(Parameters(AssetRequest {
+            action: "delete".into(),
+            id: Some(asset_id),
+            item_id: None,
+            project_id: None,
+            filename: None,
+            metadata: None,
+        }))
+        .unwrap_err();
+    });
+}
+
+#[test]
 fn asset_shared_storage_delete_safety() {
     crate::paths::test_support::with_temp_home(|| {
         let (_tmp, s) = harness();
