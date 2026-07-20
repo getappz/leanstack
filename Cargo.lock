@@ -85,6 +85,7 @@ dependencies = [
  "color-eyre",
  "dirs",
  "eyre",
+ "flare-git-core",
  "flare-proxy",
  "flare-search-kit",
  "flate2",

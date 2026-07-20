@@ -86,7 +86,7 @@ fn remotes_mention_github(remotes: &str) -> bool {
 }
 
 fn git_remote_is_github() -> bool {
-    crate::git::run_in_opt(
+    flare_git_core::shell::run_in_opt(
         &std::env::current_dir().unwrap_or_default(),
         &["remote", "-v"],
     )

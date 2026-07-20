@@ -79,6 +79,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 rust-embed = "8"
 tokio-stream = { version = "0.1", features = ["sync"] }
 agentflare-store = { path = "crates/agentflare-store" }
+flare-git-core = { path = "crates/flare-git-core" }
 flare-proxy = { path = "crates/flare-proxy" }
 
 [target.'cfg(unix)'.dependencies]

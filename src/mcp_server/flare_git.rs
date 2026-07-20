@@ -260,7 +260,7 @@ impl AgentflareMcp {
                                 None,
                             ));
                         }
-                        crate::git::resolve_default_branch(
+                        flare_git_core::branch::resolve_default_branch(
                             &std::env::current_dir().unwrap_or_default(),
                         )
                     }
