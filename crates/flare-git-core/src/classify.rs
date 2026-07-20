@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::branch::{is_protected_branch, resolve_default_branch};
+use crate::branch::{current_branch, is_protected_branch, resolve_default_branch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Disposition {
@@ -170,7 +170,9 @@ const DENIED_PLUMBING_SUBCOMMANDS: &[&str] = &[
 pub fn is_destructive(subcommand: &str, args: &[String]) -> bool {
     match subcommand {
         "reset" => args.iter().any(|a| a == "--hard"),
-        "clean" => args.iter().any(|a| a == "-f" || a == "-fd" || a == "-fx" || a == "-fdx"),
+        "clean" => args.iter().any(|a| {
+            a == "--force" || (a.starts_with('-') && !a.starts_with("--") && a.contains('f'))
+        }),
         "checkout" | "switch" => args.iter().any(|a| a == "-f" || a == "--force" || a == "-B"),
         _ => false,
     }
@@ -269,6 +271,31 @@ pub fn push_touches_trust_root(repo_root: &Path, branch: &str, target: &str) -> 
     }
 }
 
+/// Resolves which local branch/ref a `push` invocation would actually
+/// push, skipping flags positionally (`-u`, `--force`, `--force-with-lease`,
+/// `--tags`, ...) rather than assuming `args[1]` -- a flag before the
+/// remote/refspec (e.g. `git push -u origin feature/x`) previously threw
+/// off a fixed-index read, misreading the remote name (`"origin"`) as the
+/// branch being pushed and either mis-diffing or spuriously denying. Falls
+/// back to the current checked-out branch when the refspec is omitted
+/// entirely (bare `git push`, or `git push <remote>` with no explicit ref
+/// -- both push the current/tracked branch, not something namable from
+/// `args` alone) -- this also closes the gap where the single most common
+/// push form (`git push`) skipped the trust-root check entirely.
+fn pushed_branch(repo_root: &Path, args: &[String]) -> Option<String> {
+    let non_flags: Vec<&str> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str)
+        .collect();
+    let raw = match non_flags.len() {
+        0 | 1 => current_branch(repo_root),
+        _ => Some(non_flags[1].to_string()),
+    }?;
+    let branch = raw.split(':').next().unwrap_or(&raw);
+    Some(branch.trim_start_matches("refs/heads/").to_string())
+}
+
 /// I/O-resolving entry point: resolves the default branch and (for `push`
 /// with a resolvable branch/target pair) whether the push touches a
 /// trust-root path, then delegates to `classify_pure`.
@@ -276,8 +303,8 @@ pub fn push_touches_trust_root(repo_root: &Path, branch: &str, target: &str) -> 
 pub fn classify(repo_root: &Path, subcommand: &str, args: &[String]) -> Event {
     let default_branch = resolve_default_branch(repo_root);
     let touches_trust_root = subcommand == "push"
-        && args.len() >= 2
-        && push_touches_trust_root(repo_root, &args[1], &default_branch);
+        && pushed_branch(repo_root, args)
+            .is_some_and(|b| push_touches_trust_root(repo_root, &b, &default_branch));
     let disposition = classify_pure(subcommand, args, &default_branch, touches_trust_root);
     Event {
         subcommand: subcommand.to_string(),
@@ -493,5 +520,69 @@ mod tests {
         assert!(is_destructive("checkout", &args(&["-f", "master"])));
         assert!(!is_destructive("checkout", &args(&["master"])));
         assert!(!is_destructive("commit", &args(&["-m", "x"])));
+    }
+
+    #[test]
+    fn is_destructive_flags_clean_regardless_of_flag_form_or_order() {
+        // Combined short opts in the order git itself would print them.
+        assert!(is_destructive("clean", &args(&["-fd"])));
+        // Same combination, opposite order -- git treats "-df" identically to
+        // "-fd", but a naive exact-string match on "-fd" alone would miss it.
+        assert!(is_destructive("clean", &args(&["-df"])));
+        // Long form, not in the original hardcoded list at all.
+        assert!(is_destructive("clean", &args(&["--force"])));
+        // Separate short flags rather than one combined cluster.
+        assert!(is_destructive("clean", &args(&["-f", "-d"])));
+        assert!(!is_destructive("clean", &args(&["-n"])));
+        assert!(!is_destructive("clean", &args(&["--dry-run"])));
+    }
+
+    #[test]
+    fn pushed_branch_reads_the_refspec_positionally_skipping_leading_flags() {
+        // `-u` before remote/refspec previously threw off a fixed-index
+        // `args[1]` read, misreading "origin" as the branch being pushed.
+        let repo = crate::shell::test_support::init_repo_with_branch("master");
+        assert_eq!(
+            pushed_branch(&repo.path, &args(&["-u", "origin", "feature/x"])).as_deref(),
+            Some("feature/x")
+        );
+        assert_eq!(
+            pushed_branch(&repo.path, &args(&["--force", "origin", "feature/x"])).as_deref(),
+            Some("feature/x")
+        );
+        assert_eq!(
+            pushed_branch(&repo.path, &args(&["origin", "feature/x"])).as_deref(),
+            Some("feature/x")
+        );
+    }
+
+    #[test]
+    fn pushed_branch_falls_back_to_current_branch_when_refspec_omitted() {
+        // Bare `git push` and `git push <remote>` (no explicit ref) both push
+        // the current/tracked branch -- previously these skipped the
+        // trust-root check entirely (args.len() >= 2 was false).
+        let repo = crate::shell::test_support::init_repo_with_branch("feature/y");
+        assert_eq!(pushed_branch(&repo.path, &[]).as_deref(), Some("feature/y"));
+        assert_eq!(
+            pushed_branch(&repo.path, &args(&["origin"])).as_deref(),
+            Some("feature/y")
+        );
+    }
+
+    #[test]
+    fn push_with_leading_flags_touching_trust_root_is_still_detected() {
+        // End-to-end regression for the classify()-level bug: a flag before
+        // remote/refspec must not make the trust-root check silently pass.
+        let repo = crate::shell::test_support::init_repo_with_branch("master");
+        std::fs::write(repo.path.join("Cargo.toml"), "[package]\n").unwrap();
+        crate::shell::run_in(&repo.path, &["add", "Cargo.toml"]).unwrap();
+        crate::shell::run_in(&repo.path, &["checkout", "-b", "feature/z"]).unwrap();
+        crate::shell::run_in(&repo.path, &["commit", "-m", "touch trust root"]).unwrap();
+        let event = classify(&repo.path, "push", &args(&["-u", "origin", "feature/z"]));
+        assert!(
+            matches!(event.disposition, Disposition::Deny { .. }),
+            "{:?}",
+            event.disposition
+        );
     }
 }
