@@ -412,7 +412,7 @@ impl AgentflareMcp {
     /// not on PATH, etc). Shared by `git_provenance` and the backend
     /// project-link resolution below.
     fn run_git(args: &[&str]) -> Option<String> {
-        crate::git::run_in_opt(&std::env::current_dir().unwrap_or_default(), args)
+        flare_git_core::shell::run_in_opt(&std::env::current_dir().unwrap_or_default(), args)
     }
 
     /// Best-effort git context of this process's cwd (the project the MCP
@@ -468,7 +468,7 @@ impl AgentflareMcp {
     /// found anywhere above it.
     pub(crate) fn repo_root() -> std::path::PathBuf {
         let cwd = std::env::current_dir().unwrap_or_default();
-        if let Some(root) = crate::git::repo_toplevel(&cwd) {
+        if let Some(root) = flare_git_core::branch::repo_toplevel(&cwd) {
             return root;
         }
         Self::find_root_from(&cwd, &crate::paths::home())
@@ -862,7 +862,7 @@ impl AgentflareMcp {
         if let Some(pr) = pr.filter(|s| !s.is_empty()) {
             return Ok(pr);
         }
-        crate::git::current_branch(&std::env::current_dir().unwrap_or_default())
+        flare_git_core::branch::current_branch(&std::env::current_dir().unwrap_or_default())
             .ok_or_else(|| ErrorData::invalid_params("could not determine round — pass pr", None))
     }
 

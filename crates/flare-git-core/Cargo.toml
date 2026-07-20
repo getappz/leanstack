@@ -1,0 +1,21 @@
+[package]
+name = "flare-git-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "Apache-2.0"
+description = "Local git primitives, worktree management, and PATH-shim policy (classify/snapshot/provenance/audit) for agentflare -- single source of truth, consumed by the CLI, MCP server, and the git PATH shim."
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+rusqlite = { version = "0.40", features = ["bundled"] }
+agentflare-backend = { package = "agentflare-backend", path = "../agentflare-backend" }
+dirs = "6"
+agent-detector = "0.2.1"
+which = "6"
+
+[dev-dependencies]
+tempfile = "3"

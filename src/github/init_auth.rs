@@ -47,7 +47,7 @@ fn secret_present() -> bool {
 }
 
 pub fn is_github_repo(repo_root: &std::path::Path) -> bool {
-    crate::git::run_in_opt(repo_root, &["remote", "get-url", "origin"])
+    flare_git_core::shell::run_in_opt(repo_root, &["remote", "get-url", "origin"])
         .map(|u| u.contains("github"))
         .unwrap_or(false)
 }

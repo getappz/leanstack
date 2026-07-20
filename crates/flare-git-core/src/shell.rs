@@ -1,18 +1,68 @@
 //! Shared git-shelling primitives. Every module that needs to run `git`
 //! against a repo goes through here instead of hand-rolling its own
-//! `Command::new("git")` wrapper — this consolidates what had grown into
-//! 5+ near-duplicate copies of the same "spawn git, trim stdout" logic
-//! across mcp_server.rs, worktree.rs, hook_redirect.rs, gateway_integrations.rs,
-//! and cli/review.rs.
+//! `Command::new("git")` wrapper.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// Resolves the real `git` binary, always excluding the currently-running
+/// executable's own directory from the search.
+///
+/// This crate is also linked into `flare-git-shim`, a binary literally
+/// named `git`/`git.exe`. On Windows, an unqualified `Command::new("git")`
+/// resolves via `SearchPathW`, whose search order checks the CALLING
+/// PROCESS's OWN DIRECTORY before PATH -- so inside that shim, a bare
+/// "git" spawn resolves back to the shim itself and recurses without
+/// limit (this happened once, during development: a single test run spun
+/// up 10,000+ processes before it was caught). `which::which_in` does a
+/// plain PATH-directory-listing search with no such self-referential
+/// step, so resolving through it -- always excluding this process's own
+/// directory -- is immune to the same failure mode regardless of which
+/// binary this crate ends up linked into.
+/// `true` for a cargo build-profile directory (`.../target/debug` or
+/// `.../target/release`) -- Cargo prepends this to PATH for every test/run
+/// process (so build-script DLLs resolve), and any `[[bin]]` target in the
+/// same workspace lands directly in it. Excluding only "this process's own
+/// directory" isn't enough: a workspace that redirects `target-dir`
+/// globally (e.g. `~/.cargo/target`, as this repo's `~/.cargo/config.toml`
+/// does for sccache) means EVERY crate's test binaries share that PATH
+/// entry with `flare-git-shim`'s freshly-built `git.exe`. Detected
+/// structurally (name is "debug"/"release", parent is named "target") so
+/// it works regardless of where the target dir physically lives.
+fn is_cargo_target_profile_dir(p: &Path) -> bool {
+    let comps: Vec<_> = p.components().collect();
+    comps.windows(2).any(|w| {
+        w[0].as_os_str() == "target"
+            && (w[1].as_os_str() == "debug" || w[1].as_os_str() == "release")
+    })
+}
+
+pub(crate) fn git_binary() -> PathBuf {
+    static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
+    RESOLVED
+        .get_or_init(|| {
+            let self_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf));
+            let filtered_path = std::env::var_os("PATH").map(|path_var| {
+                std::env::join_paths(std::env::split_paths(&path_var).filter(|p| {
+                    Some(p.as_path()) != self_dir.as_deref() && !is_cargo_target_profile_dir(p)
+                }))
+                .unwrap_or(path_var)
+            });
+            let cwd = std::env::current_dir().unwrap_or_default();
+            which::which_in("git", filtered_path.as_ref(), cwd)
+                .unwrap_or_else(|_| PathBuf::from("git"))
+        })
+        .clone()
+}
 
 /// Runs `git` in `repo_root`; `Ok(stdout)` trimmed on success, `Err(stderr)`
 /// trimmed on a non-zero exit, or a process-spawn error message (git
 /// missing, etc) if it couldn't even run.
 pub fn run_in(repo_root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = Command::new(git_binary())
         .args(args)
         .current_dir(repo_root)
         .output()
@@ -25,50 +75,15 @@ pub fn run_in(repo_root: &Path, args: &[&str]) -> Result<String, String> {
 
 /// `run_in`, discarding the error and treating empty stdout as `None` — the
 /// "best-effort, don't care why it failed" shape most callers actually want.
+#[must_use]
 pub fn run_in_opt(repo_root: &Path, args: &[&str]) -> Option<String> {
     run_in(repo_root, args).ok().filter(|s| !s.is_empty())
 }
 
 /// `true` if `git <args>` exits 0 in `repo_root`; stdout/stderr don't matter.
+#[must_use]
 pub fn run_in_ok(repo_root: &Path, args: &[&str]) -> bool {
     run_in(repo_root, args).is_ok()
-}
-
-/// Current branch name (`HEAD` in detached-HEAD state). `None` outside a git
-/// repo or if git isn't on `PATH`.
-pub fn current_branch(repo_root: &Path) -> Option<String> {
-    run_in_opt(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"])
-}
-
-/// Best-effort resolution of "the" default branch: prefer the remote's own
-/// record of it (`origin/HEAD`'s symbolic ref, which survives a repo default
-/// named anything other than main/master), then whichever of main/master
-/// actually exists as a local branch, then whatever is actually checked out
-/// here — so a repo naming its default branch e.g. `trunk`/`develop` still
-/// resolves instead of falling through to a hardcoded guess that may not
-/// even exist.
-pub fn resolve_default_branch(repo_root: &Path) -> String {
-    if let Some(origin_head) = run_in_opt(
-        repo_root,
-        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    ) && let Some(stripped) = origin_head.strip_prefix("origin/")
-    {
-        return stripped.to_string();
-    }
-    if run_in_ok(repo_root, &["rev-parse", "--verify", "main"]) {
-        return "main".to_string();
-    }
-    if run_in_ok(repo_root, &["rev-parse", "--verify", "master"]) {
-        return "master".to_string();
-    }
-    run_in_opt(repo_root, &["symbolic-ref", "--short", "HEAD"])
-        .unwrap_or_else(|| "master".to_string())
-}
-
-/// `git rev-parse --show-toplevel` from `start` — handles worktrees/submodules
-/// correctly, works regardless of subdirectory. `None` outside a git repo.
-pub fn repo_toplevel(start: &Path) -> Option<PathBuf> {
-    run_in_opt(start, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
 }
 
 /// Unified diff for `base...head` (three-dot: changes on `head` since it
@@ -77,7 +92,7 @@ pub fn repo_toplevel(start: &Path) -> Option<PathBuf> {
 /// the rest of this module's helpers return.
 pub fn diff(repo_root: &Path, base: &str, head: &str) -> Result<String, String> {
     let range = format!("{base}...{head}");
-    let out = Command::new("git")
+    let out = Command::new(git_binary())
         .args(["diff", "--unified=3", &range])
         .current_dir(repo_root)
         .output()
@@ -92,16 +107,17 @@ pub fn diff(repo_root: &Path, base: &str, head: &str) -> Result<String, String> 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use super::run_in;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    struct Repo {
+    pub struct Repo {
         _dir: TempDir,
-        path: PathBuf,
+        pub path: PathBuf,
     }
 
-    fn init_repo_with_branch(branch: &str) -> Repo {
+    pub fn init_repo_with_branch(branch: &str) -> Repo {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_path_buf();
         run_in(&path, &["init", "-b", branch]).unwrap();
@@ -110,6 +126,13 @@ mod tests {
         run_in(&path, &["commit", "--allow-empty", "-m", "initial"]).unwrap();
         Repo { _dir: dir, path }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::init_repo_with_branch;
+    use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn run_in_opt_is_none_outside_a_repo() {
@@ -125,37 +148,6 @@ mod tests {
             &repo.path,
             &["rev-parse", "--verify", "no-such-branch"]
         ));
-    }
-
-    #[test]
-    fn current_branch_reports_the_checked_out_branch() {
-        let repo = init_repo_with_branch("feature/x");
-        assert_eq!(current_branch(&repo.path).as_deref(), Some("feature/x"));
-    }
-
-    #[test]
-    fn resolve_default_branch_resolves_from_origin_head() {
-        let repo = init_repo_with_branch("master");
-        assert_eq!(resolve_default_branch(&repo.path), "master");
-    }
-
-    #[test]
-    fn resolve_default_branch_falls_back_to_actual_head_for_nonstandard_names() {
-        // No origin, no "main", no "master" — must not guess "master" when
-        // the repo's real default branch is named something else entirely.
-        let repo = init_repo_with_branch("trunk");
-        assert_eq!(resolve_default_branch(&repo.path), "trunk");
-    }
-
-    #[test]
-    fn repo_toplevel_finds_root_from_a_subdirectory() {
-        let repo = init_repo_with_branch("master");
-        let sub = repo.path.join("sub");
-        std::fs::create_dir(&sub).unwrap();
-        assert_eq!(
-            repo_toplevel(&sub).map(|p| p.canonicalize().unwrap()),
-            repo.path.canonicalize().ok(),
-        );
     }
 
     #[test]

@@ -452,7 +452,7 @@ pub fn submitter_name() -> String {
 /// Computes a unified diff via git for the local branch. `base`/`head` default
 /// to `master`/`HEAD` (three-dot: changes on HEAD since it diverged from base).
 pub fn compute_diff(base: Option<&str>, head: Option<&str>) -> Result<String, String> {
-    crate::git::diff(
+    flare_git_core::shell::diff(
         &std::env::current_dir().unwrap_or_default(),
         base.unwrap_or("master"),
         head.unwrap_or("HEAD"),
