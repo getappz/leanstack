@@ -28,7 +28,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
+use std::process::{Command, exit};
 
 const KILL_SWITCHES: &[&str] = &["LEAN_CTX_DISABLED", "LEAN_CTX_NO_HOOK"];
 
