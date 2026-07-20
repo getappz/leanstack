@@ -28,7 +28,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
+use std::process::{Command, exit};
 
 use agentflare_shim::{is_set, path_without_shim_dir, run_real, tool_name_from_exe, trace};
 
