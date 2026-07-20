@@ -40,6 +40,71 @@ pub struct Event {
 /// change to and quietly weaken.
 const TRUST_ROOT_PATHS: &[&str] = &[".githooks/", ".agentflare/", "Cargo.toml"];
 
+/// `AGENTFLARE_GIT_TRUST_ROOT_PATHS`, comma-separated, appended to
+/// `TRUST_ROOT_PATHS` -- e.g. `".githooks/,policy.toml"`. Empty/unset ->
+/// no extra paths.
+#[must_use]
+pub fn extra_trust_root_paths_from_env() -> Vec<String> {
+    std::env::var("AGENTFLARE_GIT_TRUST_ROOT_PATHS")
+        .ok()
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Env vars agent CLIs set on themselves -- same catalog `agentflare-shim`
+/// gates its own dispatch behind. Used ONLY to scope the canonical-repo
+/// mutation guard (see `would_detach_head`) to agent-driven invocations --
+/// never to change ordinary git behavior for interactive human use.
+const AGENT_ENV_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CURSOR_AGENT",
+    "CODEX_CLI_SESSION",
+    "GEMINI_SESSION",
+    "CODEBUDDY",
+    "AGENTFLARE_AGENT",
+];
+
+/// `true` if any agent-identifying env var is set -- this invocation is
+/// (self-reportedly) agent-driven, not an interactive human shell.
+#[must_use]
+pub fn agent_invocation_detected() -> bool {
+    AGENT_ENV_VARS
+        .iter()
+        .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()))
+}
+
+/// `true` if `subcommand`/`args` would detach HEAD -- `git checkout
+/// <target>` implicitly detaches when `target` isn't an existing local
+/// branch (no `--detach` flag required for that form); `git switch` never
+/// silently detaches, only `switch --detach`/`-d` does. `git checkout --
+/// <pathspec>` (and any form with `--` before the target) restores files
+/// and never touches HEAD at all.
+#[must_use]
+pub fn would_detach_head(repo_root: &Path, subcommand: &str, args: &[String]) -> bool {
+    match subcommand {
+        "checkout" => {
+            if args.iter().any(|a| a == "--") {
+                return false; // path-restore form -- HEAD never moves
+            }
+            if args.iter().any(|a| a == "--detach") {
+                return true;
+            }
+            let Some(target) = args.iter().find(|a| !a.starts_with('-')) else {
+                return false; // e.g. bare `git checkout` -- doesn't move HEAD
+            };
+            !crate::shell::run_in_ok(repo_root, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{target}")])
+        }
+        "switch" => args.iter().any(|a| a == "--detach" || a == "-d"),
+        _ => false,
+    }
+}
+
 /// Ordinary, non-destructive read-only subcommands — always `Passthrough`
 /// regardless of args.
 const READ_ONLY_SUBCOMMANDS: &[&str] = &[
@@ -194,11 +259,12 @@ pub fn classify_pure(
 /// default to let through.
 #[must_use]
 pub fn push_touches_trust_root(repo_root: &Path, branch: &str, target: &str) -> bool {
+    let extra = extra_trust_root_paths_from_env();
     let range = format!("{target}...{branch}");
     match crate::shell::run_in(repo_root, &["diff", "--name-only", &range]) {
-        Ok(names) => names
-            .lines()
-            .any(|f| TRUST_ROOT_PATHS.iter().any(|p| f.starts_with(p))),
+        Ok(names) => names.lines().any(|f| {
+            TRUST_ROOT_PATHS.iter().any(|p| f.starts_with(p)) || extra.iter().any(|p| f.starts_with(p.as_str()))
+        }),
         Err(_) => true,
     }
 }
@@ -368,6 +434,54 @@ mod tests {
             classify_pure("branch", &args(&["feature/new"]), "master", false),
             Disposition::Passthrough
         );
+    }
+
+    #[test]
+    fn would_detach_head_true_for_a_non_branch_checkout_target() {
+        let repo = crate::shell::test_support::init_repo_with_branch("master");
+        // A commit sha (via HEAD) is not a branch name -- checking it out
+        // implicitly detaches.
+        let sha = crate::shell::run_in(&repo.path, &["rev-parse", "HEAD"]).unwrap();
+        assert!(would_detach_head(&repo.path, "checkout", &args(&[&sha])));
+    }
+
+    #[test]
+    fn would_detach_head_false_for_an_existing_branch_checkout_target() {
+        let repo = crate::shell::test_support::init_repo_with_branch("master");
+        crate::shell::run_in(&repo.path, &["branch", "feature/x"]).unwrap();
+        assert!(!would_detach_head(&repo.path, "checkout", &args(&["feature/x"])));
+    }
+
+    #[test]
+    fn would_detach_head_false_for_path_restore_form() {
+        let repo = crate::shell::test_support::init_repo_with_branch("master");
+        let sha = crate::shell::run_in(&repo.path, &["rev-parse", "HEAD"]).unwrap();
+        assert!(!would_detach_head(
+            &repo.path,
+            "checkout",
+            &args(&[&sha, "--", "some-file.txt"])
+        ));
+    }
+
+    #[test]
+    fn would_detach_head_true_for_explicit_detach_flag() {
+        let repo = crate::shell::test_support::init_repo_with_branch("master");
+        assert!(would_detach_head(&repo.path, "checkout", &args(&["--detach", "master"])));
+        assert!(would_detach_head(&repo.path, "switch", &args(&["--detach", "master"])));
+    }
+
+    #[test]
+    fn would_detach_head_false_for_plain_switch_to_a_branch() {
+        assert!(!would_detach_head(
+            std::path::Path::new("."),
+            "switch",
+            &args(&["feature/x"])
+        ));
+    }
+
+    #[test]
+    fn would_detach_head_false_for_unrelated_subcommands() {
+        assert!(!would_detach_head(std::path::Path::new("."), "status", &[]));
     }
 
     #[test]
