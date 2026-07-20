@@ -2,14 +2,65 @@
 //! against a repo goes through here instead of hand-rolling its own
 //! `Command::new("git")` wrapper.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// Resolves the real `git` binary, always excluding the currently-running
+/// executable's own directory from the search.
+///
+/// This crate is also linked into `flare-git-shim`, a binary literally
+/// named `git`/`git.exe`. On Windows, an unqualified `Command::new("git")`
+/// resolves via `SearchPathW`, whose search order checks the CALLING
+/// PROCESS's OWN DIRECTORY before PATH -- so inside that shim, a bare
+/// "git" spawn resolves back to the shim itself and recurses without
+/// limit (this happened once, during development: a single test run spun
+/// up 10,000+ processes before it was caught). `which::which_in` does a
+/// plain PATH-directory-listing search with no such self-referential
+/// step, so resolving through it -- always excluding this process's own
+/// directory -- is immune to the same failure mode regardless of which
+/// binary this crate ends up linked into.
+/// `true` for a cargo build-profile directory (`.../target/debug` or
+/// `.../target/release`) -- Cargo prepends this to PATH for every test/run
+/// process (so build-script DLLs resolve), and any `[[bin]]` target in the
+/// same workspace lands directly in it. Excluding only "this process's own
+/// directory" isn't enough: a workspace that redirects `target-dir`
+/// globally (e.g. `~/.cargo/target`, as this repo's `~/.cargo/config.toml`
+/// does for sccache) means EVERY crate's test binaries share that PATH
+/// entry with `flare-git-shim`'s freshly-built `git.exe`. Detected
+/// structurally (name is "debug"/"release", parent is named "target") so
+/// it works regardless of where the target dir physically lives.
+fn is_cargo_target_profile_dir(p: &Path) -> bool {
+    let comps: Vec<_> = p.components().collect();
+    comps.windows(2).any(|w| {
+        w[0].as_os_str() == "target" && (w[1].as_os_str() == "debug" || w[1].as_os_str() == "release")
+    })
+}
+
+pub(crate) fn git_binary() -> PathBuf {
+    static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
+    RESOLVED
+        .get_or_init(|| {
+            let self_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf));
+            let filtered_path = std::env::var_os("PATH").map(|path_var| {
+                std::env::join_paths(std::env::split_paths(&path_var).filter(|p| {
+                    Some(p.as_path()) != self_dir.as_deref() && !is_cargo_target_profile_dir(p)
+                }))
+                .unwrap_or(path_var)
+            });
+            let cwd = std::env::current_dir().unwrap_or_default();
+            which::which_in("git", filtered_path.as_ref(), cwd).unwrap_or_else(|_| PathBuf::from("git"))
+        })
+        .clone()
+}
 
 /// Runs `git` in `repo_root`; `Ok(stdout)` trimmed on success, `Err(stderr)`
 /// trimmed on a non-zero exit, or a process-spawn error message (git
 /// missing, etc) if it couldn't even run.
 pub fn run_in(repo_root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = Command::new(git_binary())
         .args(args)
         .current_dir(repo_root)
         .output()
@@ -39,7 +90,7 @@ pub fn run_in_ok(repo_root: &Path, args: &[&str]) -> bool {
 /// the rest of this module's helpers return.
 pub fn diff(repo_root: &Path, base: &str, head: &str) -> Result<String, String> {
     let range = format!("{base}...{head}");
-    let out = Command::new("git")
+    let out = Command::new(git_binary())
         .args(["diff", "--unified=3", &range])
         .current_dir(repo_root)
         .output()

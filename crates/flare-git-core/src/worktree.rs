@@ -217,7 +217,7 @@ pub fn create_worktree(
     // be able to hang a claim indefinitely.
     let fetch_timeout_secs = 30;
     let start_point = match run_output_timeout(
-        "git",
+        crate::shell::git_binary(),
         &["fetch", "origin", target_branch],
         repo_root,
         fetch_timeout_secs,
@@ -301,12 +301,13 @@ fn kill_tree(child: &mut std::process::Child) {
 /// stderr are drained on separate threads so a child that fills an OS pipe
 /// buffer can't deadlock the wait loop.
 fn run_output_timeout(
-    program: &str,
+    program: impl AsRef<std::ffi::OsStr>,
     args: &[&str],
     cwd: &Path,
     timeout_secs: u64,
 ) -> Result<std::process::Output, String> {
-    let mut cmd = Command::new(program);
+    let program = program.as_ref().to_owned();
+    let mut cmd = Command::new(&program);
     cmd.args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
@@ -319,7 +320,7 @@ fn run_output_timeout(
     }
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("{program}: spawn failed: {e}"))?;
+        .map_err(|e| format!("{}: spawn failed: {e}", program.to_string_lossy()))?;
     let mut stdout_pipe = child.stdout.take().expect("stdout piped above");
     let mut stderr_pipe = child.stderr.take().expect("stderr piped above");
     let stdout_reader = std::thread::spawn(move || {
@@ -340,11 +341,11 @@ fn run_output_timeout(
                 if std::time::Instant::now() >= deadline {
                     kill_tree(&mut child);
                     let _ = child.wait();
-                    return Err(format!("{program} timed out after {timeout_secs}s"));
+                    return Err(format!("{}: timed out after {timeout_secs}s", program.to_string_lossy()));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Err(e) => return Err(format!("{program}: {e}")),
+            Err(e) => return Err(format!("{}: {e}", program.to_string_lossy())),
         }
     };
     Ok(std::process::Output {
@@ -402,7 +403,7 @@ pub fn push_branch(
     }
     let push_timeout = 120;
     match run_output_timeout(
-        "git",
+        crate::shell::git_binary(),
         &["push", "-u", "origin", &branch],
         repo_root,
         push_timeout,

@@ -28,7 +28,7 @@ pub struct SnapshotMeta {
 /// `git <args>` with a temporary `GIT_INDEX_FILE`, so staging for a
 /// snapshot never touches the caller's real index.
 fn run_git_with_index(repo_root: &Path, index_file: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = Command::new(crate::shell::git_binary())
         .args(args)
         .current_dir(repo_root)
         .env("GIT_INDEX_FILE", index_file)

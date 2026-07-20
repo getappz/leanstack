@@ -22,12 +22,36 @@ pub fn trace(msg: &str) {
     }
 }
 
+/// `true` if any two adjacent path components are "target" followed by
+/// "debug"/"release" -- a cargo build-profile directory (and everything
+/// under it, e.g. `target/debug/deps`, `target/debug/build/*/out`).
+/// Cargo prepends this to PATH for every test/run process (so build-script
+/// DLLs resolve), and any `[[bin]]` target in the same cargo workspace
+/// lands directly in it -- so during development/testing, a shim binary
+/// built via cargo can find ANOTHER shim binary (or a differently-pathed
+/// copy of itself, e.g. `target/debug/deps/git.exe` alongside
+/// `target/debug/git.exe`) there instead of the real target. Not a
+/// concern for an installed shim (only ever one file in
+/// `~/.agentflare/shims/`), but a real hazard under `cargo test`.
+fn is_cargo_target_profile_dir(p: &Path) -> bool {
+    let comps: Vec<_> = p.components().collect();
+    comps.windows(2).any(|w| {
+        w[0].as_os_str() == "target" && (w[1].as_os_str() == "debug" || w[1].as_os_str() == "release")
+    })
+}
+
 /// PATH with `shim_dir` removed, so a shim binary's own real-binary lookup
-/// (and any child process it spawns) doesn't resolve back into itself.
+/// (and any child process it spawns) doesn't resolve back into itself --
+/// also strips any cargo build-profile directory tree (see
+/// `is_cargo_target_profile_dir`), which matters during development/
+/// testing when multiple cargo-built binaries share one `target/debug`.
 #[must_use]
 pub fn path_without_shim_dir(shim_dir: &Path) -> Option<OsString> {
     let path_var = env::var_os("PATH")?;
-    env::join_paths(env::split_paths(&path_var).filter(|p| p != shim_dir)).ok()
+    env::join_paths(
+        env::split_paths(&path_var).filter(|p| p != shim_dir && !is_cargo_target_profile_dir(p)),
+    )
+    .ok()
 }
 
 /// The tool name a shim binary is standing in for, derived from its own

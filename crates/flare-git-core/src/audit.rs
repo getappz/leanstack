@@ -8,10 +8,18 @@ use std::path::{Path, PathBuf};
 
 use crate::classify::Event;
 
-/// Default audit log location: `~/.agentflare/audit/git.jsonl`.
+/// Default audit log location: `~/.agentflare/audit/git.jsonl`. Honors
+/// `AGENTFLARE_HOME_OVERRIDE` (the main binary's own test/CI escape hatch,
+/// see `src/paths.rs::home` -- `dirs::home_dir()` resolves via the OS
+/// directly on Windows and ignores HOME/USERPROFILE overrides) so tests
+/// never write into a developer's real home directory.
 #[must_use]
 pub fn default_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agentflare").join("audit").join("git.jsonl"))
+    let home = match std::env::var("AGENTFLARE_HOME_OVERRIDE") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => dirs::home_dir()?,
+    };
+    Some(home.join(".agentflare").join("audit").join("git.jsonl"))
 }
 
 /// Appends one JSONL line for `event`, creating the parent directory and

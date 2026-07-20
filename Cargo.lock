@@ -1029,6 +1029,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "which",
+]
+
+[[package]]
+name = "flare-git-shim"
+version = "0.1.0"
+dependencies = [
+ "agentflare-shim",
+ "flare-git-core",
+ "tempfile",
 ]
 
 [[package]]
