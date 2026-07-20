@@ -1,0 +1,19 @@
+[package]
+name = "flare-git-shim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "Apache-2.0"
+description = "PATH shim that impersonates `git`, classifying and auditing every invocation via flare-git-core before executing the real binary."
+publish = false
+
+[[bin]]
+name = "git"
+path = "src/main.rs"
+
+[dependencies]
+agentflare-shim = { path = "../agentflare-shim" }
+flare-git-core = { path = "../flare-git-core" }
+
+[dev-dependencies]
+tempfile = "3"

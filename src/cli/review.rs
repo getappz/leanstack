@@ -227,7 +227,7 @@ impl ReviewArgs {
 /// Round id: explicit --pr, else the current branch name.
 fn resolve_pr(explicit: Option<String>) -> String {
     explicit.filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        crate::git::current_branch(&std::env::current_dir().unwrap_or_default())
+        flare_git_core::branch::current_branch(&std::env::current_dir().unwrap_or_default())
             .unwrap_or_else(|| fail("could not determine round — pass --pr".to_string()))
     })
 }

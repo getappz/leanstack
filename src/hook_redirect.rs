@@ -50,12 +50,12 @@ fn is_spec_like_path(path: &str) -> bool {
 
 fn current_branch() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
-    crate::git::current_branch(&cwd)
+    flare_git_core::branch::current_branch(&cwd)
 }
 
 fn default_branch() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
-    Some(crate::git::resolve_default_branch(&cwd))
+    Some(flare_git_core::branch::resolve_default_branch(&cwd))
 }
 
 /// Pure decision core for the branch guard — no git process spawned here, so
