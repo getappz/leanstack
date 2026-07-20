@@ -4,6 +4,10 @@
 //! Remote GitHub REST API operations (PRs/issues/CI/releases) are a
 //! separate, unrelated concern and live in `src/github/*` -- not here.
 
+pub mod audit;
 pub mod branch;
+pub mod classify;
+pub mod provenance;
 pub mod shell;
+pub mod snapshot;
 pub mod worktree;
