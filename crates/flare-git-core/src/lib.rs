@@ -6,3 +6,4 @@
 
 pub mod branch;
 pub mod shell;
+pub mod worktree;
