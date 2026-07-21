@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 use skill::agents::AgentRegistry;
 use skill::git::clone_repo;
@@ -8,13 +7,20 @@ use skill::source::parse_source;
 use skill::types::{
     AgentConfig, AgentId, DiscoverOptions, InstallMode, InstallOptions, InstallScope,
 };
+use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum SkillAction {
-    Search { query: String },
-    Install { name: String },
+    Search {
+        query: String,
+    },
+    Install {
+        name: String,
+    },
     List,
-    Remove { name: String },
+    Remove {
+        name: String,
+    },
     Registry {
         #[command(subcommand)]
         action: RegistryAction,
@@ -36,7 +42,7 @@ pub struct SkillArgs {
 
 const AGENTFLARE_SKILLS: &str = ".agentflare/skills";
 
-fn agentflare_config(home: &PathBuf) -> AgentConfig {
+fn agentflare_config(home: &Path) -> AgentConfig {
     AgentConfig {
         name: AgentId::new("agentflare"),
         display_name: "Agentflare".into(),
@@ -48,7 +54,7 @@ fn agentflare_config(home: &PathBuf) -> AgentConfig {
 }
 
 fn build_manager() -> SkillManager {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let home = crate::paths::home();
     let mut registry = AgentRegistry::with_defaults();
     registry.register(agentflare_config(&home));
     SkillManager::builder().agents(registry).build()
@@ -63,8 +69,7 @@ fn install_opts() -> InstallOptions {
 }
 
 fn load_registries() -> Vec<String> {
-    let path = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
+    let path = crate::paths::home()
         .join(".agentflare")
         .join("registries.json");
     std::fs::read_to_string(&path)
@@ -74,8 +79,7 @@ fn load_registries() -> Vec<String> {
 }
 
 fn save_registries(registries: &[String]) {
-    let path = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
+    let path = crate::paths::home()
         .join(".agentflare")
         .join("registries.json");
     if let Some(p) = path.parent() {
@@ -87,9 +91,7 @@ fn save_registries(registries: &[String]) {
 }
 
 fn home_skills() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(AGENTFLARE_SKILLS)
+    crate::paths::home().join(AGENTFLARE_SKILLS)
 }
 
 async fn try_install_from_source(
@@ -99,10 +101,15 @@ async fn try_install_from_source(
 ) -> Result<bool, skill::error::SkillError> {
     let parsed = parse_source(url);
     if parsed.source_type == skill::types::SourceType::Local {
-        let lp = parsed.local_path.as_deref().unwrap_or_else(|| Path::new("."));
+        let lp = parsed
+            .local_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new("."));
         let entries = discover_skills(lp, None, &DiscoverOptions::default()).await?;
         if let Some(skill) = entries.into_iter().find(|s| s.name == name) {
-            manager.install_skill(&skill, &AgentId::new("agentflare"), &install_opts()).await?;
+            manager
+                .install_skill(&skill, &AgentId::new("agentflare"), &install_opts())
+                .await?;
             return Ok(true);
         }
         return Ok(false);
@@ -118,7 +125,9 @@ async fn try_install_from_source(
         None => discover_skills(temp.path(), None, &DiscoverOptions::default()).await?,
     };
     if let Some(skill) = entries.into_iter().find(|s| s.name == name) {
-        manager.install_skill(&skill, &AgentId::new("agentflare"), &install_opts()).await?;
+        manager
+            .install_skill(&skill, &AgentId::new("agentflare"), &install_opts())
+            .await?;
         return Ok(true);
     }
     Ok(false)
@@ -165,7 +174,7 @@ async fn run_remove(name: &str) -> Result<(), skill::error::SkillError> {
     let manager = build_manager();
     let opts = skill::types::RemoveOptions {
         scope: InstallScope::Global,
-        cwd: Some(dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))),
+        cwd: Some(crate::paths::home()),
         ..Default::default()
     };
     manager.remove_skills(&[name.to_string()], &opts).await?;
@@ -261,5 +270,117 @@ impl SkillArgs {
             }
             SkillAction::Registry { action } => run_registry(action),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn registry_add_list_remove_roundtrip() {
+        crate::paths::test_support::with_temp_home(|| {
+            assert_eq!(
+                load_registries(),
+                vec!["gh:getappz/skill-registry".to_string()]
+            );
+
+            run_registry(RegistryAction::Add {
+                url: "https://github.com/example/skills".into(),
+            });
+            let regs = load_registries();
+            assert!(regs.contains(&"https://github.com/example/skills".to_string()));
+
+            run_registry(RegistryAction::Remove {
+                url: "https://github.com/example/skills".into(),
+            });
+            let regs = load_registries();
+            assert!(!regs.contains(&"https://github.com/example/skills".to_string()));
+        });
+    }
+
+    #[test]
+    fn registry_add_is_idempotent() {
+        crate::paths::test_support::with_temp_home(|| {
+            let url = "https://github.com/example/skills".to_string();
+            run_registry(RegistryAction::Add { url: url.clone() });
+            run_registry(RegistryAction::Add { url: url.clone() });
+            let regs = load_registries();
+            assert_eq!(regs.iter().filter(|r| **r == url).count(), 1);
+        });
+    }
+
+    fn write_fixture_skill(dir: &Path, name: &str, description: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nBody.\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn install_from_local_source_copies_skill() {
+        crate::paths::test_support::with_temp_home(|| {
+            let src = tempfile::tempdir().unwrap();
+            write_fixture_skill(
+                src.path(),
+                "my-test-skill",
+                "A test skill for install verification",
+            );
+
+            let manager = build_manager();
+            let url = src.path().to_string_lossy().into_owned();
+            let found = block_on(try_install_from_source(&manager, &url, "my-test-skill")).unwrap();
+            assert!(
+                found,
+                "expected try_install_from_source to find and install the skill"
+            );
+
+            let installed = home_skills().join("my-test-skill").join("SKILL.md");
+            assert!(
+                installed.exists(),
+                "expected {installed:?} to exist after install"
+            );
+        });
+    }
+
+    #[test]
+    fn install_from_local_source_returns_false_when_name_not_found() {
+        crate::paths::test_support::with_temp_home(|| {
+            let src = tempfile::tempdir().unwrap();
+            write_fixture_skill(src.path(), "other-skill", "Unrelated skill");
+
+            let manager = build_manager();
+            let url = src.path().to_string_lossy().into_owned();
+            let found = block_on(try_install_from_source(&manager, &url, "my-test-skill")).unwrap();
+            assert!(!found);
+        });
+    }
+
+    #[test]
+    fn run_install_end_to_end_via_registry() {
+        crate::paths::test_support::with_temp_home(|| {
+            let src = tempfile::tempdir().unwrap();
+            write_fixture_skill(
+                src.path(),
+                "my-test-skill",
+                "A test skill for install verification",
+            );
+            save_registries(&[src.path().to_string_lossy().into_owned()]);
+
+            block_on(run_install("my-test-skill")).unwrap();
+
+            let installed = home_skills().join("my-test-skill").join("SKILL.md");
+            assert!(
+                installed.exists(),
+                "expected {installed:?} to exist after install"
+            );
+        });
     }
 }
