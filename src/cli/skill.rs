@@ -7,6 +7,7 @@ use skill::source::parse_source;
 use skill::types::{
     AgentConfig, AgentId, DiscoverOptions, InstallMode, InstallOptions, InstallScope,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
@@ -29,6 +30,29 @@ pub enum SkillAction {
     /// Hit@1/Hit@3/MRR/nDCG. Fails with a non-zero exit when any metric
     /// drops below its configured floor.
     Eval,
+    /// Export all skills to a JSON bundle file.
+    Export {
+        /// Output file path (default: skills-bundle.json)
+        output: Option<String>,
+    },
+    /// Import skills from a JSON bundle file (with dedup).
+    Import {
+        /// Path to the JSON bundle file.
+        path: String,
+    },
+    /// Push/pull skill bundles to/from a remote hub.
+    Hub {
+        #[command(subcommand)]
+        action: HubAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubAction {
+    /// Pull skills from a remote hub URL and merge into local DB.
+    Pull { url: String },
+    /// Push local skills to a remote hub URL.
+    Push { url: String },
 }
 
 #[derive(Subcommand)]
@@ -373,6 +397,114 @@ fn print_eval(report: &EvalReport) {
     println!("  verdict:  {verdict} ({}/{})", report.passes, 4);
 }
 
+fn run_export(output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = crate::paths::skills_db_path();
+    let conn = skill_registry::db::open_db(&db_path)?;
+    let names = skill_registry::search::list_all_names(&conn)?;
+    let mut entries = Vec::new();
+    for name in &names {
+        let parts = name.split_once('/');
+        let (skill_name, source) = match parts {
+            Some((sn, src)) => (sn, src),
+            None => (name.as_str(), "unknown"),
+        };
+        let skill = skill_registry::load(&conn, name, false)?;
+        entries.push(skill_registry::sources::SkillEntry {
+            name: skill_name.into(),
+            source: source.into(),
+            path: PathBuf::new(),
+            description: skill.description.clone(),
+            body: skill.body.clone(),
+            neg_text: String::new(),
+            tags: String::new(),
+            est_tokens: skill.body.len() as i64 / 4,
+            mtime: 0,
+            shadow_path: None,
+        });
+    }
+    let bundle = skill_registry::SkillBundle::new(&entries);
+    let path = output.unwrap_or("skills-bundle.json");
+    std::fs::write(path, bundle.to_json()?)?;
+    println!("exported {} skills to {path}", entries.len());
+    Ok(())
+}
+
+fn run_import(path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let json = std::fs::read_to_string(path)?;
+    let mut bundle = skill_registry::SkillBundle::from_json(&json)?;
+    let deduped = bundle.dedup();
+    if deduped > 0 {
+        eprintln!("note: removed {deduped} duplicate entries during import");
+    }
+    let db_path = crate::paths::skills_db_path();
+    let mut conn = skill_registry::db::open_db(&db_path)?;
+    let entries = bundle.to_entries(Path::new("import"));
+    skill_registry::db::rebuild(&mut conn, &entries)?;
+    Ok(entries.len())
+}
+
+fn run_hub(action: HubAction) -> Result<String, Box<dyn std::error::Error>> {
+    match action {
+        HubAction::Pull { url } => {
+            let bundle = skill_registry::hub::pull_bundle(&url)?;
+            let db_path = crate::paths::skills_db_path();
+            let mut conn = skill_registry::db::open_db(&db_path)?;
+            // Read existing skills from scan sources first, then merge
+            // hub entries on top.
+            let home = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
+            let cwd = std::env::current_dir().ok();
+            let cwd = cwd.as_deref().unwrap_or(Path::new("."));
+            let sources = skill_registry::sources::default_sources(
+                &home,
+                cwd,
+                &["claude-code".to_string()],
+            );
+            let scan = skill_registry::sources::scan_sources(&sources);
+            let local_count = scan.entries.len();
+            let mut all = scan.entries;
+            let local_keys: HashSet<(String, String)> =
+                all.iter().map(|e| (e.name.clone(), e.source.clone())).collect();
+            for e in bundle.to_entries(Path::new("hub")) {
+                if !local_keys.contains(&(e.name.clone(), e.source.clone())) {
+                    all.push(e);
+                }
+            }
+            skill_registry::db::rebuild(&mut conn, &all)?;
+            let net_new = all.len() - local_count;
+            Ok(format!("pulled {net_new} skills from hub, total {}", all.len()))
+        }
+        HubAction::Push { url } => {
+            let db_path = crate::paths::skills_db_path();
+            let conn = skill_registry::db::open_db(&db_path)?;
+            let names = skill_registry::search::list_all_names(&conn)?;
+            let mut entries = Vec::new();
+            for name in &names {
+                let parts = name.split_once('/');
+                let (skill_name, source) = match parts {
+                    Some((sn, src)) => (sn, src),
+                    None => (name.as_str(), "unknown"),
+                };
+                let skill = skill_registry::load(&conn, name, false)?;
+                entries.push(skill_registry::sources::SkillEntry {
+                    name: skill_name.into(),
+                    source: source.into(),
+                    path: PathBuf::new(),
+                    description: skill.description.clone(),
+                    body: skill.body.clone(),
+                    neg_text: String::new(),
+                    tags: String::new(),
+                    est_tokens: skill.body.len() as i64 / 4,
+                    mtime: 0,
+                    shadow_path: None,
+                });
+            }
+            let bundle = skill_registry::SkillBundle::new(&entries);
+            skill_registry::hub::push_bundle(&url, &bundle)?;
+            Ok(format!("pushed {} skills to {url}", entries.len()))
+        }
+    }
+}
+
 impl SkillArgs {
     pub fn run(self) {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -397,6 +529,27 @@ impl SkillArgs {
                 }
             }
             SkillAction::Registry { action } => run_registry(action),
+            SkillAction::Export { output } => match run_export(output.as_deref()) {
+                Err(e) => {
+                    eprintln!("export error: {e}");
+                    std::process::exit(1);
+                }
+                Ok(()) => {}
+            },
+            SkillAction::Import { path } => match run_import(&path) {
+                Err(e) => {
+                    eprintln!("import error: {e}");
+                    std::process::exit(1);
+                }
+                Ok(count) => println!("imported {count} skills"),
+            },
+            SkillAction::Hub { action } => match run_hub(action) {
+                Err(e) => {
+                    eprintln!("hub error: {e}");
+                    std::process::exit(1);
+                }
+                Ok(msg) => println!("{msg}"),
+            },
             SkillAction::Eval => match run_eval() {
                 Ok(report) => {
                     print_eval(&report);

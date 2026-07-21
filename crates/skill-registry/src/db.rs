@@ -6,6 +6,38 @@ use crate::sources::SkillEntry;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
+/// Run PRAGMA integrity_check. Returns error message on failure, None if OK.
+pub fn integrity_check(conn: &Connection) -> Option<String> {
+    let result: Result<String, _> = conn.pragma_query_value(None, "integrity_check", |r| {
+        r.get::<_, String>(0)
+    });
+    match result {
+        Ok(s) if s == "ok" => None,
+        Ok(s) => Some(s),
+        Err(e) => Some(format!("integrity_check query failed: {e}")),
+    }
+}
+
+/// Open DB with repair: if integrity check fails or open fails, delete the DB
+/// file and create a fresh one.
+pub fn open_or_repair(db_path: &Path) -> rusqlite::Result<Connection> {
+    match open_db(db_path) {
+        Ok(conn) => {
+            if integrity_check(&conn).is_some() {
+                drop(conn);
+                let _ = std::fs::remove_file(db_path);
+                open_db(db_path)
+            } else {
+                Ok(conn)
+            }
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(db_path);
+            open_db(db_path)
+        }
+    }
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS skills (
   name TEXT NOT NULL,
@@ -42,6 +74,17 @@ pub fn open_in_memory() -> rusqlite::Result<Connection> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch(SCHEMA)?;
     Ok(conn)
+}
+
+/// Delete a skill by name and source. Returns true if a row was removed.
+pub fn delete_skill(conn: &Connection, name: &str, source: &str) -> rusqlite::Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM skills WHERE name = ?1 AND source = ?2",
+        params![name, source],
+    )?;
+    // FTS rowids match skills rowids; a dangling FTS row is harmless
+    // because search() JOINs against skills and won't return it.
+    Ok(affected > 0)
 }
 
 pub fn rebuild(conn: &mut Connection, entries: &[SkillEntry]) -> rusqlite::Result<()> {

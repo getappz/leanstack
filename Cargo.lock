@@ -240,9 +240,11 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "tempfile",
  "thiserror",
+ "ureq 2.12.1",
 ]
 
 [[package]]

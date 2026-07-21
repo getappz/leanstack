@@ -246,6 +246,28 @@ pub fn scan_sources(sources: &[Source]) -> ScanOutput {
     out
 }
 
+/// Validate a skill entry has all required fields and its path is reachable.
+/// Returns a list of validation warnings (non-fatal).
+pub fn validate_entry(e: &SkillEntry) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if e.name.is_empty() {
+        warnings.push("name is empty".into());
+    }
+    if e.source.is_empty() {
+        warnings.push("source is empty".into());
+    }
+    if e.description.is_empty() {
+        warnings.push("description is empty".into());
+    }
+    if e.est_tokens <= 0 {
+        warnings.push("est_tokens is zero or negative".into());
+    }
+    if !e.path.as_os_str().is_empty() && !e.path.exists() {
+        warnings.push(format!("path does not exist: {}", e.path.display()));
+    }
+    warnings
+}
+
 /// Built-in source set. `detected_agents` are agent-registry ids (e.g. "codex");
 /// non-Claude roots are contributed only for detected agents and only if the
 /// directory exists.
