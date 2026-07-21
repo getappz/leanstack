@@ -154,7 +154,7 @@ pub fn redirect_decision(tool_name: &str, tool_input: Option<&Value>) -> Option<
         // need it. When we do check, resolve the target file's repo, not
         // host cwd.
         let (current, default) = if MUTATING_TOOLS.contains(&tool_name.as_str()) {
-            let target_repo = tool_input.as_ref().and_then(|ti| {
+            let target_path = tool_input.as_ref().and_then(|ti| {
                 // opencode's native tools send camelCase `filePath`; without
                 // it here the target repo resolves to None and the branch
                 // guard silently allows the edit.
@@ -163,13 +163,42 @@ pub fn redirect_decision(tool_name: &str, tool_input: Option<&Value>) -> Option<
                     .or_else(|| ti.get("filePath"))
                     .and_then(Value::as_str)
                     .map(Path::new)
-                    .and_then(|p| p.parent())
-                    .and_then(flare_git_core::branch::repo_toplevel)
             });
-            match target_repo {
-                Some(repo) => (current_branch(Some(&repo)), default_branch(Some(&repo))),
-                // Target path not in any git repo → no branch guard.
-                None => (None, None),
+            // Walk up from the target to the first ancestor that actually
+            // exists on disk before asking git for its toplevel -- a bare
+            // filename's parent is "" (no such dir) and a new file's parent
+            // may not exist yet, either of which would otherwise make the
+            // git subprocess fail and silently skip the guard.
+            // `git rev-parse --show-toplevel` already walks up from its
+            // start dir looking for `.git`, so only the FIRST existing
+            // ancestor needs to actually be handed to it -- every higher
+            // ancestor is already covered by that walk, and re-spawning git
+            // per ancestor just burns time against GATING_TIMEOUT.
+            let target_repo = target_path.and_then(|p| {
+                let first_existing = p.ancestors().skip(1).find(|ancestor| {
+                    let check = if *ancestor == Path::new("") {
+                        Path::new(".")
+                    } else {
+                        *ancestor
+                    };
+                    check.exists()
+                })?;
+                let check = if first_existing == Path::new("") {
+                    Path::new(".")
+                } else {
+                    first_existing
+                };
+                flare_git_core::branch::repo_toplevel(check)
+            });
+            match (target_path, target_repo) {
+                // Path was extracted but isn't in any git repo -- no guard.
+                (Some(_), None) => (None, None),
+                // Path couldn't be extracted (tool has no file_path/path,
+                // e.g. MultiEdit) -- fall back to cwd; repo found -- use it.
+                (_, repo) => (
+                    current_branch(repo.as_deref()),
+                    default_branch(repo.as_deref()),
+                ),
             }
         } else {
             (None, None)
@@ -372,5 +401,114 @@ mod tests {
             out.is_none(),
             "a worker slower than the timeout must fail open to None"
         );
+    }
+
+    /// `git init` a temp repo with one commit on `branch` -- enough to
+    /// exercise `redirect_decision`'s real git subprocess path
+    /// (`test_support` in flare-git-core is `pub(crate)`, so this binary
+    /// crate can't reuse it). Every path handed to `redirect_decision` in
+    /// these tests is absolute (anchored at the returned repo's own path),
+    /// so none of them need to touch the real process cwd -- mutating that
+    /// is global, process-wide state that a parallel test binary can't
+    /// safely share (a prior version of this test file did exactly that
+    /// and intermittently broke unrelated cwd-sensitive tests elsewhere in
+    /// the same binary).
+    fn init_temp_repo(branch: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", branch]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "test"]);
+        std::fs::write(dir.path().join("seed.txt"), "seed").unwrap();
+        run(&["add", "seed.txt"]);
+        run(&["commit", "-q", "-m", "seed"]);
+        dir
+    }
+
+    #[test]
+    fn redirect_decision_guards_new_nested_path_via_ancestor_walk() {
+        // Regression for the CodeRabbit-flagged bypass on PR #283: a new
+        // file under a directory that doesn't exist yet used to make the
+        // git subprocess fail (parent dir ENOENT) and silently skip the
+        // guard. The path is absolute (anchored at the temp repo), so this
+        // doesn't depend on the real process cwd at all.
+        let repo = init_temp_repo("master");
+        let target = repo.path().join("new_dir").join("does_not_exist_yet.txt");
+        let decision = redirect_decision(
+            "Write",
+            Some(&json!({"file_path": target.to_str().unwrap()})),
+        );
+        assert!(
+            decision.is_some(),
+            "a new file under a not-yet-created directory must still be guarded"
+        );
+    }
+
+    #[test]
+    fn redirect_decision_bare_filename_matches_explicit_cwd_fallback() {
+        // Second bypass: a bare filename's `.parent()` is `""`, which used
+        // to be handed straight to `repo_toplevel` (ENOENT -> None -> guard
+        // silently skipped) regardless of what repo the agent was actually
+        // in. Rather than mutating the real process cwd (unsafe to do in a
+        // parallel test binary -- see `init_temp_repo`'s doc comment), this
+        // proves the fix by asserting the bare-filename path now resolves
+        // to the SAME outcome as the already-supported explicit-`None`
+        // cwd-fallback path, whatever repo/branch this test happens to run
+        // in.
+        let expected = redirect_decision("MultiEdit", Some(&json!({"edits": []})));
+        let actual = redirect_decision("Write", Some(&json!({"file_path": "bare_filename.txt"})));
+        assert_eq!(actual.is_some(), expected.is_some());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn redirect_decision_missing_path_field_falls_back_to_cwd() {
+        // Third bypass: MultiEdit-shaped input has no top-level file_path,
+        // which used to make target_repo resolution bail out to
+        // `(None, None)` unconditionally instead of falling back to cwd.
+        // Ground truth here is computed directly from `flare_git_core`
+        // against `Path::new(".")` rather than a hardcoded branch name, so
+        // this holds regardless of what repo/branch actually checks out
+        // this crate's tests.
+        let expected_current = flare_git_core::branch::current_branch(Path::new("."));
+        let expected_default = Some(flare_git_core::branch::resolve_default_branch(Path::new(
+            ".",
+        )));
+        let expected_reason =
+            branch_guard_reason_for(expected_current.as_deref(), expected_default.as_deref());
+
+        let decision = redirect_decision("MultiEdit", Some(&json!({"edits": []})));
+        assert_eq!(decision.is_some(), expected_reason.is_some());
+        if let Some(reason) = expected_reason {
+            assert_eq!(
+                decision.unwrap()["hookSpecificOutput"]["permissionDecisionReason"],
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_decision_still_skips_guard_outside_any_repo() {
+        // Not a regression case, but pins down the intended non-bypass
+        // behavior: a target genuinely outside any git repo must still
+        // pass through unguarded, ancestor walk or not.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("file.txt");
+        let decision = redirect_decision(
+            "Write",
+            Some(&json!({"file_path": target.to_str().unwrap()})),
+        );
+        assert!(decision.is_none());
     }
 }
