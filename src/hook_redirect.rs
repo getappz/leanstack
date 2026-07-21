@@ -61,19 +61,23 @@ fn is_spec_like_path(path: &str) -> bool {
 /// Resolve the current branch of the repo containing `start_path`, or cwd if
 /// `start_path` is None. `None` outside a git repo.
 fn current_branch(start_path: Option<&Path>) -> Option<String> {
-    let path = start_path
-        .map(|p| p.to_path_buf())
-        .or_else(|| std::env::current_dir().ok())?;
-    flare_git_core::branch::current_branch(&path)
+    if let Some(p) = start_path {
+        flare_git_core::branch::current_branch(p)
+    } else {
+        flare_git_core::branch::current_branch(&std::env::current_dir().ok()?)
+    }
 }
 
 /// Resolve the default branch of the repo containing `start_path`, or cwd if
 /// `start_path` is None.
 fn default_branch(start_path: Option<&Path>) -> Option<String> {
-    let path = start_path
-        .map(|p| p.to_path_buf())
-        .or_else(|| std::env::current_dir().ok())?;
-    Some(flare_git_core::branch::resolve_default_branch(&path))
+    if let Some(p) = start_path {
+        Some(flare_git_core::branch::resolve_default_branch(p))
+    } else {
+        Some(flare_git_core::branch::resolve_default_branch(
+            &std::env::current_dir().ok()?,
+        ))
+    }
 }
 
 /// Pure decision core for the branch guard — no git process spawned here, so
