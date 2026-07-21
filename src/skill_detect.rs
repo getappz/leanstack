@@ -62,6 +62,7 @@ pub struct IntentClassification {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedSkill {
+    pub est_tokens: i64,
     pub name: String,
     pub source: String,
     pub description: String,
@@ -320,6 +321,7 @@ pub fn find_skills_budget(
                 let reason = format!("matches {} task", intent.task_type.as_str());
                 seen.insert(hit.name.clone(), ());
                 results.push(RankedSkill {
+                    est_tokens: hit.est_tokens,
                     name: hit.name,
                     source: hit.source,
                     description: hit.description,
@@ -348,6 +350,7 @@ pub fn find_skills_budget(
                 let reason = "keyword match".to_string();
                 seen.insert(hit.name.clone(), ());
                 results.push(RankedSkill {
+                    est_tokens: hit.est_tokens,
                     name: hit.name,
                     source: hit.source,
                     description: hit.description,
@@ -399,7 +402,7 @@ pub fn find_skills_budget(
             if acc >= budget_tokens {
                 return false;
             }
-            acc += r.description.len() as i64;
+            acc += r.est_tokens;
             true
         });
     }
@@ -576,9 +579,15 @@ mod tests {
     }
 
     #[test]
-    fn budget_cap_drops_skills_exceeding_limit() {
+    fn budget_cap_uses_est_tokens_not_description_length() {
+        // Regression guard: budget must be measured by real content cost
+        // (est_tokens), not description byte length. "b" has a tiny
+        // description but a huge est_tokens (a big SKILL.md body) -- a
+        // description-length-based accumulator would wrongly treat it as
+        // cheap and let "c" slip in too, defeating the budget entirely.
         let skills = vec![
             RankedSkill {
+                est_tokens: 5,
                 name: "a".into(),
                 source: "s".into(),
                 description: "short".into(),
@@ -586,16 +595,18 @@ mod tests {
                 match_reason: "x".into(),
             },
             RankedSkill {
+                est_tokens: 5000,
                 name: "b".into(),
                 source: "s".into(),
-                description: "very long description that exceeds budget".into(),
+                description: "tiny".into(),
                 score: 0.8,
                 match_reason: "x".into(),
             },
             RankedSkill {
+                est_tokens: 5,
                 name: "c".into(),
                 source: "s".into(),
-                description: "also long".into(),
+                description: "also short".into(),
                 score: 0.7,
                 match_reason: "x".into(),
             },
@@ -611,16 +622,25 @@ mod tests {
             if acc >= 10 {
                 return false;
             }
-            acc += r.description.len() as i64;
+            acc += r.est_tokens;
             true
         });
-        assert!(sorted.len() < 3, "budget should cap at fewer than 3 skills");
+        assert_eq!(
+            sorted.len(),
+            2,
+            "b's real 5000-token cost must exclude c from the budget"
+        );
         assert_eq!(sorted[0].name, "a", "highest-score skill must come first");
+        assert!(
+            !sorted.iter().any(|r| r.name == "c"),
+            "c must be dropped once b's real token cost is counted"
+        );
     }
 
     #[test]
     fn build_injection_lists_skills() {
         let skills = vec![RankedSkill {
+            est_tokens: 100,
             name: "test-driven-development".into(),
             source: "superpowers".into(),
             description: "Use before writing implementation code".into(),
@@ -634,6 +654,7 @@ mod tests {
 
     fn ranked(name: &str, score: f64) -> RankedSkill {
         RankedSkill {
+            est_tokens: 100,
             name: name.to_string(),
             source: "s".into(),
             description: "d".into(),
