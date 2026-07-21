@@ -87,11 +87,21 @@ static GENERATED_MARKERS: LazyLock<Regex> = LazyLock::new(|| {
 
 #[must_use]
 pub fn pre_filter(text: &str) -> String {
-    if GENERATED_MARKERS.is_match(text.lines().take(5).collect::<Vec<_>>().join("\n").as_str()) {
+    if text
+        .lines()
+        .take(5)
+        .any(|line| GENERATED_MARKERS.is_match(line))
+    {
         return String::new();
     }
     text.lines()
-        .filter(|line| !NOISE_PATTERNS.is_match(line) && !GENERATED_MARKERS.is_match(line))
+        .map(|line| {
+            if NOISE_PATTERNS.is_match(line) || GENERATED_MARKERS.is_match(line) {
+                ""
+            } else {
+                line
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -246,7 +256,7 @@ mod tests {
     fn pre_filter_removes_copyright_headers() {
         let result =
             pre_filter("// Copyright 2024 Acme Corp\n// SPDX-License-Identifier: MIT\nfn foo() {}");
-        assert_eq!(result, "fn foo() {}");
+        assert_eq!(result, "\n\nfn foo() {}");
     }
 
     #[test]
@@ -272,7 +282,7 @@ mod tests {
     #[test]
     fn pre_filter_removes_hash_copyright() {
         let result = pre_filter("# Copyright 2024\n# SPDX-License-Identifier: MIT\nfn foo() {}");
-        assert_eq!(result, "fn foo() {}");
+        assert_eq!(result, "\n\nfn foo() {}");
     }
 
     #[test]
