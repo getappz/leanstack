@@ -189,20 +189,20 @@ impl AgentflareMcp {
             "max_results": limit,
         });
 
-        let result = match reg.execute("rivalsearch", "web_search", args).await {
-            Ok(val) => val,
-            Err(e) => {
-                return Ok(serde_json::json!({
-                    "source": "web",
-                    "query": q,
-                    "error": format!("rivalsearch web_search failed: {e}"),
-                    "results": [],
-                })
-                .to_string());
-            }
-        };
-
-        let result_str = serde_json::to_string_pretty(&result).unwrap_or_default();
-        Ok(result_str)
+        match reg.execute("rivalsearch", "web_search", args).await {
+            Ok(val) => Ok(serde_json::json!({
+                "source": "web",
+                "query": q,
+                "results": val,
+            })
+            .to_string()),
+            Err(e) => Ok(serde_json::json!({
+                "source": "web",
+                "query": q,
+                "error": format!("rivalsearch web_search failed: {e}"),
+                "results": [],
+            })
+            .to_string()),
+        }
     }
 }
