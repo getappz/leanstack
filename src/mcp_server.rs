@@ -11,6 +11,7 @@ mod handoff;
 pub(crate) mod item;
 mod memory_tool;
 mod review;
+pub(crate) mod search;
 pub(crate) mod types;
 
 use crate::optimize;
@@ -874,6 +875,9 @@ impl AgentflareMcp {
     }
 
     fn load_gateway_config() -> gateway_registry::GatewayConfig {
+        for msg in crate::gateway_integrations::auto_register_local() {
+            eprintln!("agentflare: gateway {msg}");
+        }
         let path = crate::paths::home()
             .join(".agentflare")
             .join("gateway.toml");
@@ -1370,6 +1374,16 @@ impl AgentflareMcp {
     )]
     fn asset(&self, Parameters(req): Parameters<AssetRequest>) -> Result<String, ErrorData> {
         self.asset_impl(req)
+    }
+
+    #[tool(
+        description = "Global unified search across four sources. type='store' (default) — FTS search across indexed store documents (artifacts, notes), grouped by doc_type. type='memory' — FTS search across brain.db observations (decisions, findings, patterns). type='code' — code search delegated to the gateway's leanctx ctx_search (regex, compressed output). type='web' — internet search via rivalsearch web_search tool. Returns { query, source, total, groups|results }."
+    )]
+    async fn search(
+        &self,
+        Parameters(req): Parameters<SearchRequest>,
+    ) -> Result<String, ErrorData> {
+        self.search_impl(req).await
     }
 }
 

@@ -117,13 +117,15 @@ pub fn already_registered(name: &str) -> bool {
 /// would be invalid TOML), so it's safe to call directly, not only behind the
 /// caller's `already_registered` check. Returns a status line.
 pub fn register(intg: &GatewayIntegration) -> String {
+    register_block(intg.name, intg.toml_block)
+}
+
+/// `register` for a block built at runtime (e.g. a path derived from the
+/// current home dir). Same idempotency and append semantics.
+pub fn register_block(name: &str, toml_block: &str) -> String {
     let path = gateway_toml_path();
-    if already_registered(intg.name) {
-        return format!(
-            "skip  {} already registered ({})",
-            intg.name,
-            path.display()
-        );
+    if already_registered(name) {
+        return format!("skip  {name} already registered ({})", path.display());
     }
     let existing = fs::read_to_string(&path).unwrap_or_default();
 
@@ -131,7 +133,7 @@ pub fn register(intg: &GatewayIntegration) -> String {
     if !out.is_empty() {
         out.push_str("\n\n");
     }
-    out.push_str(intg.toml_block.trim());
+    out.push_str(toml_block.trim());
     out.push('\n');
 
     if let Some(parent) = path.parent() {
@@ -139,12 +141,52 @@ pub fn register(intg: &GatewayIntegration) -> String {
     }
     match fs::write(&path, out) {
         Ok(_) => format!(
-            "ok    {} MCP registered behind the gateway ({})",
-            intg.name,
+            "ok    {name} MCP registered behind the gateway ({})",
             path.display()
         ),
         Err(e) => format!("fail  writing {}: {e}", path.display()),
     }
+}
+
+/// The local rivalsearch MCP checkout, if present. Path is derived from the
+/// current home dir at runtime -- never hardcoded into the binary.
+fn rivalsearch_dir() -> PathBuf {
+    home()
+        .join(".config")
+        .join("opencode")
+        .join("mcp-servers")
+        .join("RivalSearchMCP")
+}
+
+fn rivalsearch_available() -> bool {
+    rivalsearch_dir().join("server.py").exists()
+        && std::process::Command::new("uv")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+}
+
+fn rivalsearch_block() -> String {
+    let dir = rivalsearch_dir().to_string_lossy().replace('\\', "/");
+    format!(
+        "[servers.rivalsearch]\nkind = \"mcp_stdio\"\ncommand = \"uv\"\nargs = [\"--directory\", \"{dir}\", \"run\", \"fastmcp\", \"run\", \"server.py\"]"
+    )
+}
+
+/// Auto-register LOCAL stdio servers whose binaries the user already has
+/// (leanctx, rivalsearch) -- no consent prompt: they spawn locally-installed
+/// software and carry no secrets or network endpoints. Remote integrations
+/// (github, ...) stay behind `init`'s consent flow. Idempotent; returns
+/// status lines for the entries it actually added.
+pub fn auto_register_local() -> Vec<String> {
+    let mut added = Vec::new();
+    if leanctx_installed() && !already_registered("leanctx") {
+        added.push(register(&LEANCTX));
+    }
+    if rivalsearch_available() && !already_registered("rivalsearch") {
+        added.push(register_block("rivalsearch", &rivalsearch_block()));
+    }
+    added
 }
 
 #[cfg(test)]
