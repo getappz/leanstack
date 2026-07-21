@@ -132,6 +132,7 @@ dependencies = [
 name = "agentflare-artifacts"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "nanoid",
  "serde",
  "serde_json",
@@ -250,6 +251,7 @@ dependencies = [
  "blake3",
  "bytemuck",
  "dirs",
+ "flate2",
  "ndarray",
  "ort",
  "parking_lot",

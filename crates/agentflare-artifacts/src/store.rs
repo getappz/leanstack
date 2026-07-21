@@ -143,7 +143,7 @@ impl ArtifactStore {
         if !unchanged {
             fs::write(
                 dir.join(VERSIONS_DIR).join(version.to_string()),
-                &req.content,
+                gzip(req.content.as_bytes())?,
             )?;
             prune_old_versions(&dir, version, MAX_KEPT_VERSIONS);
         }
@@ -168,8 +168,8 @@ impl ArtifactStore {
     /// Unified diff between two version snapshots of an artifact.
     pub fn diff(&self, id: &str, from: u32, to: u32) -> std::io::Result<String> {
         let versions_dir = self.artifact_dir(id).join(VERSIONS_DIR);
-        let old = fs::read_to_string(versions_dir.join(from.to_string()))?;
-        let new = fs::read_to_string(versions_dir.join(to.to_string()))?;
+        let old = read_version_file(&versions_dir.join(from.to_string()))?;
+        let new = read_version_file(&versions_dir.join(to.to_string()))?;
         let diff = similar::TextDiff::from_lines(&old, &new);
         Ok(diff
             .unified_diff()
@@ -194,7 +194,7 @@ impl ArtifactStore {
             .artifact_dir(id)
             .join(VERSIONS_DIR)
             .join(version.to_string());
-        artifact.content = fs::read_to_string(content_path)?;
+        artifact.content = read_version_file(&content_path)?;
         artifact.version = version;
         Ok(artifact)
     }
@@ -321,6 +321,34 @@ fn prune_old_versions(dir: &Path, latest_version: u32, keep: u32) {
     }
 }
 
+fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(data)?;
+    enc.finish()
+}
+
+/// Reads a version-snapshot file, transparently decompressing it if it's
+/// gzip (2-byte magic `1f 8b`). A snapshot written before compression
+/// landed has no such header, so it's read as plain UTF-8 text unchanged —
+/// self-describing, no version marker or migration needed to keep serving
+/// snapshots written by older builds.
+fn read_version_file(path: &Path) -> std::io::Result<String> {
+    let data = fs::read(path)?;
+    let bytes = if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+        let mut out = Vec::new();
+        GzDecoder::new(&data[..]).read_to_end(&mut out)?;
+        out
+    } else {
+        data
+    };
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +425,42 @@ mod tests {
         assert!(store.diff(&id, 1, 2).is_err(), "v2 body pruned by now");
         assert!(store.get_version(&id, 1).is_ok(), "v1 anchor kept");
         assert!(store.get_version(&id, 60).is_ok(), "latest version kept");
+    }
+
+    #[test]
+    fn version_snapshots_are_stored_gzip_compressed() {
+        let (_tmp, store) = store();
+        let content = "repeat me ".repeat(200);
+        let id = publish(&store, None, &content);
+
+        let raw = fs::read(store.artifact_dir(&id).join(VERSIONS_DIR).join("1")).unwrap();
+        assert!(
+            raw.len() < content.len(),
+            "on-disk snapshot ({} bytes) should be smaller than the source ({} bytes)",
+            raw.len(),
+            content.len()
+        );
+        assert_eq!(&raw[..2], &[0x1f, 0x8b], "gzip magic header");
+
+        assert_eq!(store.get_version(&id, 1).unwrap().content, content);
+    }
+
+    #[test]
+    fn a_legacy_plaintext_version_written_before_gzip_still_reads_back() {
+        let (_tmp, store) = store();
+        let id = publish(&store, None, "v1");
+
+        // Simulate a snapshot written by a build predating compression: no
+        // gzip magic, plain UTF-8 text on disk.
+        fs::write(
+            store.artifact_dir(&id).join(VERSIONS_DIR).join("1"),
+            "legacy plaintext, no gzip header",
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.get_version(&id, 1).unwrap().content,
+            "legacy plaintext, no gzip header"
+        );
     }
 }
