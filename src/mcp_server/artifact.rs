@@ -142,20 +142,21 @@ impl AgentflareMcp {
                 .get(&summary.id)
                 .map(|a| a.content)
                 .unwrap_or_default();
-            let content_pos = content.to_lowercase().find(&needle);
+            let content_lower = content.to_lowercase();
+            let content_pos = content_lower.find(&needle);
             if !(name_hit || desc_hit || content_pos.is_some()) {
                 continue;
             }
             let snippet = content_pos.map(|pos| {
                 let mut start = pos.saturating_sub(40);
-                while !content.is_char_boundary(start) {
+                while !content_lower.is_char_boundary(start) {
                     start -= 1;
                 }
-                let mut end = (pos + needle.len() + 40).min(content.len());
-                while !content.is_char_boundary(end) {
+                let mut end = (pos + needle.len() + 40).min(content_lower.len());
+                while !content_lower.is_char_boundary(end) {
                     end += 1;
                 }
-                content[start..end].to_string()
+                content_lower[start..end].to_string()
             });
             let mut v = serde_json::to_value(&summary).unwrap_or_default();
             if let Some(obj) = v.as_object_mut() {
