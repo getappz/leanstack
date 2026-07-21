@@ -14,6 +14,14 @@ const CONTENT_FILE: &str = "content";
 
 const VERSIONS_DIR: &str = "versions";
 
+/// Version snapshots beyond this many most-recent are pruned on publish — a
+/// bound on runaway republish loops (e.g. a stuck `/loop` session hammering
+/// one artifact), not a limit normal editing ever reaches. `diff`/
+/// `get_version` on a pruned version returns NotFound; `versions()` (the
+/// history list) is untouched, so what happened is still visible even after
+/// old snapshot bodies are gone. v1 is always kept as the origin anchor.
+const MAX_KEPT_VERSIONS: u32 = 50;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ArtifactMeta {
     pub id: String,
@@ -137,6 +145,7 @@ impl ArtifactStore {
                 dir.join(VERSIONS_DIR).join(version.to_string()),
                 &req.content,
             )?;
+            prune_old_versions(&dir, version, MAX_KEPT_VERSIONS);
         }
         fs::write(dir.join(META_FILE), serde_json::to_string_pretty(&meta)?)?;
         fs::write(dir.join(CONTENT_FILE), &req.content)?;
@@ -295,5 +304,98 @@ impl ArtifactStore {
 
     pub fn base_path(&self) -> &Path {
         &self.base_path
+    }
+}
+
+/// Delete version-snapshot bodies older than the `keep` most-recent, always
+/// preserving v1 as the origin anchor. Oldest-first, no-op once already
+/// under the cap — safe to call unconditionally on every publish.
+fn prune_old_versions(dir: &Path, latest_version: u32, keep: u32) {
+    if latest_version <= keep {
+        return;
+    }
+    let cutoff = latest_version - keep;
+    let versions_dir = dir.join(VERSIONS_DIR);
+    for v in 2..=cutoff {
+        let _ = fs::remove_file(versions_dir.join(v.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, ArtifactStore) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(tmp.path().to_path_buf());
+        (tmp, store)
+    }
+
+    fn publish(store: &ArtifactStore, update_id: Option<String>, content: &str) -> String {
+        store
+            .publish(&PublishRequest {
+                name: "doc".into(),
+                artifact_type: ArtifactType::Markdown,
+                content: content.into(),
+                session_id: "s1".into(),
+                update_id,
+                ..Default::default()
+            })
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn prune_old_versions_is_a_noop_under_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(VERSIONS_DIR)).unwrap();
+        for v in 1..=5u32 {
+            fs::write(dir.path().join(VERSIONS_DIR).join(v.to_string()), "x").unwrap();
+        }
+        prune_old_versions(dir.path(), 5, 50);
+        for v in 1..=5u32 {
+            assert!(dir.path().join(VERSIONS_DIR).join(v.to_string()).exists());
+        }
+    }
+
+    #[test]
+    fn prune_old_versions_drops_the_old_tail_but_keeps_v1_and_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(VERSIONS_DIR)).unwrap();
+        for v in 1..=10u32 {
+            fs::write(dir.path().join(VERSIONS_DIR).join(v.to_string()), "x").unwrap();
+        }
+        prune_old_versions(dir.path(), 10, 3);
+        let exists = |v: u32| dir.path().join(VERSIONS_DIR).join(v.to_string()).exists();
+        assert!(exists(1), "v1 is always kept as the origin anchor");
+        for v in 2..=7u32 {
+            assert!(
+                !exists(v),
+                "v{v} is older than the last 3 kept and should be pruned"
+            );
+        }
+        for v in 8..=10u32 {
+            assert!(exists(v), "v{v} is within the last 3 kept");
+        }
+    }
+
+    #[test]
+    fn publish_loop_prunes_old_version_bodies_but_keeps_full_history() {
+        let (_tmp, store) = store();
+        let id = publish(&store, None, "v1");
+        let mut last_id = id.clone();
+        for i in 2..=60 {
+            last_id = publish(&store, Some(last_id), &format!("v{i}"));
+        }
+
+        // history (the version list) still shows every publish...
+        let history = store.versions(&id).unwrap();
+        assert_eq!(history.len(), 60);
+
+        // ...but old version bodies beyond the cap are gone from disk, while
+        // v1 and the recent tail survive.
+        assert!(store.diff(&id, 1, 2).is_err(), "v2 body pruned by now");
+        assert!(store.get_version(&id, 1).is_ok(), "v1 anchor kept");
+        assert!(store.get_version(&id, 60).is_ok(), "latest version kept");
     }
 }
