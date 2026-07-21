@@ -52,11 +52,15 @@ const AUDIT_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const AUDIT_LOG_KEEP_LINES: usize = 5_000;
 
 /// Appends one JSONL line for `event`, creating the parent directory and
-/// file if needed.
+/// file if needed. Holds an exclusive lock on a sibling `.lock` file across
+/// the whole append + maybe-rotate cycle so concurrent git processes writing
+/// to the same audit log can't interleave: without it, a rotation's
+/// read-modify-write could silently drop another process's append (TOCTOU).
 pub fn log_event<T: Serialize>(audit_path: &Path, event: &T) -> std::io::Result<()> {
     if let Some(parent) = audit_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let _lock = lock_audit_path(audit_path)?;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -67,9 +71,29 @@ pub fn log_event<T: Serialize>(audit_path: &Path, event: &T) -> std::io::Result<
     maybe_rotate(audit_path, AUDIT_LOG_MAX_BYTES, AUDIT_LOG_KEEP_LINES)
 }
 
+/// Opens (creating if needed) and exclusively locks `path`'s sibling
+/// `.lock` file, blocking until acquired. Released when the returned file
+/// is dropped. Same pattern as `daemon::acquire_start_lock`.
+fn lock_audit_path(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(PathBuf::from(lock_path))?;
+    fs2::FileExt::lock_exclusive(&lock_file)?;
+    Ok(lock_file)
+}
+
 /// Trims `path` down to its last `keep_lines` lines, oldest dropped first,
 /// once it exceeds `max_bytes`. No-op (single stat, no read) while under
-/// budget.
+/// budget. Writes the trimmed content to a temp file and renames it over
+/// `path` so a crash mid-rotation can't leave a truncated/corrupt log.
+///
+/// ponytail: `keep_lines` alone doesn't guarantee the result stays under
+/// `max_bytes` if lines run large (unlikely for these two compact event
+/// types); add a byte-budget trim pass too if that ever becomes real.
 fn maybe_rotate(path: &Path, max_bytes: u64, keep_lines: usize) -> std::io::Result<()> {
     let Ok(meta) = std::fs::metadata(path) else {
         return Ok(());
@@ -82,8 +106,12 @@ fn maybe_rotate(path: &Path, max_bytes: u64, keep_lines: usize) -> std::io::Resu
     if lines.len() <= keep_lines {
         return Ok(());
     }
-    let trimmed = lines[lines.len() - keep_lines..].join("\n");
-    std::fs::write(path, trimmed + "\n")
+    let trimmed = lines[lines.len() - keep_lines..].join("\n") + "\n";
+    let mut tmp_path = path.as_os_str().to_owned();
+    tmp_path.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_path);
+    std::fs::write(&tmp_path, trimmed)?;
+    std::fs::rename(&tmp_path, path)
 }
 
 /// Reads back every event in the log, oldest first. A missing file reads

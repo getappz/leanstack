@@ -1029,6 +1029,7 @@ dependencies = [
  "agentflare-backend",
  "chrono",
  "dirs",
+ "fs2",
  "rusqlite",
  "serde",
  "serde_json",
