@@ -180,12 +180,18 @@ fn item_update_assignee_to_different_agent_releases_old_claim() {
     )
     .unwrap();
     assert_eq!(claimed["status"], "acquired");
+    let owner = claimed["owner"].as_str().unwrap().to_string();
+
+    // Derive a target agent guaranteed to differ from whatever agent this
+    // test process auto-detects as (avoids collisions with the real
+    // ambient AGENTFLARE_AGENT / agent-detector identity, e.g. "claude-code").
+    let different_agent = format!("{}-other", crate::claims::agent_of(&owner));
 
     // Reassign to a different agent — should release the old claim.
     s.item(Parameters(ItemRequest {
         action: "update".into(),
         id: Some(item_id.clone()),
-        assignee_agent: Some("claude-code".into()),
+        assignee_agent: Some(different_agent),
         ..Default::default()
     }))
     .unwrap();
