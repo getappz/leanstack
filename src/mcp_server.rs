@@ -875,6 +875,9 @@ impl AgentflareMcp {
     }
 
     fn load_gateway_config() -> gateway_registry::GatewayConfig {
+        for msg in crate::gateway_integrations::auto_register_local() {
+            eprintln!("agentflare: gateway {msg}");
+        }
         let path = crate::paths::home()
             .join(".agentflare")
             .join("gateway.toml");
@@ -1374,7 +1377,7 @@ impl AgentflareMcp {
     }
 
     #[tool(
-        description = "Global unified search across four sources. type='store' (default) — FTS search across indexed store documents (artifacts, notes), grouped by doc_type. type='memory' — FTS search across brain.db observations (decisions, findings, patterns). type='code' — code search via lean-ctx grep (FTS5/symbol/regex). type='web' — internet search via rivalsearch web_search tool. Returns { query, source, total, groups|results }."
+        description = "Global unified search across four sources. type='store' (default) — FTS search across indexed store documents (artifacts, notes), grouped by doc_type. type='memory' — FTS search across brain.db observations (decisions, findings, patterns). type='code' — code search delegated to the gateway's leanctx ctx_search (regex, compressed output). type='web' — internet search via rivalsearch web_search tool. Returns { query, source, total, groups|results }."
     )]
     async fn search(
         &self,

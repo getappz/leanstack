@@ -900,7 +900,7 @@ pub(crate) struct SearchRequest {
     #[schemars(description = "Search query")]
     pub(crate) query: String,
     #[schemars(
-        description = "Search type: 'store' (default, FTS across store documents, grouped by doc_type), 'memory' (FTS across brain.db observations), 'code' (lean-ctx grep), or 'web' (rivalsearch internet search)"
+        description = "Search type: 'store' (default, FTS across store documents, grouped by doc_type), 'memory' (FTS across brain.db observations), 'code' (gateway leanctx ctx_search), or 'web' (rivalsearch internet search)"
     )]
     #[serde(default)]
     pub(crate) r#type: Option<String>,

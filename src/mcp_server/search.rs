@@ -4,7 +4,7 @@ impl AgentflareMcp {
     pub async fn search_impl(&self, req: SearchRequest) -> Result<String, ErrorData> {
         let search_type = req.r#type.as_deref().unwrap_or("store");
         match search_type {
-            "code" => self.search_code(&req),
+            "code" => self.search_code(&req).await,
             "memory" => self.search_memory(&req),
             "web" => self.search_web(&req).await,
             "store" => self.search_store(&req),
@@ -137,90 +137,41 @@ impl AgentflareMcp {
         .to_string())
     }
 
-    fn search_code(&self, req: &SearchRequest) -> Result<String, ErrorData> {
+    /// Delegates to the gateway's `leanctx` server (`ctx_search`, regex
+    /// action) -- same pattern as the web arm; no subprocess, no output
+    /// parsing. Unregistered/unavailable server degrades to an error payload.
+    async fn search_code(&self, req: &SearchRequest) -> Result<String, ErrorData> {
         let q = req.query.trim();
         if q.is_empty() {
             return Err(ErrorData::invalid_params("query must not be empty", None));
         }
-        let root = Self::repo_root();
-        if !root.exists() {
-            return Ok(serde_json::json!({
-                "source": "code",
-                "query": q,
-                "note": "No project root found. Run agentflare from within a git repo.",
-                "results": [],
-                "total": 0,
-            })
-            .to_string());
-        }
-
-        let output = std::process::Command::new("lean-ctx")
-            .arg("grep")
-            .arg(q)
-            .current_dir(&root)
-            .output()
-            .map_err(|e| {
-                ErrorData::internal_error(format!("failed to run lean-ctx grep: {e}"), None)
-            })?;
-
-        if !output.status.success() && output.stdout.is_empty() {
-            return Ok(serde_json::json!({
-                "source": "code",
-                "query": q,
-                "error": String::from_utf8_lossy(&output.stderr).trim(),
-                "results": [],
-                "total": 0,
-            })
-            .to_string());
-        }
-
-        let raw = String::from_utf8_lossy(&output.stdout);
-        let mut results = Vec::new();
         let limit = req.limit.unwrap_or(50);
-        let mut in_symbol = false;
+        let root = Self::repo_root();
 
-        for line in raw.lines() {
-            if results.len() >= limit {
-                break;
-            }
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // Symbol context lines from lean-ctx
-            if line.starts_with("[∈") {
-                in_symbol = true;
-                continue;
-            }
-            // Parse file:line content — lean-ctx grep output. Paths are
-            // relative to `root` (current_dir), so the first ':' is never a
-            // Windows drive letter. symbol_context tags only the first line
-            // after a [∈ marker.
-            if let Some((file, rest)) = line.split_once(':') {
-                // Find the space separating line number from content
-                if let Some(space_idx) = rest.find(' ') {
-                    let line_str = &rest[..space_idx];
-                    let content = rest[space_idx + 1..].trim();
-                    if let Ok(line_num) = line_str.parse::<usize>() {
-                        results.push(serde_json::json!({
-                            "file": file,
-                            "line": line_num,
-                            "text": content,
-                            "symbol_context": in_symbol,
-                        }));
-                    }
-                }
-            }
-            in_symbol = false;
+        let guard = self.ensure_gateway_registry().await?;
+        let reg = guard.as_ref().expect("ensured above");
+
+        let args = serde_json::json!({
+            "pattern": q,
+            "path": root.to_string_lossy(),
+            "max_results": limit,
+        });
+
+        match reg.execute("leanctx", "ctx_search", args).await {
+            Ok(val) => Ok(serde_json::json!({
+                "source": "code",
+                "query": q,
+                "results": val,
+            })
+            .to_string()),
+            Err(e) => Ok(serde_json::json!({
+                "source": "code",
+                "query": q,
+                "error": format!("leanctx ctx_search failed: {e}"),
+                "results": [],
+            })
+            .to_string()),
         }
-
-        Ok(serde_json::json!({
-            "source": "code",
-            "query": q,
-            "total": results.len(),
-            "results": results,
-        })
-        .to_string())
     }
 
     async fn search_web(&self, req: &SearchRequest) -> Result<String, ErrorData> {

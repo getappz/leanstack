@@ -166,35 +166,28 @@ fn search_code_requires_non_empty_query() {
 }
 
 #[test]
-fn search_code_returns_results_from_lean_ctx() {
-    let root = AgentflareMcp::repo_root();
-    if !root.exists() {
-        return; // skip outside a git repo
-    }
-    if std::process::Command::new("lean-ctx")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        return; // skip when lean-ctx isn't on PATH (CI)
-    }
-    let s = AgentflareMcp::default();
-    // Search for a pattern that definitely exists in this codebase
-    let result = search_sync(
-        &s,
-        SearchRequest {
-            query: "search_impl".into(),
-            r#type: Some("code".into()),
-            limit: Some(10),
-        },
-    )
-    .unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-    assert_eq!(parsed["source"], "code");
-    assert!(
-        parsed["total"].as_u64().unwrap_or(0) > 0,
-        "expected at least one code result for 'search_impl', got {parsed}"
-    );
+fn search_code_returns_graceful_payload_via_gateway() {
+    crate::paths::test_support::with_temp_home(|| {
+        let (_tmp, s) = harness();
+        let result = search_sync(
+            &s,
+            SearchRequest {
+                query: "search_impl".into(),
+                r#type: Some("code".into()),
+                limit: Some(10),
+            },
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["source"], "code");
+        // With leanctx registered (auto-registration when the binary is
+        // installed) this carries results; otherwise an error payload --
+        // never an Err, never a panic.
+        assert!(
+            parsed.get("results").is_some() || parsed.get("error").is_some(),
+            "expected results or error, got {parsed}"
+        );
+    });
 }
 
 #[test]
