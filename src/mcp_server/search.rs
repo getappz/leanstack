@@ -1,4 +1,5 @@
 use super::*;
+use flare_search_kit::fts_query;
 
 impl AgentflareMcp {
     pub async fn search_impl(&self, req: SearchRequest) -> Result<String, ErrorData> {
@@ -35,10 +36,20 @@ impl AgentflareMcp {
         let artifact_hits = self.artifact_search_hits(q, None).unwrap_or_default();
 
         self.with_store(|store| -> Result<String, ErrorData> {
+            // ponytail: no valid FTS5 tokens (e.g. query is only quote chars) -- return
+            // no matches instead of falling back to the unsanitized raw query.
+            let Some(fts_q) = fts_query(q, Default::default()) else {
+                let result = serde_json::json!({
+                    "query": q,
+                    "source": "store",
+                    "total": 0,
+                    "groups": {},
+                });
+                return Ok(serde_json::to_string_pretty(&result).unwrap_or_default());
+            };
             let matches = store
-                .doc_search(&ws_id, q, limit)
+                .doc_search(&ws_id, &fts_q, limit)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
             let mut grouped: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
                 std::collections::BTreeMap::new();
 
@@ -192,7 +203,9 @@ impl AgentflareMcp {
         if q.is_empty() {
             return Err(ErrorData::invalid_params("query must not be empty", None));
         }
-        let limit = req.limit.unwrap_or(10);
+        // rivalsearch web_search schema bounds num_results to 1..=20; clamp so an
+        // out-of-range limit gets truncated instead of failing the whole call.
+        let limit = req.limit.unwrap_or(10).clamp(1, 20);
 
         let guard = self.ensure_gateway_registry().await?;
         let reg = guard.as_ref().expect("ensured above");
@@ -202,11 +215,10 @@ impl AgentflareMcp {
         // for a search arm — ask for the plain result list.
         let args = serde_json::json!({
             "query": q,
-            "num_results": limit.clamp(1, 20),
+            "num_results": limit,
             "extract_content": false,
             "follow_links": false,
         });
-
         match reg.execute("rivalsearch", "web_search", args).await {
             Ok(val) => Ok(serde_json::json!({
                 "source": "web",
