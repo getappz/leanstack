@@ -13,8 +13,10 @@
 
 use crate::paths::home;
 use clap::{Args, Subcommand};
-use flare_git_core::{audit, branch, classify, doctor, provenance, scope, shell, snapshot, worktree};
-use std::collections::HashSet;
+use flare_git_core::{
+    audit, branch, classify, doctor, provenance, scope, shell, snapshot, worktree,
+};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -468,7 +470,8 @@ fn doctor_cmd(args: DoctorArgs) {
     let Some(repo_root) = resolve_repo_root("doctor") else {
         return;
     };
-    let report = doctor::scan(&repo_root, args.staleness_days);
+    let item_states = item_state_groups();
+    let report = doctor::scan(&repo_root, args.staleness_days, &item_states);
     if args.reclaim {
         let reclaimed = doctor::reclaim(&repo_root, &report, args.force);
         if reclaimed.is_empty() {
@@ -518,6 +521,32 @@ fn claimed_sequence_ids(_repo_root: &Path) -> HashSet<String> {
         .filter(|(id, _)| claimed_ids.contains(id))
         .map(|(_, seq)| seq.to_string())
         .collect()
+}
+
+/// Map of item `sequence_id` (as a string, matching `doctor::LaneHealth`) to
+/// its state's `group_name` (e.g. "completed", "cancelled") — used by
+/// `flare doctor` to flag a worktree as orphaned when the item behind it is
+/// done but the worktree wasn't cleaned up. Best-effort: an empty map on any
+/// DB error just means orphan detection silently finds nothing, matching
+/// this file's existing soft-fail convention (see `claimed_sequence_ids`).
+fn item_state_groups() -> HashMap<String, String> {
+    let conn = match crate::db::open() {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT i.sequence_id, s.group_name FROM items i \
+         JOIN states s ON i.state_id = s.id WHERE i.deleted_at IS NULL",
+    ) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    match stmt.query_map([], |r| {
+        Ok((r.get::<_, i64>(0)?.to_string(), r.get::<_, String>(1)?))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => HashMap::new(),
+    }
 }
 
 /// Resolves the git repo root from the current working directory, printing

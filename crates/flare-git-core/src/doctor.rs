@@ -15,11 +15,21 @@ pub struct LaneHealth {
 #[serde(rename_all = "kebab-case")]
 pub enum HealthFlag {
     Dirty,
-    Stale { days: u64 },
+    Stale {
+        days: u64,
+    },
     MissingWorktree,
-    DuplicateBranch { other_paths: Vec<String> },
+    DuplicateBranch {
+        other_paths: Vec<String>,
+    },
     MissingUpstream,
-    Orphaned { item_state: String },
+    Orphaned {
+        item_state: String,
+    },
+    /// Claiming session's process is no longer alive. Not implemented yet —
+    /// needs a cross-platform pid-liveness check with no existing precedent
+    /// in this codebase (ponytail: add when a real zombie-worktree incident
+    /// occurs; until then `scan` never pushes this variant).
     Zombie,
 }
 
@@ -46,7 +56,11 @@ pub struct Summary {
     pub clean: usize,
 }
 
-pub fn scan(repo_root: &Path, staleness_days: u64) -> DoctorReport {
+pub fn scan(
+    repo_root: &Path,
+    staleness_days: u64,
+    item_states: &std::collections::HashMap<String, String>,
+) -> DoctorReport {
     let mut lanes = Vec::new();
     let mut violations = Vec::new();
     let mut branch_lanes: std::collections::BTreeMap<String, Vec<(String, String)>> =
@@ -95,7 +109,19 @@ pub fn scan(repo_root: &Path, staleness_days: u64) -> DoctorReport {
             flags.push(HealthFlag::Dirty);
         }
 
-        flags.push(HealthFlag::Stale { days: staleness_days });
+        if let Some(days) = days_since_last_commit(path)
+            && days >= staleness_days
+        {
+            flags.push(HealthFlag::Stale { days });
+        }
+
+        if let Some(group) = sequence_id.and_then(|seq| item_states.get(&seq.to_string()))
+            && matches!(group.as_str(), "completed" | "cancelled")
+        {
+            flags.push(HealthFlag::Orphaned {
+                item_state: group.clone(),
+            });
+        }
 
         lanes.push(LaneHealth {
             name,
@@ -107,12 +133,12 @@ pub fn scan(repo_root: &Path, staleness_days: u64) -> DoctorReport {
 
     for (branch, instances) in &branch_lanes {
         if instances.len() > 1 {
-            let other_paths: Vec<String> =
-                instances.iter().map(|(_, p)| p.clone()).collect();
+            let other_paths: Vec<String> = instances.iter().map(|(_, p)| p.clone()).collect();
             for (inst_name, _inst_path) in instances {
                 if let Some(lane) = lanes.iter_mut().find(|l| l.name == *inst_name) {
-                    lane.flags
-                        .push(HealthFlag::DuplicateBranch { other_paths: other_paths.clone() });
+                    lane.flags.push(HealthFlag::DuplicateBranch {
+                        other_paths: other_paths.clone(),
+                    });
                 }
             }
             violations.push(format!(
@@ -132,23 +158,43 @@ pub fn scan(repo_root: &Path, staleness_days: u64) -> DoctorReport {
         .count();
     let stale_count = lanes
         .iter()
-        .filter(|l| l.flags.iter().any(|f| matches!(f, HealthFlag::Stale { .. })))
+        .filter(|l| {
+            l.flags
+                .iter()
+                .any(|f| matches!(f, HealthFlag::Stale { .. }))
+        })
         .count();
     let missing_wt_count = lanes
         .iter()
-        .filter(|l| l.flags.iter().any(|f| matches!(f, HealthFlag::MissingWorktree)))
+        .filter(|l| {
+            l.flags
+                .iter()
+                .any(|f| matches!(f, HealthFlag::MissingWorktree))
+        })
         .count();
     let dup_count = lanes
         .iter()
-        .filter(|l| l.flags.iter().any(|f| matches!(f, HealthFlag::DuplicateBranch { .. })))
+        .filter(|l| {
+            l.flags
+                .iter()
+                .any(|f| matches!(f, HealthFlag::DuplicateBranch { .. }))
+        })
         .count();
     let missing_up_count = lanes
         .iter()
-        .filter(|l| l.flags.iter().any(|f| matches!(f, HealthFlag::MissingUpstream)))
+        .filter(|l| {
+            l.flags
+                .iter()
+                .any(|f| matches!(f, HealthFlag::MissingUpstream))
+        })
         .count();
     let orphaned_count = lanes
         .iter()
-        .filter(|l| l.flags.iter().any(|f| matches!(f, HealthFlag::Orphaned { .. })))
+        .filter(|l| {
+            l.flags
+                .iter()
+                .any(|f| matches!(f, HealthFlag::Orphaned { .. }))
+        })
         .count();
     let zombie_count = lanes
         .iter()
@@ -159,10 +205,7 @@ pub fn scan(repo_root: &Path, staleness_days: u64) -> DoctorReport {
         violations.push(format!("{} dirty worktrees (threshold: >5)", dirty_count));
     }
     if stale_count > 3 {
-        violations.push(format!(
-            "{} stale worktrees (threshold: >3)",
-            stale_count
-        ));
+        violations.push(format!("{} stale worktrees (threshold: >3)", stale_count));
     }
 
     DoctorReport {
@@ -183,11 +226,7 @@ pub fn scan(repo_root: &Path, staleness_days: u64) -> DoctorReport {
     }
 }
 
-pub fn reclaim(
-    repo_root: &Path,
-    report: &DoctorReport,
-    force: bool,
-) -> Vec<String> {
+pub fn reclaim(repo_root: &Path, report: &DoctorReport, force: bool) -> Vec<String> {
     let mut reclaimed = Vec::new();
     for lane in &report.lanes {
         let has_dirty = lane.flags.iter().any(|f| matches!(f, HealthFlag::Dirty));
@@ -212,7 +251,10 @@ pub fn reclaim(
                 repo_root,
                 &format!("doctor reclaim {}", lane.name),
             ) {
-                eprintln!("doctor: snapshot failed before reclaiming {}: {}", lane.name, e);
+                eprintln!(
+                    "doctor: snapshot failed before reclaiming {}: {}",
+                    lane.name, e
+                );
                 continue;
             }
             if std::fs::remove_dir_all(path).is_ok() {
@@ -250,7 +292,10 @@ pub fn format_text(report: &DoctorReport) -> String {
         }
     }
     out.push('\n');
-    out.push_str(&format!("Summary: {} total, {} flagged, {} clean\n", report.summary.total, report.summary.flagged, report.summary.clean));
+    out.push_str(&format!(
+        "Summary: {} total, {} flagged, {} clean\n",
+        report.summary.total, report.summary.flagged, report.summary.clean
+    ));
     if !report.violations.is_empty() {
         out.push_str("Violations:\n");
         for v in &report.violations {
@@ -267,9 +312,7 @@ pub fn format_json(report: &DoctorReport) -> String {
 pub fn format_markdown(report: &DoctorReport) -> String {
     let mut out = String::new();
     out.push_str("# flare doctor\n\n");
-    out.push_str(&format!(
-        "| Lane | Path | Flags |\n|------|------|-------|\n"
-    ));
+    out.push_str("| Lane | Path | Flags |\n|------|------|-------|\n");
     for lane in &report.lanes {
         let flag_str = lane
             .flags
@@ -285,7 +328,10 @@ pub fn format_markdown(report: &DoctorReport) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        out.push_str(&format!("| {} | {} | {} |\n", lane.name, lane.path, flag_str));
+        out.push_str(&format!(
+            "| {} | {} | {} |\n",
+            lane.name, lane.path, flag_str
+        ));
     }
     out.push('\n');
     out.push_str(&format!(
@@ -332,10 +378,10 @@ fn parse_worktree_list(output: &str) -> Vec<WorktreeEntry> {
             current_path = Some(path.to_string());
         } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
             current_branch = Some(branch.to_string());
-        } else if let Some(rev) = line.strip_prefix("HEAD ") {
-            if current_branch.is_none() {
-                current_branch = Some(format!("detached at {rev}"));
-            }
+        } else if let Some(rev) = line.strip_prefix("HEAD ")
+            && current_branch.is_none()
+        {
+            current_branch = Some(format!("detached at {rev}"));
         }
     }
     if let Some(path) = current_path.take() {
@@ -347,12 +393,37 @@ fn parse_worktree_list(output: &str) -> Vec<WorktreeEntry> {
     entries
 }
 
+/// `run_in_ok` only reflects exit status, and `git status --porcelain`
+/// exits 0 whether the tree is dirty or clean — so dirtiness has to come
+/// from the (trimmed) stdout being non-empty instead.
 fn is_dirty(path: &Path) -> bool {
-    !run_in_ok(path, &["status", "--porcelain"])
+    run_git_in(path, &["status", "--porcelain"])
+        .map(|out| !out.is_empty())
+        .unwrap_or(false)
+}
+
+/// Days since the worktree's HEAD commit, or `None` if it can't be read
+/// (e.g. no commits yet, or `git log` fails).
+fn days_since_last_commit(path: &Path) -> Option<u64> {
+    let out = run_git_in(path, &["log", "-1", "--format=%ct"]).ok()?;
+    let commit_epoch: i64 = out.trim().parse().ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    let secs = (now - commit_epoch).max(0);
+    Some((secs / 86_400) as u64)
 }
 
 fn has_upstream(repo_root: &Path, branch: &str) -> bool {
-    run_in_ok(repo_root, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")])
+    run_in_ok(
+        repo_root,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            &format!("{branch}@{{upstream}}"),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -373,7 +444,13 @@ mod tests {
         let output = "worktree /repo\nHEAD abc\n";
         let entries = parse_worktree_list(output);
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].branch.as_deref().unwrap_or("").contains("detached"));
+        assert!(
+            entries[0]
+                .branch
+                .as_deref()
+                .unwrap_or("")
+                .contains("detached")
+        );
     }
 
     #[test]
@@ -383,7 +460,64 @@ mod tests {
 
     #[test]
     fn scan_returns_summary() {
-        let report = scan(Path::new("/nonexistent"), 14);
+        let report = scan(
+            Path::new("/nonexistent"),
+            14,
+            &std::collections::HashMap::new(),
+        );
         assert_eq!(report.summary.total, 0);
+    }
+
+    #[test]
+    fn days_since_last_commit_none_outside_a_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(days_since_last_commit(tmp.path()), None);
+    }
+
+    #[test]
+    fn days_since_last_commit_zero_right_after_committing() {
+        let repo = crate::shell::test_support::init_repo_with_branch("main");
+        assert_eq!(days_since_last_commit(&repo.path), Some(0));
+    }
+
+    #[test]
+    fn is_dirty_false_outside_a_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(!is_dirty(tmp.path()));
+    }
+
+    #[test]
+    fn is_dirty_false_on_a_clean_repo() {
+        let repo = crate::shell::test_support::init_repo_with_branch("main");
+        assert!(!is_dirty(&repo.path));
+    }
+
+    #[test]
+    fn is_dirty_true_with_an_untracked_file() {
+        let repo = crate::shell::test_support::init_repo_with_branch("main");
+        std::fs::write(repo.path.join("untracked.txt"), "x").unwrap();
+        assert!(is_dirty(&repo.path));
+    }
+
+    #[test]
+    fn scan_does_not_flag_a_fresh_clean_worktree_as_stale() {
+        let repo = crate::shell::test_support::init_repo_with_branch("main");
+        let report = scan(&repo.path, 14, &std::collections::HashMap::new());
+        assert_eq!(
+            report.lanes.len(),
+            1,
+            "expected exactly the repo's own worktree, got: {:?}",
+            report.lanes
+        );
+        let lane = &report.lanes[0];
+        assert!(
+            !lane
+                .flags
+                .iter()
+                .any(|f| matches!(f, HealthFlag::Stale { .. })),
+            "a worktree committed seconds ago must not be flagged stale, got: {:?}",
+            lane.flags
+        );
+        assert!(!lane.flags.iter().any(|f| matches!(f, HealthFlag::Dirty)));
     }
 }
