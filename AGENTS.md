@@ -87,7 +87,7 @@ shadow the isolation, and CI's `target-dir-guard` job
 (.github/workflows/ci.yml) fails the build outright if the var is set
 project-wide. The residual gap is a bare shell opened inside a worktree
 without going through `agentflare run` — `cargo` there will still honor an
-ambient `CARGO_TARGET_DIR`.
+ambient `CARGO_TARGET_DIR`. If `sccache` is on `PATH`, the isolated config also sets it as `rustc-wrapper` with `SCCACHE_BASEDIRS` pointed at the worktree's own path, so registry-dependency compiles still share a cache across worktrees.
 
 ## Git
 
