@@ -13,7 +13,7 @@
 
 use crate::paths::home;
 use clap::{Args, Subcommand};
-use flare_git_core::{audit, branch, classify, provenance, scope, shell, snapshot, worktree};
+use flare_git_core::{audit, branch, classify, doctor, provenance, scope, shell, snapshot, worktree};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read as _;
@@ -50,6 +50,8 @@ pub enum GitCommand {
     ScopeCheck(ScopeCheckArgs),
     /// Preview or prune orphaned worktree directories.
     Audit(WorktreeAuditArgs),
+    /// Health sweep over all claim worktrees (flare doctor).
+    Doctor(DoctorArgs),
 }
 
 #[derive(Args)]
@@ -142,6 +144,22 @@ pub struct WorktreeAuditPruneArgs {
     pub all: bool,
 }
 
+#[derive(Args)]
+pub struct DoctorArgs {
+    /// Output format: text, json, or markdown.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+    /// Reclaim clean stale/orphaned/zombie worktrees.
+    #[arg(long)]
+    pub reclaim: bool,
+    /// Force reclaim even dirty lanes (use with caution).
+    #[arg(long)]
+    pub force: bool,
+    /// Staleness threshold in days.
+    #[arg(long, default_value_t = 14)]
+    pub staleness_days: u64,
+}
+
 /// Canonical location: `~/.agentflare/githooks/`.
 fn shared_hooks_dir() -> PathBuf {
     home().join(".agentflare").join("githooks")
@@ -185,6 +203,7 @@ pub fn run(args: GitArgs) {
         GitCommand::RefTransactionLog => ref_transaction_log(),
         GitCommand::ScopeCheck(opts) => scope_check(&opts.subcommand),
         GitCommand::Audit(opts) => worktree_audit_cmd(opts),
+        GitCommand::Doctor(opts) => doctor_cmd(opts),
     }
 }
 
@@ -442,6 +461,31 @@ fn worktree_audit_prune(repo_root: &Path, opts: &WorktreeAuditPruneArgs) {
         for name in to_prune.iter().filter(|n| !deleted.contains(n)) {
             eprintln!("warning: failed to prune '{}'", name);
         }
+    }
+}
+
+fn doctor_cmd(args: DoctorArgs) {
+    let Some(repo_root) = resolve_repo_root("doctor") else {
+        return;
+    };
+    let report = doctor::scan(&repo_root, args.staleness_days);
+    if args.reclaim {
+        let reclaimed = doctor::reclaim(&repo_root, &report, args.force);
+        if reclaimed.is_empty() {
+            println!("No reclaimable lanes found.");
+        } else {
+            for name in &reclaimed {
+                println!("reclaimed: {}", name);
+            }
+        }
+    }
+    match args.format.as_str() {
+        "json" => println!("{}", doctor::format_json(&report)),
+        "markdown" => println!("{}", doctor::format_markdown(&report)),
+        _ => println!("{}", doctor::format_text(&report)),
+    }
+    if !report.violations.is_empty() {
+        std::process::exit(1);
     }
 }
 
