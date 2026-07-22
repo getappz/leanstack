@@ -13,8 +13,10 @@
 
 use crate::paths::home;
 use clap::{Args, Subcommand};
-use flare_git_core::{audit, branch, classify, provenance, scope, shell, snapshot, worktree};
-use std::collections::HashSet;
+use flare_git_core::{
+    audit, branch, classify, doctor, provenance, scope, shell, snapshot, worktree,
+};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -50,6 +52,8 @@ pub enum GitCommand {
     ScopeCheck(ScopeCheckArgs),
     /// Preview or prune orphaned worktree directories.
     Audit(WorktreeAuditArgs),
+    /// Health sweep over all claim worktrees (flare doctor).
+    Doctor(DoctorArgs),
 }
 
 #[derive(Args)]
@@ -142,6 +146,29 @@ pub struct WorktreeAuditPruneArgs {
     pub all: bool,
 }
 
+#[derive(Args)]
+pub struct DoctorArgs {
+    /// Output format: text, json, or markdown.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: DoctorFormat,
+    /// Reclaim clean stale/orphaned/zombie worktrees.
+    #[arg(long)]
+    pub reclaim: bool,
+    /// Force reclaim even dirty lanes (use with caution).
+    #[arg(long)]
+    pub force: bool,
+    /// Staleness threshold in days.
+    #[arg(long, default_value_t = 14)]
+    pub staleness_days: u64,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum DoctorFormat {
+    Text,
+    Json,
+    Markdown,
+}
+
 /// Canonical location: `~/.agentflare/githooks/`.
 fn shared_hooks_dir() -> PathBuf {
     home().join(".agentflare").join("githooks")
@@ -185,6 +212,7 @@ pub fn run(args: GitArgs) {
         GitCommand::RefTransactionLog => ref_transaction_log(),
         GitCommand::ScopeCheck(opts) => scope_check(&opts.subcommand),
         GitCommand::Audit(opts) => worktree_audit_cmd(opts),
+        GitCommand::Doctor(opts) => doctor_cmd(opts),
     }
 }
 
@@ -445,6 +473,34 @@ fn worktree_audit_prune(repo_root: &Path, opts: &WorktreeAuditPruneArgs) {
     }
 }
 
+fn doctor_cmd(args: DoctorArgs) {
+    let Some(repo_root) = resolve_repo_root("doctor") else {
+        return;
+    };
+    let item_states = item_state_groups();
+    let report = doctor::scan(&repo_root, args.staleness_days, &item_states);
+    if args.reclaim {
+        let reclaimed = doctor::reclaim(&repo_root, &report, args.force);
+        // Status lines go to stderr, not stdout -- `--format json` output on
+        // stdout must stay machine-parseable (e.g. piped to `jq`).
+        if reclaimed.is_empty() {
+            eprintln!("No reclaimable lanes found.");
+        } else {
+            for name in &reclaimed {
+                eprintln!("reclaimed: {}", name);
+            }
+        }
+    }
+    match args.format {
+        DoctorFormat::Json => println!("{}", doctor::format_json(&report)),
+        DoctorFormat::Markdown => println!("{}", doctor::format_markdown(&report)),
+        DoctorFormat::Text => println!("{}", doctor::format_text(&report)),
+    }
+    if !report.violations.is_empty() {
+        std::process::exit(1);
+    }
+}
+
 /// Build set of claimed item sequence_ids from the DB.
 fn claimed_sequence_ids(_repo_root: &Path) -> HashSet<String> {
     let conn = match crate::db::open() {
@@ -474,6 +530,32 @@ fn claimed_sequence_ids(_repo_root: &Path) -> HashSet<String> {
         .filter(|(id, _)| claimed_ids.contains(id))
         .map(|(_, seq)| seq.to_string())
         .collect()
+}
+
+/// Map of item `sequence_id` (as a string, matching `doctor::LaneHealth`) to
+/// its state's `group_name` (e.g. "completed", "cancelled") — used by
+/// `flare doctor` to flag a worktree as orphaned when the item behind it is
+/// done but the worktree wasn't cleaned up. Best-effort: an empty map on any
+/// DB error just means orphan detection silently finds nothing, matching
+/// this file's existing soft-fail convention (see `claimed_sequence_ids`).
+fn item_state_groups() -> HashMap<String, String> {
+    let conn = match crate::db::open() {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT i.sequence_id, s.group_name FROM items i \
+         JOIN states s ON i.state_id = s.id WHERE i.deleted_at IS NULL",
+    ) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    match stmt.query_map([], |r| {
+        Ok((r.get::<_, i64>(0)?.to_string(), r.get::<_, String>(1)?))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => HashMap::new(),
+    }
 }
 
 /// Resolves the git repo root from the current working directory, printing
