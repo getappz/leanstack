@@ -578,19 +578,30 @@ fn run_scope_check(subcommand: &str) -> ScopeCheckResult {
 }
 
 /// Changed paths for the mutation about to happen -- staged paths for
-/// `commit`, paths diffed against the default branch for `push`. A v1
-/// simplification for `push`: diffs current-vs-default rather than parsing
-/// the actual push refspec across the CLI subprocess boundary. An
-/// unreadable diff yields no changed paths (nothing to enforce), matching
+/// `commit` (unioned with the working-tree diff, since `git commit -a`/
+/// `--all` implicitly stages+commits tracked modifications without a prior
+/// `git add` -- checking `--cached` alone would let those paths bypass
+/// scope enforcement entirely), paths diffed against the default branch for
+/// `push`. A v1 simplification for `push`: diffs current-vs-default rather
+/// than parsing the actual push refspec across the CLI subprocess boundary.
+/// An unreadable diff yields no changed paths (nothing to enforce), matching
 /// this crate's fail-open default for diff resolution specifically -- only
 /// scope RESOLUTION errors (ledger/DB) are fail-closed, per the spec.
 fn changed_paths(repo_root: &Path, subcommand: &str) -> Vec<String> {
+    if subcommand == "commit" {
+        let mut paths: Vec<String> = shell::run_in(repo_root, &["diff", "--cached", "--name-only"])
+            .map(|s| s.lines().map(String::from).collect())
+            .unwrap_or_default();
+        paths.extend(
+            shell::run_in(repo_root, &["diff", "--name-only"])
+                .map(|s| s.lines().map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
+        paths.sort();
+        paths.dedup();
+        return paths;
+    }
     let range_args: Vec<String> = match subcommand {
-        "commit" => vec![
-            "diff".to_string(),
-            "--cached".to_string(),
-            "--name-only".to_string(),
-        ],
         "push" => {
             let default_branch = branch::resolve_default_branch(repo_root);
             let current =
@@ -604,4 +615,68 @@ fn changed_paths(repo_root: &Path, subcommand: &str) -> Vec<String> {
     shell::run_in(repo_root, &args)
         .map(|s| s.lines().map(String::from).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn init_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(dir.path(), &["init", "-q", "-b", "master"]);
+        run_git(dir.path(), &["config", "user.email", "t@t"]);
+        run_git(dir.path(), &["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("tracked.txt"), "v1\n").unwrap();
+        run_git(dir.path(), &["add", "tracked.txt"]);
+        run_git(dir.path(), &["commit", "-q", "-m", "seed"]);
+        dir
+    }
+
+    #[test]
+    fn changed_paths_for_commit_includes_unstaged_modifications_not_just_staged() {
+        // Regression for the CodeRabbit-flagged bypass on PR #303: `git
+        // commit -a`/`--all` implicitly stages+commits tracked
+        // modifications without a prior `git add`, so checking only
+        // `--cached` would miss them and let the change bypass scope
+        // enforcement entirely.
+        let repo = init_repo();
+        std::fs::write(repo.path().join("tracked.txt"), "v2\n").unwrap();
+        let paths = changed_paths(repo.path(), "commit");
+        assert!(
+            paths.iter().any(|p| p == "tracked.txt"),
+            "unstaged modification must be included: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn changed_paths_for_commit_dedupes_staged_and_unstaged() {
+        let repo = init_repo();
+        std::fs::write(repo.path().join("new.txt"), "x\n").unwrap();
+        run_git(repo.path(), &["add", "new.txt"]);
+        let paths = changed_paths(repo.path(), "commit");
+        assert_eq!(
+            paths.iter().filter(|p| *p == "new.txt").count(),
+            1,
+            "{paths:?}"
+        );
+    }
+
+    #[test]
+    fn changed_paths_for_commit_is_empty_when_clean() {
+        let repo = init_repo();
+        assert!(changed_paths(repo.path(), "commit").is_empty());
+    }
 }

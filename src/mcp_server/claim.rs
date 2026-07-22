@@ -30,6 +30,10 @@ impl AgentflareMcp {
                     Self::git_provenance().and_then(|g| g.commit)
                 };
                 let scope_arg = (!req.scope.is_empty()).then_some(req.scope.as_slice());
+                let clear_warning =
+                    crate::claims::scope_clear_warning(&conn, &repo, &target, scope_arg)
+                        .ok()
+                        .flatten();
                 let outcome = crate::claims::acquire(
                     &conn,
                     &repo,
@@ -43,17 +47,19 @@ impl AgentflareMcp {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(match outcome {
                     crate::claims::Acquire::Acquired => {
-                        let scope_warning = scope_arg.and_then(|s| {
-                            crate::claims::scope_overlap_warning(
-                                &conn,
-                                &repo,
-                                &target,
-                                s,
-                                crate::claims::now(),
-                                crate::claims::ttl_secs(),
-                            )
-                            .ok()
-                            .flatten()
+                        let scope_warning = clear_warning.or_else(|| {
+                            scope_arg.and_then(|s| {
+                                crate::claims::scope_overlap_warning(
+                                    &conn,
+                                    &repo,
+                                    &target,
+                                    s,
+                                    crate::claims::now(),
+                                    crate::claims::ttl_secs(),
+                                )
+                                .ok()
+                                .flatten()
+                            })
                         });
                         serde_json::json!({ "status": "acquired", "repo": repo, "target": target, "owner": owner, "scope_warning": scope_warning })
                     }

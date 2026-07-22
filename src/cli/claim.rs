@@ -153,6 +153,9 @@ fn acquire_cmd(
     let commit = if repo.is_none() { git_commit() } else { None };
     let repo = require_repo(repo);
     let scope_arg = (!scope.is_empty()).then_some(scope.as_slice());
+    let clear_warning = crate::claims::scope_clear_warning(conn, &repo, &target, scope_arg)
+        .ok()
+        .flatten();
     match crate::claims::acquire(
         conn,
         &repo,
@@ -165,7 +168,9 @@ fn acquire_cmd(
     ) {
         Ok(crate::claims::Acquire::Acquired) => {
             println!("claimed {repo} {target}  (owner {owner})");
-            if let Some(s) = scope_arg {
+            if let Some(warning) = clear_warning {
+                crate::ui::error(&format!("warning: {warning}"));
+            } else if let Some(s) = scope_arg {
                 let warning =
                     crate::claims::scope_overlap_warning(conn, &repo, &target, s, now, ttl);
                 if let Ok(Some(warning)) = warning {

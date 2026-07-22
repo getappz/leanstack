@@ -16,7 +16,7 @@
 //! below for how it's threaded through instead.
 pub use db_kit::claim::Acquire;
 use db_kit::claim::ClaimLedger;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Default lease: a claim whose owner hasn't heartbeat within this window is
 /// stealable, so a crashed/hung agent can't wedge a target forever.
@@ -209,6 +209,41 @@ pub fn scope_overlap_warning(
         }
     }
     Ok(None)
+}
+
+/// Best-effort claim-time warning: does re-acquiring with `new_scope` clear
+/// an existing, previously-declared non-empty scope? `acquire()` always
+/// overwrites the `scope` column (mirroring `git_commit`'s always-overwrite
+/// behavior), so a caller re-acquiring an already-held claim without
+/// re-supplying `--scope`/`scope` silently disables path-scope enforcement
+/// for it -- read BEFORE calling `acquire()` so this reflects the row's
+/// state prior to the overwrite.
+pub fn scope_clear_warning(
+    conn: &Connection,
+    repo: &str,
+    target: &str,
+    new_scope: Option<&[String]>,
+) -> rusqlite::Result<Option<String>> {
+    if new_scope.is_some_and(|s| !flare_git_core::scope::scope_is_wildcard_or_empty(s)) {
+        return Ok(None); // caller is declaring a real scope -- nothing being cleared
+    }
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT scope FROM claims WHERE repo = ?1 AND target = ?2",
+            params![repo, target],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let existing_scope: Vec<String> = existing
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    if flare_git_core::scope::scope_is_wildcard_or_empty(&existing_scope) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "re-acquiring without --scope clears the existing scope {existing_scope:?} -- pass --scope again to keep enforcement active"
+    )))
 }
 
 // --- identity / config resolution (impure; thin wrappers over env + git) ---
@@ -429,6 +464,43 @@ mod tests {
         acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
         let claims = list(&c, Some("o/r"), true, 1000, TTL).unwrap();
         assert!(claims[0].scope.is_empty());
+    }
+
+    #[test]
+    fn scope_clear_warning_fires_only_when_clearing_a_real_existing_scope() {
+        let c = mem();
+        let scope = vec!["crates/foo/".to_string()];
+
+        // No existing claim yet -- nothing to clear.
+        assert!(
+            scope_clear_warning(&c, "o/r", "issue#1", None)
+                .unwrap()
+                .is_none()
+        );
+
+        acquire(&c, "o/r", "issue#1", "a:1", None, Some(&scope), 1000, TTL).unwrap();
+
+        // Re-declaring a real scope isn't a clear.
+        let other_scope = vec!["crates/bar/".to_string()];
+        assert!(
+            scope_clear_warning(&c, "o/r", "issue#1", Some(&other_scope))
+                .unwrap()
+                .is_none()
+        );
+
+        // Re-acquiring with no scope WOULD clear the existing one -- warn.
+        let warning = scope_clear_warning(&c, "o/r", "issue#1", None)
+            .unwrap()
+            .expect("clearing a declared scope must warn");
+        assert!(warning.contains("crates/foo/"), "{warning}");
+
+        // Once cleared, re-checking with no scope is a no-op (nothing left to clear).
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
+        assert!(
+            scope_clear_warning(&c, "o/r", "issue#1", None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
