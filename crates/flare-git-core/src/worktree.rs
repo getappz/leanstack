@@ -541,11 +541,13 @@ pub fn audit_orphans(
     orphans
 }
 
-/// Delete orphaned worktrees: snapshot first, then remove.
+/// Delete orphaned worktrees: snapshot first, then remove with retry.
 ///
 /// Takes a list of worktree names (as returned by `audit_orphans`) and
-/// snapshots each one before removing it. Returns the names actually
-/// deleted.
+/// snapshots each one before removing it. Removal uses `remove_worktree_dir`
+/// which retries with exponential backoff on Windows, falls back to `cmd /c
+/// rmdir`, and reports locking processes via handle64.exe when present.
+/// Returns the names actually deleted.
 pub fn gc_orphans(repo_root: &Path, names: &[String]) -> Vec<String> {
     let mut deleted = Vec::new();
     for name in names {
@@ -565,14 +567,8 @@ pub fn gc_orphans(repo_root: &Path, names: &[String]) -> Vec<String> {
             );
             continue;
         }
-        // Remove the worktree directory
-        match std::fs::remove_dir_all(&worktree_path) {
-            Ok(()) => {
-                deleted.push(name.clone());
-            }
-            Err(e) => {
-                eprintln!("worktree: failed to remove orphan '{}': {}", name, e);
-            }
+        if remove_worktree_dir(&worktree_path, name) {
+            deleted.push(name.clone());
         }
     }
     // Prune git's worktree metadata after removal
@@ -580,6 +576,59 @@ pub fn gc_orphans(repo_root: &Path, names: &[String]) -> Vec<String> {
         let _ = crate::shell::run_in(repo_root, &["worktree", "prune"]);
     }
     deleted
+}
+
+/// Remove a worktree directory, with retry + Windows fallback.
+///
+/// On Windows, background processes (rust-analyzer, proc-macro-srv) may
+/// hold file handles that block `remove_dir_all` with Permission denied.
+/// Retries with exponential backoff, falls back to `cmd /c rmdir`, and
+/// attempts to identify the locking process via handle64.exe when present.
+fn remove_worktree_dir(path: &Path, name: &str) -> bool {
+    let delays_ms = [100u64, 200, 400, 800, 1600];
+    for delay in &delays_ms {
+        if std::fs::remove_dir_all(path).is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(*delay));
+    }
+    if std::fs::remove_dir_all(path).is_ok() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        if std::process::Command::new("cmd")
+            .args(["/c", "rmdir", "/s", "/q", &path.to_string_lossy()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+
+        for handle_exe in &["handle64.exe", "handle.exe"] {
+            if let Ok(output) = std::process::Command::new(handle_exe)
+                .args(["-accepteula", "-nobanner", &path.to_string_lossy()])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output()
+            {
+                if output.status.success() {
+                    let out = String::from_utf8_lossy(&output.stdout);
+                    for line in out.lines().take(5) {
+                        eprintln!("worktree: locking process for '{}': {}", name, line);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    eprintln!("worktree: failed to remove orphan '{}': Permission denied", name);
+    false
 }
 
 /// Recursive directory size in bytes.
