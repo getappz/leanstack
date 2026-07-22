@@ -445,8 +445,6 @@ fn worktree_audit_prune(repo_root: &Path, opts: &WorktreeAuditPruneArgs) {
     }
 }
 
-/// Resolves the git repo root from the current working directory, printing
-/// a consistent error and returning `None` if we're not inside one.
 /// Build set of claimed item sequence_ids from the DB.
 fn claimed_sequence_ids(_repo_root: &Path) -> HashSet<String> {
     let conn = match crate::db::open() {
@@ -478,6 +476,8 @@ fn claimed_sequence_ids(_repo_root: &Path) -> HashSet<String> {
         .collect()
 }
 
+/// Resolves the git repo root from the current working directory, printing
+/// a consistent error and returning `None` if we're not inside one.
 fn resolve_repo_root(command_name: &str) -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     let root = branch::repo_toplevel(&cwd);

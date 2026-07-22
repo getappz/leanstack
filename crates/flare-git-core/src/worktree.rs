@@ -488,14 +488,15 @@ pub fn audit_orphans(
         return Vec::new();
     }
     let mut orphans = Vec::new();
-    let entries = match walkdir::WalkDir::new(&task_dir)
+    // filter_map skips unreadable entries individually rather than failing
+    // the whole scan on the first error -- a single permission-denied or
+    // transient FS error on one subdirectory must not hide real orphans
+    // sitting alongside it.
+    let entries: Vec<_> = walkdir::WalkDir::new(&task_dir)
         .max_depth(1)
         .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(e) => e,
-        Err(_) => return orphans,
-    };
+        .filter_map(std::result::Result::ok)
+        .collect();
     for entry in entries.iter().skip(1) {
         let path = entry.path();
         if !path.is_dir() {
@@ -552,9 +553,18 @@ pub fn gc_orphans(repo_root: &Path, names: &[String]) -> Vec<String> {
         if !worktree_path.exists() {
             continue;
         }
-        // Snapshot before deletion
+        // Snapshot before deletion -- abort this orphan's removal if the
+        // snapshot itself fails, since that snapshot is the only recovery
+        // point a destructive delete has; deleting anyway would defeat the
+        // whole point of snapshotting first.
         let reason = format!("gc orphan worktree {}", name);
-        let _ = crate::snapshot::snapshot_before(repo_root, &reason);
+        if let Err(e) = crate::snapshot::snapshot_before(repo_root, &reason) {
+            eprintln!(
+                "worktree: skipping orphan '{}', snapshot failed: {}",
+                name, e
+            );
+            continue;
+        }
         // Remove the worktree directory
         match std::fs::remove_dir_all(&worktree_path) {
             Ok(()) => {
