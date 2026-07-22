@@ -236,16 +236,13 @@ dependencies = [
  "agentflare-agent-registry",
  "agentflare-gateway-registry",
  "dirs",
- "fastrand",
  "flare-search-kit",
  "regex",
  "rusqlite",
  "serde",
- "serde_json",
  "serde_yaml_ng",
  "tempfile",
  "thiserror",
- "ureq 2.12.1",
 ]
 
 [[package]]
