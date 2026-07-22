@@ -7,6 +7,7 @@ use skill::source::parse_source;
 use skill::types::{
     AgentConfig, AgentId, DiscoverOptions, InstallMode, InstallOptions, InstallScope,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
@@ -25,6 +26,33 @@ pub enum SkillAction {
         #[command(subcommand)]
         action: RegistryAction,
     },
+    /// Run search-quality evaluation against the indexed skills and report
+    /// Hit@1/Hit@3/MRR/nDCG. Fails with a non-zero exit when any metric
+    /// drops below its configured floor.
+    Eval,
+    /// Export all skills to a JSON bundle file.
+    Export {
+        /// Output file path (default: skills-bundle.json)
+        output: Option<String>,
+    },
+    /// Import skills from a JSON bundle file (with dedup).
+    Import {
+        /// Path to the JSON bundle file.
+        path: String,
+    },
+    /// Push/pull skill bundles to/from a remote hub.
+    Hub {
+        #[command(subcommand)]
+        action: HubAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubAction {
+    /// Pull skills from a remote hub URL and merge into local DB.
+    Pull { url: String },
+    /// Push local skills to a remote hub URL.
+    Push { url: String },
 }
 
 #[derive(Subcommand)]
@@ -245,6 +273,381 @@ fn run_registry(action: RegistryAction) {
     }
 }
 
+/// Labeled query for `skill eval`. `relevance` is on a 0-3 scale:
+/// 3 = perfect match (the skill is about exactly this), 2 = good match,
+/// 1 = marginal, 0 = irrelevant.
+struct EvalQuery {
+    query: &'static str,
+    expected: &'static str,
+    relevance: u32,
+}
+
+const EVAL_QUERIES: &[EvalQuery] = &[
+    EvalQuery {
+        query: "what's running right now",
+        expected: "live",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "are my agents stuck",
+        expected: "live",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "check on background sessions",
+        expected: "live",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "how much did I spend on tokens this week",
+        expected: "cv-usage",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "usage statistics",
+        expected: "cv-usage",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "session count report",
+        expected: "cv-usage",
+        relevance: 2,
+    },
+    EvalQuery {
+        query: "my disk is full",
+        expected: "win-cleanup",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "free up space on windows",
+        expected: "win-cleanup",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "clean temp files",
+        expected: "win-cleanup",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "review my diff for bugs",
+        expected: "code-review",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "check this code for correctness",
+        expected: "code-review",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "find efficiency cleanups",
+        expected: "code-review",
+        relevance: 2,
+    },
+    EvalQuery {
+        query: "research this topic with cited sources",
+        expected: "deep-research",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "fan out web searches and verify claims",
+        expected: "deep-research",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "write me a fact checked report",
+        expected: "deep-research",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "this skill is too verbose",
+        expected: "short-skill",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "compress a bloated skill",
+        expected: "short-skill",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "make a shorthand version of a skill",
+        expected: "short-skill",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "skill is token heavy",
+        expected: "short-skill",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "what needs my attention",
+        expected: "live",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "system slow disk space",
+        expected: "win-cleanup",
+        relevance: 2,
+    },
+    EvalQuery {
+        query: "token spend this month",
+        expected: "cv-usage",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "debug this pull request",
+        expected: "code-review",
+        relevance: 2,
+    },
+    EvalQuery {
+        query: "synthesize research findings",
+        expected: "deep-research",
+        relevance: 3,
+    },
+    EvalQuery {
+        query: "make a shorter skill",
+        expected: "short-skill",
+        relevance: 3,
+    },
+];
+
+struct EvalReport {
+    hit_at_1: f64,
+    hit_at_3: f64,
+    mrr: f64,
+    ndcg: f64,
+    total: usize,
+    passes: u32,
+}
+
+fn run_eval() -> Result<EvalReport, String> {
+    let db_path = crate::paths::skills_db_path();
+    let mut registry =
+        skill_registry::Registry::open_default(&db_path).map_err(|e| e.to_string())?;
+    registry
+        .ensure_fresh(crate::components::detected_skill_agents)
+        .map_err(|e| e.to_string())?;
+
+    let mut hit1 = 0usize;
+    let mut hit3 = 0usize;
+    let mut reciprocal_ranks = Vec::with_capacity(EVAL_QUERIES.len());
+    let mut dcg_scores = Vec::with_capacity(EVAL_QUERIES.len());
+    use skill_registry::MatchMode;
+
+    for eq in EVAL_QUERIES {
+        let mut r = registry
+            .search(eq.query, 3, MatchMode::All)
+            .unwrap_or_default();
+        if r.is_empty() {
+            r = registry
+                .search(eq.query, 3, MatchMode::Any)
+                .unwrap_or_default();
+        }
+
+        let ideal_dcg = (eq.relevance as f64)
+            + if eq.relevance > 0 {
+                eq.relevance as f64 / (2f64).log2()
+            } else {
+                0.0
+            };
+
+        let dcg = r.first().map_or(0.0, |h| {
+            if h.name == eq.expected {
+                eq.relevance as f64
+            } else {
+                0.0
+            }
+        });
+
+        dcg_scores.push((dcg, ideal_dcg));
+
+        if r.first().is_some_and(|h| h.name == eq.expected) {
+            hit1 += 1;
+            hit3 += 1;
+            reciprocal_ranks.push(1.0);
+        } else if r.iter().any(|h| h.name == eq.expected) {
+            hit3 += 1;
+            let pos = r.iter().position(|h| h.name == eq.expected).unwrap_or(2) + 1;
+            reciprocal_ranks.push(1.0 / pos as f64);
+        } else {
+            reciprocal_ranks.push(0.0);
+        }
+    }
+
+    let total = EVAL_QUERIES.len();
+    let hit_at_1 = hit1 as f64 / total as f64;
+    let hit_at_3 = hit3 as f64 / total as f64;
+    let mrr = reciprocal_ranks.iter().sum::<f64>() / total as f64;
+    let ndcg = dcg_scores
+        .iter()
+        .map(|(d, i)| if *i > 0.0 { d / i } else { 0.0 })
+        .sum::<f64>()
+        / total as f64;
+
+    let mut passes = 0u32;
+    if hit_at_1 >= 0.70 {
+        passes += 1;
+    }
+    if hit_at_3 >= 0.85 {
+        passes += 1;
+    }
+    if mrr >= 0.75 {
+        passes += 1;
+    }
+    if ndcg >= 0.80 {
+        passes += 1;
+    }
+
+    Ok(EvalReport {
+        hit_at_1,
+        hit_at_3,
+        mrr,
+        ndcg,
+        total,
+        passes,
+    })
+}
+
+fn print_eval(report: &EvalReport) {
+    println!("━━━ skill eval ━━━");
+    println!("  queries:  {}", report.total);
+    println!(
+        "  Hit@1:    {:.3}  {}",
+        report.hit_at_1,
+        if report.hit_at_1 >= 0.70 {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
+    println!(
+        "  Hit@3:    {:.3}  {}",
+        report.hit_at_3,
+        if report.hit_at_3 >= 0.85 {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
+    println!(
+        "  MRR:      {:.3}  {}",
+        report.mrr,
+        if report.mrr >= 0.75 { "✓" } else { "✗" }
+    );
+    println!(
+        "  nDCG:     {:.3}  {}",
+        report.ndcg,
+        if report.ndcg >= 0.80 { "✓" } else { "✗" }
+    );
+    let verdict = if report.passes == 4 { "PASS" } else { "FAIL" };
+    println!("  verdict:  {verdict} ({}/{})", report.passes, 4);
+}
+
+fn run_export(output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = crate::paths::skills_db_path();
+    let conn = skill_registry::db::open_db(&db_path)?;
+    let pairs = skill_registry::search::list_all_name_source_pairs(&conn)?;
+    let mut entries = Vec::new();
+    for (skill_name, source) in &pairs {
+        let qualified = format!("{source}:{skill_name}");
+        let skill = skill_registry::load(&conn, &qualified, false)?;
+        entries.push(skill_registry::sources::SkillEntry {
+            name: skill_name.clone(),
+            source: source.clone(),
+            path: PathBuf::new(),
+            description: skill.description.clone(),
+            body: skill.body.clone(),
+            neg_text: String::new(),
+            tags: String::new(),
+            est_tokens: skill.body.len() as i64 / 4,
+            mtime: 0,
+            bandit_alpha: 1.0,
+            bandit_beta: 1.0,
+            shadow_path: None,
+        });
+    }
+    let bundle = skill_registry::SkillBundle::new(&entries);
+    let path = output.unwrap_or("skills-bundle.json");
+    std::fs::write(path, bundle.to_json()?)?;
+    println!("exported {} skills to {path}", entries.len());
+    Ok(())
+}
+
+fn run_import(path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let json = std::fs::read_to_string(path)?;
+    let mut bundle = skill_registry::SkillBundle::from_json(&json)?;
+    let deduped = bundle.dedup();
+    if deduped > 0 {
+        eprintln!("note: removed {deduped} duplicate entries during import");
+    }
+    let db_path = crate::paths::skills_db_path();
+    let mut conn = skill_registry::db::open_db(&db_path)?;
+    let entries = bundle.to_entries(Path::new("import"));
+    skill_registry::db::rebuild(&mut conn, &entries)?;
+    Ok(entries.len())
+}
+
+fn run_hub(action: HubAction) -> Result<String, Box<dyn std::error::Error>> {
+    match action {
+        HubAction::Pull { url } => {
+            let bundle = skill_registry::hub::pull_bundle(&url)?;
+            let db_path = crate::paths::skills_db_path();
+            let mut conn = skill_registry::db::open_db(&db_path)?;
+            // Read existing skills from scan sources first, then merge
+            // hub entries on top.
+            let home = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
+            let cwd = std::env::current_dir().ok();
+            let cwd = cwd.as_deref().unwrap_or(Path::new("."));
+            let sources =
+                skill_registry::sources::default_sources(&home, cwd, &["claude-code".to_string()]);
+            let scan = skill_registry::sources::scan_sources(&sources);
+            let local_count = scan.entries.len();
+            let mut all = scan.entries;
+            let local_keys: HashSet<(String, String)> = all
+                .iter()
+                .map(|e| (e.name.clone(), e.source.clone()))
+                .collect();
+            for e in bundle.to_entries(Path::new("hub")) {
+                if !local_keys.contains(&(e.name.clone(), e.source.clone())) {
+                    all.push(e);
+                }
+            }
+            skill_registry::db::rebuild(&mut conn, &all)?;
+            let net_new = all.len() - local_count;
+            Ok(format!(
+                "pulled {net_new} skills from hub, total {}",
+                all.len()
+            ))
+        }
+        HubAction::Push { url } => {
+            let db_path = crate::paths::skills_db_path();
+            let conn = skill_registry::db::open_db(&db_path)?;
+            let pairs = skill_registry::search::list_all_name_source_pairs(&conn)?;
+            let mut entries = Vec::new();
+            for (skill_name, source) in &pairs {
+                let qualified = format!("{source}:{skill_name}");
+                let skill = skill_registry::load(&conn, &qualified, false)?;
+                entries.push(skill_registry::sources::SkillEntry {
+                    name: skill_name.clone(),
+                    source: source.clone(),
+                    path: PathBuf::new(),
+                    description: skill.description.clone(),
+                    body: skill.body.clone(),
+                    neg_text: String::new(),
+                    tags: String::new(),
+                    est_tokens: skill.body.len() as i64 / 4,
+                    mtime: 0,
+                    bandit_alpha: 1.0,
+                    bandit_beta: 1.0,
+                    shadow_path: None,
+                });
+            }
+            let bundle = skill_registry::SkillBundle::new(&entries);
+            skill_registry::hub::push_bundle(&url, &bundle)?;
+            Ok(format!("pushed {} skills to {url}", entries.len()))
+        }
+    }
+}
+
 impl SkillArgs {
     pub fn run(self) {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -269,6 +672,38 @@ impl SkillArgs {
                 }
             }
             SkillAction::Registry { action } => run_registry(action),
+            SkillAction::Export { output } => {
+                if let Err(e) = run_export(output.as_deref()) {
+                    eprintln!("export error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            SkillAction::Import { path } => match run_import(&path) {
+                Err(e) => {
+                    eprintln!("import error: {e}");
+                    std::process::exit(1);
+                }
+                Ok(count) => println!("imported {count} skills"),
+            },
+            SkillAction::Hub { action } => match run_hub(action) {
+                Err(e) => {
+                    eprintln!("hub error: {e}");
+                    std::process::exit(1);
+                }
+                Ok(msg) => println!("{msg}"),
+            },
+            SkillAction::Eval => match run_eval() {
+                Ok(report) => {
+                    print_eval(&report);
+                    if report.passes < 4 {
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("eval error: {e}");
+                    std::process::exit(1);
+                }
+            },
         }
     }
 }

@@ -10,6 +10,7 @@ pub struct LoadedSkill {
     pub source: String,
     pub path: PathBuf,
     pub compressed: bool,
+    pub description: String,
     pub body: String,
     pub siblings: Vec<PathBuf>,
 }
@@ -26,8 +27,48 @@ pub enum LoadError {
     Db(String),
 }
 
-fn row_to_parts(r: &rusqlite::Row) -> rusqlite::Result<(String, String, String, Option<String>)> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+fn row_to_parts(
+    r: &rusqlite::Row,
+) -> rusqlite::Result<(String, String, String, Option<String>, String)> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+}
+
+/// Record that a skill was surfaced in search results (impression).
+/// If the skill is not loaded within the TTL window, bandit_beta will be
+/// incremented (negative feedback). Call this for each result shown to the user.
+pub fn record_impression(conn: &Connection, name: &str, source: &str) -> rusqlite::Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    conn.execute(
+        "INSERT OR REPLACE INTO skill_impressions (name, source, surfaced_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![name, source, now],
+    )?;
+    Ok(())
+}
+
+/// Process stale impressions: any skill surfaced >30s ago that was NOT loaded
+/// gets bandit_beta += 1 (negative feedback). Call periodically (e.g. before
+/// each search) to keep the feedback loop fresh.
+pub fn flush_stale_impressions(conn: &Connection) -> rusqlite::Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let cutoff = now - 30; // 30-second TTL
+    let mut stmt = conn.prepare(
+        "UPDATE skills SET bandit_beta = bandit_beta + 1.0
+         WHERE (name, source) IN (
+           SELECT name, source FROM skill_impressions WHERE surfaced_at < ?1
+         )",
+    )?;
+    stmt.execute(rusqlite::params![cutoff])?;
+    conn.execute(
+        "DELETE FROM skill_impressions WHERE surfaced_at < ?1",
+        rusqlite::params![cutoff],
+    )?;
+    Ok(())
 }
 
 pub fn load(conn: &Connection, name: &str, original: bool) -> Result<LoadedSkill, LoadError> {
@@ -35,11 +76,11 @@ pub fn load(conn: &Connection, name: &str, original: bool) -> Result<LoadedSkill
     // (claude-plugin:cv), so split on the LAST ':' and treat the left part
     // as the source. Fall back to bare-name lookup when no row matches.
     let db = |e: rusqlite::Error| LoadError::Db(e.to_string());
-    let mut candidates: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut candidates: Vec<(String, String, String, Option<String>, String)> = Vec::new();
     if let Some((src, bare)) = name.rsplit_once(':') {
         let row = conn
             .query_row(
-                "SELECT name, source, path, shadow_path FROM skills WHERE name = ?1 AND source = ?2",
+                "SELECT name, source, path, shadow_path, description FROM skills WHERE name = ?1 AND source = ?2",
                 rusqlite::params![bare, src],
                 row_to_parts,
             )
@@ -51,7 +92,9 @@ pub fn load(conn: &Connection, name: &str, original: bool) -> Result<LoadedSkill
     }
     if candidates.is_empty() {
         let mut stmt = conn
-            .prepare("SELECT name, source, path, shadow_path FROM skills WHERE name = ?1")
+            .prepare(
+                "SELECT name, source, path, shadow_path, description FROM skills WHERE name = ?1",
+            )
             .map_err(db)?;
         let rows = stmt
             .query_map([name], row_to_parts)
@@ -63,7 +106,15 @@ pub fn load(conn: &Connection, name: &str, original: bool) -> Result<LoadedSkill
     match candidates.len() {
         0 => Err(LoadError::NotFound(name.to_string())),
         1 => {
-            let (name, source, path, shadow) = candidates.remove(0);
+            let (name, source, path, shadow, description) = candidates.remove(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let _ = conn.execute(
+                "UPDATE skills SET last_used_at = ?1, bandit_alpha = bandit_alpha + 1.0 WHERE name = ?2 AND source = ?3",
+                rusqlite::params![now, name, source],
+            );
             let use_shadow = !original && shadow.is_some();
             let body_path = if use_shadow {
                 PathBuf::from(shadow.clone().unwrap())
@@ -87,6 +138,7 @@ pub fn load(conn: &Connection, name: &str, original: bool) -> Result<LoadedSkill
                 source,
                 path: body_path,
                 compressed: use_shadow,
+                description,
                 body,
                 siblings,
             })
@@ -138,6 +190,13 @@ impl Registry {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let sources = crate::sources::default_sources(&home, &cwd, &self.detected_agents);
         let out = crate::sources::scan_sources(&sources);
+        // Validate entries during refresh; log warnings non-fatally
+        for entry in &out.entries {
+            let warns = crate::sources::validate_entry(entry);
+            for w in &warns {
+                eprintln!("skill [{}]: validation warning: {w}", entry.name);
+            }
+        }
         crate::db::rebuild(&mut self.conn, &out.entries)
             .map_err(|e| LoadError::Db(e.to_string()))?;
         self.last_refresh = std::time::Instant::now();
@@ -189,9 +248,13 @@ mod tests {
                 source: "claude-plugin:cv".into(),
                 path: orig_dir.join("SKILL.md"),
                 description: "d".into(),
+                body: String::new(),
+                neg_text: String::new(),
                 tags: String::new(),
                 est_tokens: 10,
                 mtime: 1,
+                bandit_alpha: 1.0,
+                bandit_beta: 1.0,
                 shadow_path: Some(shadow_dir.join("SKILL.md")),
             },
             SkillEntry {
@@ -199,9 +262,13 @@ mod tests {
                 source: "codex".into(),
                 path: tmp.path().join("codex-live-SKILL.md"),
                 description: "other agent's live".into(),
+                body: String::new(),
+                neg_text: String::new(),
                 tags: String::new(),
                 est_tokens: 10,
                 mtime: 1,
+                bandit_alpha: 1.0,
+                bandit_beta: 1.0,
                 shadow_path: None,
             },
         ];

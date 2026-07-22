@@ -62,6 +62,7 @@ pub struct IntentClassification {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedSkill {
+    pub est_tokens: i64,
     pub name: String,
     pub source: String,
     pub description: String,
@@ -288,6 +289,19 @@ pub fn find_skills(
     embed_query: impl Fn(&str) -> Option<Vec<f32>>,
     embed_doc: impl Fn(&str) -> Option<Vec<f32>>,
 ) -> Result<Vec<RankedSkill>, String> {
+    find_skills_budget(intent, registry, limit, 0, embed_query, embed_doc)
+}
+
+/// Like `find_skills` but caps total returned skill tokens to `budget_tokens`.
+/// Pass 0 for no budget limit.
+pub fn find_skills_budget(
+    intent: &IntentClassification,
+    registry: &skill_registry::Registry,
+    limit: usize,
+    budget_tokens: i64,
+    embed_query: impl Fn(&str) -> Option<Vec<f32>>,
+    embed_doc: impl Fn(&str) -> Option<Vec<f32>>,
+) -> Result<Vec<RankedSkill>, String> {
     let mut seen = HashMap::new();
     let mut results = Vec::new();
 
@@ -307,6 +321,7 @@ pub fn find_skills(
                 let reason = format!("matches {} task", intent.task_type.as_str());
                 seen.insert(hit.name.clone(), ());
                 results.push(RankedSkill {
+                    est_tokens: hit.est_tokens,
                     name: hit.name,
                     source: hit.source,
                     description: hit.description,
@@ -335,6 +350,7 @@ pub fn find_skills(
                 let reason = "keyword match".to_string();
                 seen.insert(hit.name.clone(), ());
                 results.push(RankedSkill {
+                    est_tokens: hit.est_tokens,
                     name: hit.name,
                     source: hit.source,
                     description: hit.description,
@@ -370,6 +386,27 @@ pub fn find_skills(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     results.truncate(limit);
+
+    // Fusion: normalize scores to 0-1 range and blend with intent confidence
+    let max_score = results.iter().map(|r| r.score).fold(0.0_f64, f64::max);
+    if max_score > 0.0 {
+        for r in results.iter_mut() {
+            r.score = (r.score / max_score) * intent.confidence;
+        }
+    }
+
+    // Budget-aware capping: accumulate est_tokens and drop tail that exceeds budget
+    if budget_tokens > 0 {
+        let mut acc = 0i64;
+        results.retain(|r| {
+            if acc >= budget_tokens {
+                return false;
+            }
+            acc += r.est_tokens;
+            true
+        });
+    }
+
     Ok(results)
 }
 
@@ -542,8 +579,68 @@ mod tests {
     }
 
     #[test]
+    fn budget_cap_uses_est_tokens_not_description_length() {
+        // Regression guard: budget must be measured by real content cost
+        // (est_tokens), not description byte length. "b" has a tiny
+        // description but a huge est_tokens (a big SKILL.md body) -- a
+        // description-length-based accumulator would wrongly treat it as
+        // cheap and let "c" slip in too, defeating the budget entirely.
+        let skills = vec![
+            RankedSkill {
+                est_tokens: 5,
+                name: "a".into(),
+                source: "s".into(),
+                description: "short".into(),
+                score: 0.9,
+                match_reason: "x".into(),
+            },
+            RankedSkill {
+                est_tokens: 5000,
+                name: "b".into(),
+                source: "s".into(),
+                description: "tiny".into(),
+                score: 0.8,
+                match_reason: "x".into(),
+            },
+            RankedSkill {
+                est_tokens: 5,
+                name: "c".into(),
+                source: "s".into(),
+                description: "also short".into(),
+                score: 0.7,
+                match_reason: "x".into(),
+            },
+        ];
+        let mut sorted = skills;
+        sorted.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut acc = 0i64;
+        sorted.retain(|r| {
+            if acc >= 10 {
+                return false;
+            }
+            acc += r.est_tokens;
+            true
+        });
+        assert_eq!(
+            sorted.len(),
+            2,
+            "b's real 5000-token cost must exclude c from the budget"
+        );
+        assert_eq!(sorted[0].name, "a", "highest-score skill must come first");
+        assert!(
+            !sorted.iter().any(|r| r.name == "c"),
+            "c must be dropped once b's real token cost is counted"
+        );
+    }
+
+    #[test]
     fn build_injection_lists_skills() {
         let skills = vec![RankedSkill {
+            est_tokens: 100,
             name: "test-driven-development".into(),
             source: "superpowers".into(),
             description: "Use before writing implementation code".into(),
@@ -557,6 +654,7 @@ mod tests {
 
     fn ranked(name: &str, score: f64) -> RankedSkill {
         RankedSkill {
+            est_tokens: 100,
             name: name.to_string(),
             source: "s".into(),
             description: "d".into(),

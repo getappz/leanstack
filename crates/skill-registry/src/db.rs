@@ -6,19 +6,61 @@ use crate::sources::SkillEntry;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
+/// Run PRAGMA integrity_check. Returns error message on failure, None if OK.
+pub fn integrity_check(conn: &Connection) -> Option<String> {
+    let result: Result<String, _> =
+        conn.pragma_query_value(None, "integrity_check", |r| r.get::<_, String>(0));
+    match result {
+        Ok(s) if s == "ok" => None,
+        Ok(s) => Some(s),
+        Err(e) => Some(format!("integrity_check query failed: {e}")),
+    }
+}
+
+/// Open DB with repair: if integrity check fails or open fails, delete the DB
+/// file and create a fresh one.
+pub fn open_or_repair(db_path: &Path) -> rusqlite::Result<Connection> {
+    match open_db(db_path) {
+        Ok(conn) => {
+            if integrity_check(&conn).is_some() {
+                drop(conn);
+                let _ = std::fs::remove_file(db_path);
+                open_db(db_path)
+            } else {
+                Ok(conn)
+            }
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(db_path);
+            open_db(db_path)
+        }
+    }
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS skills (
   name TEXT NOT NULL,
   source TEXT NOT NULL,
   path TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  neg_text TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
   est_tokens INTEGER NOT NULL DEFAULT 0,
   mtime INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL DEFAULT 0,
+  bandit_alpha REAL NOT NULL DEFAULT 1.0,
+  bandit_beta REAL NOT NULL DEFAULT 1.0,
   shadow_path TEXT,
   PRIMARY KEY (name, source)
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(name, description, tags);
+CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(name, description, body, tags, neg_text);
+CREATE TABLE IF NOT EXISTS skill_impressions (
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  surfaced_at INTEGER NOT NULL,
+  PRIMARY KEY (name, source)
+);
 ";
 
 pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
@@ -41,6 +83,17 @@ pub fn open_in_memory() -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// Delete a skill by name and source. Returns true if a row was removed.
+pub fn delete_skill(conn: &Connection, name: &str, source: &str) -> rusqlite::Result<bool> {
+    let affected = conn.execute(
+        "DELETE FROM skills WHERE name = ?1 AND source = ?2",
+        params![name, source],
+    )?;
+    // FTS rowids match skills rowids; a dangling FTS row is harmless
+    // because search() JOINs against skills and won't return it.
+    Ok(affected > 0)
+}
+
 pub fn rebuild(conn: &mut Connection, entries: &[SkillEntry]) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM skills", [])?;
@@ -49,11 +102,11 @@ pub fn rebuild(conn: &mut Connection, entries: &[SkillEntry]) -> rusqlite::Resul
         // OR IGNORE: a single bad skill (duplicate (name, source)) must not
         // roll back the whole rebuild and disable every skill_search/skill_load.
         let mut ins = tx.prepare(
-            "INSERT OR IGNORE INTO skills (name, source, path, description, tags, est_tokens, mtime, shadow_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR IGNORE INTO skills (name, source, path, description, body, neg_text, tags, est_tokens, mtime, last_used_at, bandit_alpha, bandit_beta, shadow_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?11, ?12, ?10)",
         )?;
         let mut fts = tx.prepare(
-            "INSERT INTO skills_fts (rowid, name, description, tags) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO skills_fts (rowid, name, description, body, tags, neg_text) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for e in entries {
             ins.execute(params![
@@ -61,12 +114,16 @@ pub fn rebuild(conn: &mut Connection, entries: &[SkillEntry]) -> rusqlite::Resul
                 e.source,
                 e.path.to_string_lossy(),
                 e.description,
+                e.body,
+                e.neg_text,
                 e.tags,
                 e.est_tokens,
                 e.mtime,
                 e.shadow_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string()),
+                e.bandit_alpha,
+                e.bandit_beta,
             ])?;
             if tx.changes() == 0 {
                 // Duplicate (name, source) was ignored: no new skills row,
@@ -74,7 +131,14 @@ pub fn rebuild(conn: &mut Connection, entries: &[SkillEntry]) -> rusqlite::Resul
                 continue;
             }
             let rowid = tx.last_insert_rowid();
-            fts.execute(params![rowid, e.name, e.description, e.tags])?;
+            fts.execute(params![
+                rowid,
+                e.name,
+                e.description,
+                e.body,
+                e.tags,
+                e.neg_text
+            ])?;
         }
     }
     tx.commit()
@@ -91,9 +155,13 @@ mod tests {
             source: source.into(),
             path: PathBuf::from(format!("/x/{name}/SKILL.md")),
             description: desc.into(),
+            body: String::new(),
+            neg_text: String::new(),
             tags: String::new(),
             est_tokens: 100,
             mtime: 1,
+            bandit_alpha: 1.0,
+            bandit_beta: 1.0,
             shadow_path: None,
         }
     }
