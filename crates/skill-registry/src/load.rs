@@ -111,21 +111,29 @@ pub struct Registry {
 pub const REFRESH_DEBOUNCE_SECS: u64 = 60;
 
 impl Registry {
-    pub fn open_default(db_path: &Path, detected_agents: Vec<String>) -> Result<Self, LoadError> {
+    pub fn open_default(db_path: &Path) -> Result<Self, LoadError> {
         let conn = crate::db::open_db(db_path).map_err(|e| LoadError::Db(e.to_string()))?;
         Ok(Registry {
             conn,
-            detected_agents,
+            detected_agents: Vec::new(),
             last_refresh: std::time::Instant::now(),
             refreshed_once: false,
         })
     }
 
-    /// Rescan sources when never scanned or debounce elapsed.
-    pub fn ensure_fresh(&mut self) -> Result<(), LoadError> {
+    /// Rescan sources when never scanned or debounce elapsed. `detect_agents` is
+    /// only invoked when a rescan actually happens (not on every debounced call),
+    /// so a long-lived cached `Registry` (e.g. mcp_server.rs's per-process cache)
+    /// still picks up newly-installed agent CLIs roughly every
+    /// `REFRESH_DEBOUNCE_SECS`, instead of freezing detection at construction time.
+    pub fn ensure_fresh(
+        &mut self,
+        detect_agents: impl FnOnce() -> Vec<String>,
+    ) -> Result<(), LoadError> {
         if self.refreshed_once && self.last_refresh.elapsed().as_secs() < REFRESH_DEBOUNCE_SECS {
             return Ok(());
         }
+        self.detected_agents = detect_agents();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let sources = crate::sources::default_sources(&home, &cwd, &self.detected_agents);

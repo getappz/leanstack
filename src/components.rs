@@ -217,12 +217,11 @@ pub(crate) fn detected_skill_agents() -> Vec<String> {
 /// from, so "known skills" here always matches what those tools can find.
 #[cfg(feature = "skill-overrides-sync")]
 fn discover_skill_names() -> Result<Vec<String>, String> {
-    let mut registry = skill_registry::Registry::open_default(
-        &crate::paths::skills_db_path(),
-        detected_skill_agents(),
-    )
-    .map_err(|e| e.to_string())?;
-    registry.ensure_fresh().map_err(|e| e.to_string())?;
+    let mut registry = skill_registry::Registry::open_default(&crate::paths::skills_db_path())
+        .map_err(|e| e.to_string())?;
+    registry
+        .ensure_fresh(detected_skill_agents)
+        .map_err(|e| e.to_string())?;
     registry.list_all_names().map_err(|e| e.to_string())
 }
 
