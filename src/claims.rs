@@ -16,7 +16,7 @@
 //! below for how it's threaded through instead.
 pub use db_kit::claim::Acquire;
 use db_kit::claim::ClaimLedger;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Default lease: a claim whose owner hasn't heartbeat within this window is
 /// stealable, so a crashed/hung agent can't wedge a target forever.
@@ -36,7 +36,21 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             git_commit   TEXT,
             PRIMARY KEY (repo, target)
         );",
-    )
+    )?;
+    add_scope_column_if_missing(conn)
+}
+
+/// Additive migration for installs that created `claims` before the `scope`
+/// column existed — unlike `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD
+/// COLUMN` isn't naturally idempotent, so this checks first.
+fn add_scope_column_if_missing(conn: &Connection) -> rusqlite::Result<()> {
+    let has_scope: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('claims') WHERE name = 'scope'")?
+        .exists([])?;
+    if !has_scope {
+        conn.execute("ALTER TABLE claims ADD COLUMN scope TEXT", [])?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -48,6 +62,10 @@ pub struct Claim {
     pub created_at: i64,
     pub heartbeat_at: i64,
     pub git_commit: Option<String>,
+    /// Path globs this claim's owner declared write ownership over. Empty
+    /// (the back-compat default) means "no scope declared" — never used to
+    /// deny another agent (see `flare_git_core::scope`).
+    pub scope: Vec<String>,
     /// Heartbeat older than the TTL — the claim is effectively available.
     pub stale: bool,
 }
@@ -58,22 +76,28 @@ pub struct Claim {
 /// generic `ClaimLedger` knows about, so it can't be part of the atomic
 /// upsert itself; this is a deliberate two-step, not an oversight, and it's
 /// safe because the second statement only ever touches a row we just won.
+// 8 positional args (one over clippy's default threshold) is still the
+// clearest signature here -- every param is self-explanatory, and this
+// ledger already has no builder/options-struct precedent elsewhere.
+#[allow(clippy::too_many_arguments)]
 pub fn acquire(
     conn: &Connection,
     repo: &str,
     target: &str,
     owner: &str,
     git_commit: Option<&str>,
+    scope: Option<&[String]>,
     now: i64,
     ttl_secs: i64,
 ) -> rusqlite::Result<Acquire> {
     let outcome = LEDGER.acquire(conn, &[repo, target], owner, now, ttl_secs)?;
     if outcome == Acquire::Acquired {
+        let scope_json = scope.map(|s| serde_json::to_string(s).unwrap_or_default());
         // Scoped to owner: if another owner steals the lease between LEDGER.acquire()
         // and this UPDATE, this must not overwrite their row's provenance with ours.
         conn.execute(
-            "UPDATE claims SET git_commit = ?3 WHERE repo = ?1 AND target = ?2 AND owner = ?4",
-            params![repo, target, git_commit, owner],
+            "UPDATE claims SET git_commit = ?3, scope = ?5 WHERE repo = ?1 AND target = ?2 AND owner = ?4",
+            params![repo, target, git_commit, owner, scope_json],
         )?;
     }
     Ok(outcome)
@@ -119,7 +143,7 @@ pub fn list(
 ) -> rusqlite::Result<Vec<Claim>> {
     let stale_before = now - ttl_secs;
     let mut stmt = conn.prepare(
-        "SELECT repo, target, owner, status, created_at, heartbeat_at, git_commit
+        "SELECT repo, target, owner, status, created_at, heartbeat_at, git_commit, scope
          FROM claims
          WHERE (?1 IS NULL OR repo = ?1)
          ORDER BY repo, target",
@@ -127,6 +151,7 @@ pub fn list(
     let rows = stmt.query_map(params![repo], |r| {
         let heartbeat_at: i64 = r.get(5)?;
         let status: String = r.get(3)?;
+        let scope_json: Option<String> = r.get(7)?;
         Ok(Claim {
             repo: r.get(0)?,
             target: r.get(1)?,
@@ -136,6 +161,9 @@ pub fn list(
             created_at: r.get(4)?,
             heartbeat_at,
             git_commit: r.get(6)?,
+            scope: scope_json
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
         })
     })?;
     let all: Vec<Claim> = rows.collect::<Result<_, _>>()?;
@@ -146,6 +174,76 @@ pub fn list(
             .filter(|c| c.status == "claimed" && !c.stale)
             .collect()
     })
+}
+
+/// Best-effort claim-time warning (never blocks -- v1 scope enforcement is
+/// at mutation time, see `flare_git_core::scope`): does `scope` overlap a
+/// DIFFERENT live claim's declared scope in the same repo?
+pub fn scope_overlap_warning(
+    conn: &Connection,
+    repo: &str,
+    target: &str,
+    scope: &[String],
+    now: i64,
+    ttl_secs: i64,
+) -> rusqlite::Result<Option<String>> {
+    if flare_git_core::scope::scope_is_wildcard_or_empty(scope) {
+        return Ok(None);
+    }
+    let others = list(conn, Some(repo), false, now, ttl_secs)?;
+    for other in others {
+        if other.target == target || flare_git_core::scope::scope_is_wildcard_or_empty(&other.scope)
+        {
+            continue;
+        }
+        if scope.iter().any(|a| {
+            other
+                .scope
+                .iter()
+                .any(|b| flare_git_core::scope::globs_overlap(a, b))
+        }) {
+            return Ok(Some(format!(
+                "scope overlaps live claim '{}' (owner {}, scope {:?})",
+                other.target, other.owner, other.scope
+            )));
+        }
+    }
+    Ok(None)
+}
+
+/// Best-effort claim-time warning: does re-acquiring with `new_scope` clear
+/// an existing, previously-declared non-empty scope? `acquire()` always
+/// overwrites the `scope` column (mirroring `git_commit`'s always-overwrite
+/// behavior), so a caller re-acquiring an already-held claim without
+/// re-supplying `--scope`/`scope` silently disables path-scope enforcement
+/// for it -- read BEFORE calling `acquire()` so this reflects the row's
+/// state prior to the overwrite.
+pub fn scope_clear_warning(
+    conn: &Connection,
+    repo: &str,
+    target: &str,
+    new_scope: Option<&[String]>,
+) -> rusqlite::Result<Option<String>> {
+    if new_scope.is_some_and(|s| !flare_git_core::scope::scope_is_wildcard_or_empty(s)) {
+        return Ok(None); // caller is declaring a real scope -- nothing being cleared
+    }
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT scope FROM claims WHERE repo = ?1 AND target = ?2",
+            params![repo, target],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let existing_scope: Vec<String> = existing
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    if flare_git_core::scope::scope_is_wildcard_or_empty(&existing_scope) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "re-acquiring without --scope clears the existing scope {existing_scope:?} -- pass --scope again to keep enforcement active"
+    )))
 }
 
 // --- identity / config resolution (impure; thin wrappers over env + git) ---
@@ -262,10 +360,10 @@ mod tests {
     fn acquire_free_target_then_held_by_other() {
         let c = mem();
         assert_eq!(
-            acquire(&c, "o/r", "issue#1", "a:1", None, 1000, TTL).unwrap(),
+            acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap(),
             Acquire::Acquired
         );
-        match acquire(&c, "o/r", "issue#1", "b:2", None, 1001, TTL).unwrap() {
+        match acquire(&c, "o/r", "issue#1", "b:2", None, None, 1001, TTL).unwrap() {
             Acquire::Held { owner, .. } => assert_eq!(owner, "a:1"),
             other => panic!("expected Held, got {other:?}"),
         }
@@ -274,9 +372,9 @@ mod tests {
     #[test]
     fn reacquiring_own_live_claim_is_idempotent_and_refreshes_heartbeat() {
         let c = mem();
-        acquire(&c, "o/r", "issue#1", "a:1", None, 1000, TTL).unwrap();
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
         assert_eq!(
-            acquire(&c, "o/r", "issue#1", "a:1", None, 1500, TTL).unwrap(),
+            acquire(&c, "o/r", "issue#1", "a:1", None, None, 1500, TTL).unwrap(),
             Acquire::Acquired
         );
         let hb: i64 = c
@@ -288,15 +386,15 @@ mod tests {
     #[test]
     fn stale_claim_is_stealable_but_fresh_one_is_not() {
         let c = mem();
-        acquire(&c, "o/r", "issue#1", "a:1", None, 1000, TTL).unwrap();
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
         // Well within TTL — cannot steal.
         assert!(matches!(
-            acquire(&c, "o/r", "issue#1", "b:2", None, 1000 + 100, TTL).unwrap(),
+            acquire(&c, "o/r", "issue#1", "b:2", None, None, 1000 + 100, TTL).unwrap(),
             Acquire::Held { .. }
         ));
         // Past the TTL — steal succeeds and ownership transfers.
         assert_eq!(
-            acquire(&c, "o/r", "issue#1", "b:2", None, 1000 + TTL + 1, TTL).unwrap(),
+            acquire(&c, "o/r", "issue#1", "b:2", None, None, 1000 + TTL + 1, TTL).unwrap(),
             Acquire::Acquired
         );
         let owner: String = c
@@ -308,10 +406,10 @@ mod tests {
     #[test]
     fn done_target_is_reacquirable_by_anyone() {
         let c = mem();
-        acquire(&c, "o/r", "issue#1", "a:1", None, 1000, TTL).unwrap();
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
         assert!(done(&c, "o/r", "issue#1", "a:1", 1100).unwrap());
         assert_eq!(
-            acquire(&c, "o/r", "issue#1", "b:2", None, 1200, TTL).unwrap(),
+            acquire(&c, "o/r", "issue#1", "b:2", None, None, 1200, TTL).unwrap(),
             Acquire::Acquired
         );
     }
@@ -319,7 +417,7 @@ mod tests {
     #[test]
     fn heartbeat_release_done_are_owner_scoped() {
         let c = mem();
-        acquire(&c, "o/r", "issue#1", "a:1", None, 1000, TTL).unwrap();
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
         assert!(!heartbeat(&c, "o/r", "issue#1", "b:2", 1100).unwrap());
         assert!(!release(&c, "o/r", "issue#1", "b:2").unwrap());
         assert!(!done(&c, "o/r", "issue#1", "b:2", 1100).unwrap());
@@ -330,8 +428,8 @@ mod tests {
     #[test]
     fn list_hides_stale_and_done_unless_requested() {
         let c = mem();
-        acquire(&c, "o/r", "issue#1", "a:1", None, 1000, TTL).unwrap();
-        acquire(&c, "o/r", "issue#2", "a:1", None, 1000, TTL).unwrap();
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
+        acquire(&c, "o/r", "issue#2", "a:1", None, None, 1000, TTL).unwrap();
         done(&c, "o/r", "issue#2", "a:1", 1000).unwrap();
         // At now well past issue#1's TTL, it is stale.
         let now = 1000 + TTL + 5;
@@ -345,12 +443,72 @@ mod tests {
     #[test]
     fn list_scopes_by_repo() {
         let c = mem();
-        acquire(&c, "o/r1", "issue#1", "a:1", None, 1000, TTL).unwrap();
-        acquire(&c, "o/r2", "issue#1", "a:1", None, 1000, TTL).unwrap();
+        acquire(&c, "o/r1", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
+        acquire(&c, "o/r2", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
         let r1 = list(&c, Some("o/r1"), true, 1000, TTL).unwrap();
         assert_eq!(r1.len(), 1);
         assert_eq!(r1[0].repo, "o/r1");
         assert_eq!(list(&c, None, true, 1000, TTL).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn acquire_persists_and_overwrites_scope() {
+        let c = mem();
+        let scope = vec!["crates/foo/".to_string()];
+        acquire(&c, "o/r", "issue#1", "a:1", None, Some(&scope), 1000, TTL).unwrap();
+        let claims = list(&c, Some("o/r"), true, 1000, TTL).unwrap();
+        assert_eq!(claims[0].scope, scope);
+
+        // Re-acquiring with no scope overwrites it back to unscoped, mirroring
+        // git_commit's always-overwrite behavior.
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
+        let claims = list(&c, Some("o/r"), true, 1000, TTL).unwrap();
+        assert!(claims[0].scope.is_empty());
+    }
+
+    #[test]
+    fn scope_clear_warning_fires_only_when_clearing_a_real_existing_scope() {
+        let c = mem();
+        let scope = vec!["crates/foo/".to_string()];
+
+        // No existing claim yet -- nothing to clear.
+        assert!(
+            scope_clear_warning(&c, "o/r", "issue#1", None)
+                .unwrap()
+                .is_none()
+        );
+
+        acquire(&c, "o/r", "issue#1", "a:1", None, Some(&scope), 1000, TTL).unwrap();
+
+        // Re-declaring a real scope isn't a clear.
+        let other_scope = vec!["crates/bar/".to_string()];
+        assert!(
+            scope_clear_warning(&c, "o/r", "issue#1", Some(&other_scope))
+                .unwrap()
+                .is_none()
+        );
+
+        // Re-acquiring with no scope WOULD clear the existing one -- warn.
+        let warning = scope_clear_warning(&c, "o/r", "issue#1", None)
+            .unwrap()
+            .expect("clearing a declared scope must warn");
+        assert!(warning.contains("crates/foo/"), "{warning}");
+
+        // Once cleared, re-checking with no scope is a no-op (nothing left to clear).
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
+        assert!(
+            scope_clear_warning(&c, "o/r", "issue#1", None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn list_defaults_missing_scope_to_empty() {
+        let c = mem();
+        acquire(&c, "o/r", "issue#1", "a:1", None, None, 1000, TTL).unwrap();
+        let claims = list(&c, Some("o/r"), true, 1000, TTL).unwrap();
+        assert!(claims[0].scope.is_empty());
     }
 
     #[test]
