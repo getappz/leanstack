@@ -74,6 +74,7 @@ pub fn scan(
         let name = entry
             .branch
             .as_deref()
+            .or(entry.detached_at.as_deref())
             .or_else(|| path.file_name().and_then(|n| n.to_str()))
             .unwrap_or("unknown")
             .to_string();
@@ -257,9 +258,14 @@ pub fn reclaim(repo_root: &Path, report: &DoctorReport, force: bool) -> Vec<Stri
                 );
                 continue;
             }
-            if std::fs::remove_dir_all(path).is_ok() {
-                let _ = crate::shell::run_in(repo_root, &["worktree", "prune"]);
-                reclaimed.push(lane.name.clone());
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => {
+                    let _ = crate::shell::run_in(repo_root, &["worktree", "prune"]);
+                    reclaimed.push(lane.name.clone());
+                }
+                Err(e) => {
+                    eprintln!("doctor: failed to reclaim '{}': {}", lane.name, e);
+                }
             }
         } else {
             reclaimed.push(lane.name.clone());
@@ -350,6 +356,10 @@ pub fn format_markdown(report: &DoctorReport) -> String {
 struct WorktreeEntry {
     path: String,
     branch: Option<String>,
+    /// Set instead of `branch` for a detached-HEAD worktree — kept separate
+    /// so detached lanes don't get run through branch-only checks
+    /// (`has_upstream`, duplicate-branch grouping) with a fake "branch name".
+    detached_at: Option<String>,
 }
 
 fn list_worktrees(repo_root: &Path) -> String {
@@ -360,12 +370,14 @@ fn parse_worktree_list(output: &str) -> Vec<WorktreeEntry> {
     let mut entries = Vec::new();
     let mut current_path: Option<String> = None;
     let mut current_branch: Option<String> = None;
+    let mut current_detached: Option<String> = None;
     for line in output.lines() {
         if line.trim().is_empty() {
             if let Some(path) = current_path.take() {
                 entries.push(WorktreeEntry {
                     path,
                     branch: current_branch.take(),
+                    detached_at: current_detached.take(),
                 });
             }
         } else if let Some(path) = line.strip_prefix("worktree ") {
@@ -373,6 +385,7 @@ fn parse_worktree_list(output: &str) -> Vec<WorktreeEntry> {
                 entries.push(WorktreeEntry {
                     path: prev_path,
                     branch: current_branch.take(),
+                    detached_at: current_detached.take(),
                 });
             }
             current_path = Some(path.to_string());
@@ -381,13 +394,14 @@ fn parse_worktree_list(output: &str) -> Vec<WorktreeEntry> {
         } else if let Some(rev) = line.strip_prefix("HEAD ")
             && current_branch.is_none()
         {
-            current_branch = Some(format!("detached at {rev}"));
+            current_detached = Some(format!("detached at {rev}"));
         }
     }
     if let Some(path) = current_path.take() {
         entries.push(WorktreeEntry {
             path,
             branch: current_branch.take(),
+            detached_at: current_detached.take(),
         });
     }
     entries
@@ -445,12 +459,25 @@ mod tests {
         let entries = parse_worktree_list(output);
         assert_eq!(entries.len(), 1);
         assert!(
+            entries[0].branch.is_none(),
+            "detached HEAD must not be reported as a branch"
+        );
+        assert!(
             entries[0]
-                .branch
+                .detached_at
                 .as_deref()
                 .unwrap_or("")
                 .contains("detached")
         );
+    }
+
+    #[test]
+    fn parse_worktree_list_detached_is_excluded_from_branch_checks() {
+        // A detached lane must not populate `branch`, since scan() gates
+        // has_upstream/branch_lanes checks on `entry.branch.is_some()`.
+        let output = "worktree /repo\nHEAD abc123\n";
+        let entries = parse_worktree_list(output);
+        assert_eq!(entries[0].branch, None);
     }
 
     #[test]

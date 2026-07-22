@@ -149,8 +149,8 @@ pub struct WorktreeAuditPruneArgs {
 #[derive(Args)]
 pub struct DoctorArgs {
     /// Output format: text, json, or markdown.
-    #[arg(long, default_value = "text")]
-    pub format: String,
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: DoctorFormat,
     /// Reclaim clean stale/orphaned/zombie worktrees.
     #[arg(long)]
     pub reclaim: bool,
@@ -160,6 +160,13 @@ pub struct DoctorArgs {
     /// Staleness threshold in days.
     #[arg(long, default_value_t = 14)]
     pub staleness_days: u64,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum DoctorFormat {
+    Text,
+    Json,
+    Markdown,
 }
 
 /// Canonical location: `~/.agentflare/githooks/`.
@@ -474,18 +481,20 @@ fn doctor_cmd(args: DoctorArgs) {
     let report = doctor::scan(&repo_root, args.staleness_days, &item_states);
     if args.reclaim {
         let reclaimed = doctor::reclaim(&repo_root, &report, args.force);
+        // Status lines go to stderr, not stdout -- `--format json` output on
+        // stdout must stay machine-parseable (e.g. piped to `jq`).
         if reclaimed.is_empty() {
-            println!("No reclaimable lanes found.");
+            eprintln!("No reclaimable lanes found.");
         } else {
             for name in &reclaimed {
-                println!("reclaimed: {}", name);
+                eprintln!("reclaimed: {}", name);
             }
         }
     }
-    match args.format.as_str() {
-        "json" => println!("{}", doctor::format_json(&report)),
-        "markdown" => println!("{}", doctor::format_markdown(&report)),
-        _ => println!("{}", doctor::format_text(&report)),
+    match args.format {
+        DoctorFormat::Json => println!("{}", doctor::format_json(&report)),
+        DoctorFormat::Markdown => println!("{}", doctor::format_markdown(&report)),
+        DoctorFormat::Text => println!("{}", doctor::format_text(&report)),
     }
     if !report.violations.is_empty() {
         std::process::exit(1);
