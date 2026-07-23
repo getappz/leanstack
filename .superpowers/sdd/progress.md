@@ -12,6 +12,45 @@ open_default (tempfile dev-dep unused until a later task); get() takes no
 PROJECT_ID scoping — brief-mandated signature, doc_get's safety in a shared
 global store unverifiable from this diff alone.)
 
+Task 2: complete (d013ec10..00b9eae6, review approved, no Critical/Important).
+Went through THREE design iterations, all human-directed, not implementer
+churn:
+  1. wreq (b1a2076c, original brief's choice) — abandoned: transitively
+     requires BoringSSL via boring-sys2 (NASM + matching CMake/VS generator
+     needed just to compile on Windows), and debug-profile `cargo test`
+     failed to LINK (MSVCRTD/_CrtDbgReport CRT mismatch, boring-sys2's CMake
+     invocation defaults to Debug which conflicts with Rust's always-release-
+     CRT linking) — only --release worked. Flagged to the human as a Risk to
+     escalate by both this session's controller and the Task-2 reviewer
+     independently.
+  2. reqwest+rustls-tls (cd53ee78) — human decided to swap off wreq for
+     Phase 1 (fingerprint-evasion was for FUTURE non-Rust HTML scraping, not
+     needed for docs.rs's plain JSON API). Fixed the debug-link issue
+     (Cargo.lock 490->448 packages, whole boring-sys2/tokio-boring2/NASM tree
+     gone). Still async (tokio+async-trait).
+  3. ureq (00b9eae6, FINAL) — human pointed out ureq is this repo's actual
+     house-standard HTTP client (6+ existing crates: agentflare-store,
+     agentflare-backend, flare-output, gateway-registry, skill-registry, root
+     binary), synchronous/blocking, no native-toolchain dependency at all.
+     Fetcher trait made synchronous (dropped tokio+async-trait entirely from
+     flare-docs); UreqFetcher mirrors the real pattern already in
+     crates/agentflare-store/src/embedding_pipeline/download.rs. Scratchpad
+     plan file updated in place (Tasks 3/4/5 code blocks + Tech
+     Stack/Architecture sections) to reflect sync fetch_and_store and drop
+     the tokio::task::block_in_place/tokio::runtime::Runtime bridges that
+     were only needed for an async Fetcher — Task 4/5 briefs not yet
+     generated at time of this edit, so no rework needed there.
+Reviewer independently verified (not just trusting reports): cargo test -p
+flare-docs passes 3/3 in debug profile with zero toolchain workaround, cargo
+tree -p flare-docs shows zero reqwest/wreq/tokio/async-trait in the crate's
+dependency graph, no workspace=true introduced, real ureq 2.x API used
+correctly (status/header/body extraction verified against actual source).
+Minor (plan-inherited, for final-review triage): fetch.rs's `!(200..300).
+contains(&status)` check is likely dead code since ureq's .call() already
+errors on non-2xx by default — belt-and-suspenders, not wrong, worth a
+comment; no dedicated UreqFetcher unit test (brief-mandated deferral to Task
+3's integration test — Task 3 reviewer should confirm that coverage lands).
+
 Task 1: complete (68cd5dd..df08c42, review approved — one Important finding
 resolved by controller as a false positive: brief's "Interfaces" line used
 gateway_registry::db:: as a fully-qualified-path label, not a public-API
