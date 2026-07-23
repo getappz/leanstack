@@ -6,6 +6,7 @@ mod artifact;
 mod asset;
 mod claim;
 mod comment;
+mod flare_docs;
 mod flare_git;
 mod handoff;
 pub(crate) mod item;
@@ -98,6 +99,13 @@ pub struct AgentflareMcp {
     /// Tests inject either a temp path (file-based) or `":memory:"` so
     /// they never touch ~/.agentflare/store.db.
     store_override: Option<std::path::PathBuf>,
+    /// Lazily-opened flare-docs store (separate file from `store`, see
+    /// crates/flare-docs — third-party package docs must not share a
+    /// table/file with project docs; different lifecycle/eviction policy).
+    flare_docs_store: std::sync::Mutex<Option<flare_docs::DocsStore>>,
+    /// Tests inject a temp path or ":memory:" so they never touch
+    /// ~/.agentflare/flare-docs.db.
+    flare_docs_store_override: Option<std::path::PathBuf>,
 }
 
 /// Resolve a flare-code mode (explicit arg, else active/default) and return a
@@ -780,6 +788,38 @@ impl AgentflareMcp {
         Ok(f(guard.as_ref().expect("ensure_store just initialized it")))
     }
 
+    fn ensure_flare_docs_store(&self) -> Result<(), ErrorData> {
+        let mut guard = self
+            .flare_docs_store
+            .lock()
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        if guard.is_some() {
+            return Ok(());
+        }
+        let store = match &self.flare_docs_store_override {
+            Some(path) if path == std::path::Path::new(":memory:") => {
+                flare_docs::DocsStore::open_memory()
+            }
+            Some(path) => flare_docs::DocsStore::open_file(path),
+            None => flare_docs::DocsStore::open_default(),
+        }
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        *guard = Some(store);
+        Ok(())
+    }
+
+    fn with_flare_docs_store<T>(
+        &self,
+        f: impl FnOnce(&flare_docs::DocsStore) -> T,
+    ) -> Result<T, ErrorData> {
+        self.ensure_flare_docs_store()?;
+        let guard = self
+            .flare_docs_store
+            .lock()
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(f(guard.as_ref().expect("ensure_flare_docs_store just initialized it")))
+    }
+
     /// The one and only workspace on this system: reused if it already
     /// exists, auto-created (named "default") on first use. Never exposed
     /// as an MCP parameter.
@@ -1196,6 +1236,14 @@ impl AgentflareMcp {
     )]
     fn memory(&self, Parameters(req): Parameters<MemoryRequest>) -> Result<String, ErrorData> {
         self.memory_impl(req)
+    }
+
+    // --- flare_docs tool ---
+    #[tool(
+        description = "On-demand third-party package/API documentation — search|get|list|refresh. Fetches and caches docs (Rust crates via docs.rs today) in a global store shared across all projects, separate from project-scoped documents."
+    )]
+    fn flare_docs(&self, Parameters(req): Parameters<FlareDocsRequest>) -> Result<String, ErrorData> {
+        self.flare_docs_impl(req)
     }
 
     #[tool(
