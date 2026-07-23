@@ -1242,8 +1242,8 @@ impl AgentflareMcp {
     #[tool(
         description = "On-demand third-party package/API documentation — search|get|list|refresh. Fetches and caches docs (Rust crates via docs.rs today) in a global store shared across all projects, separate from project-scoped documents."
     )]
-    fn flare_docs(&self, Parameters(req): Parameters<FlareDocsRequest>) -> Result<String, ErrorData> {
-        self.flare_docs_impl(req)
+    async fn flare_docs(&self, Parameters(req): Parameters<FlareDocsRequest>) -> Result<String, ErrorData> {
+        self.flare_docs_impl(req).await
     }
 
     #[tool(

@@ -1,4 +1,4 @@
-use crate::fetch::{decompress_zstd, FetchError, Fetcher};
+use crate::fetch::{decompress_zstd, FetchError, FetchedBytes, Fetcher};
 use crate::store::{DocsStore, Error as StoreError};
 use agentflare_store::documents::{DocUpsertOpts, Document};
 
@@ -56,6 +56,22 @@ pub fn fetch_and_store(
 ) -> Result<Document, RustdocError> {
     let url = docs_rs_json_url(crate_name, version);
     let fetched = fetcher.fetch(&url)?;
+    store_fetched(store, &fetched, crate_name, version)
+}
+
+/// Processes already-fetched rustdoc-JSON bytes (decompress, parse, store).
+///
+/// Split out from [`fetch_and_store`] so callers that need the network fetch
+/// to happen off the calling thread (e.g. the MCP server offloading it to
+/// `tokio::task::spawn_blocking`) can run the fetch alone, `.await` it, and
+/// only then do this fast local work — without ever holding a store lock (or
+/// any lock) across the blocking network call.
+pub fn store_fetched(
+    store: &DocsStore,
+    fetched: &FetchedBytes,
+    crate_name: &str,
+    version: &str,
+) -> Result<Document, RustdocError> {
     let decompressed = decompress_zstd(&fetched.bytes)?;
     let docstring = extract_root_docstring(&decompressed)?
         .unwrap_or_else(|| format!("(no crate-level documentation for {crate_name})"));
