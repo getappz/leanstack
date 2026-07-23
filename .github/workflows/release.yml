@@ -140,7 +140,13 @@ jobs:
       actions: read   # generator reads the workflow run for provenance
       id-token: write # OIDC keyless signing (same trust model as cosign)
       contents: write # attach the attestation to the release
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a # v2.1.0
+    # zizmor: ignore[unpinned-uses] tag ref is required here, not a hash -- see comment above
+    # The generator's own "fetch the builder" step derives the trusted builder
+    # release from this caller's ref and requires refs/tags/vX.Y.Z; a SHA pin
+    # fails with "Invalid ref: ... Expected ref of the form refs/tags/vX.Y.Z"
+    # (see internal/builders/generic/README.md "Referencing the SLSA
+    # generator"). This broke every release job from v1.4.0 through v1.6.0.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.release.outputs.hashes }}
       upload-assets: true
