@@ -65,6 +65,24 @@ Minor (plan-inherited): store_raw_json_blob is a boilerplate 1-line wrapper
 (brief-mandated); RustdocError::InvalidJson stringifies serde_json::Error
 instead of #[from]-wrapping it (brief-mandated simplification).
 
+Task 4: complete (87e01431..3c407e50, review approved, no Critical/Important).
+flare_docs MCP tool (search|get|list|refresh) wired into AgentflareMcp:
+flare_docs_store/flare_docs_store_override fields + ensure_flare_docs_store/
+with_flare_docs_store helpers mirror store/ensure_store/with_store exactly
+(confirmed against the real pre-existing pair) while entirely separate from
+it; FlareDocsRequest matches MemoryRequest's house style field-by-field; no
+async bridge anywhere (fetch_and_store called synchronously, per Task 2's
+ureq pivot); diff to mcp_server.rs confirmed surgical (mod line inserted
+alphabetically, no unrelated reformatting). One real deviation: `use` ->
+`pub(crate) use` in flare_docs.rs to fix mod flare_docs shadowing the
+flare_docs extern-prelude entry — correctly diagnosed root cause, not a
+workaround. 2/2 tests pass, using :memory: override (never touches real
+~/.agentflare/flare-docs.db). Reviewer noted the brief's own "Interfaces"
+line still says WreqFetcher (stale pre-pivot text, not an implementation
+defect - brief-authoring artifact only).
+Minor (plan-inherited): get/refresh arms near-identical boilerplate
+(verbatim brief code, follow-up could extract a serialize() helper).
+
 Task 1: complete (68cd5dd..df08c42, review approved — one Important finding
 resolved by controller as a false positive: brief's "Interfaces" line used
 gateway_registry::db:: as a fully-qualified-path label, not a public-API
