@@ -1,4 +1,4 @@
-use async_trait::async_trait;
+use std::io::Read;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
@@ -15,9 +15,8 @@ pub struct FetchedBytes {
     pub content_type: Option<String>,
 }
 
-#[async_trait]
 pub trait Fetcher: Send + Sync {
-    async fn fetch(&self, url: &str) -> Result<FetchedBytes, FetchError>;
+    fn fetch(&self, url: &str) -> Result<FetchedBytes, FetchError>;
 }
 
 pub fn decompress_zstd(bytes: &[u8]) -> Result<Vec<u8>, FetchError> {
@@ -44,51 +43,51 @@ mod tests {
     }
 }
 
-pub struct ReqwestFetcher {
-    client: reqwest::Client,
+const USER_AGENT: &str = concat!("flare-docs/", env!("CARGO_PKG_VERSION"));
+
+pub struct UreqFetcher {
+    agent: ureq::Agent,
 }
 
-impl ReqwestFetcher {
+impl UreqFetcher {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(std::time::Duration::from_secs(30))
+                .timeout_read(std::time::Duration::from_secs(300))
+                .build(),
         }
     }
 }
 
-impl Default for ReqwestFetcher {
+impl Default for UreqFetcher {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[async_trait]
-impl Fetcher for ReqwestFetcher {
-    async fn fetch(&self, url: &str) -> Result<FetchedBytes, FetchError> {
+impl Fetcher for UreqFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedBytes, FetchError> {
         let resp = self
-            .client
+            .agent
             .get(url)
-            .send()
-            .await
+            .set("User-Agent", USER_AGENT)
+            .call()
             .map_err(|e| FetchError::Http(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(FetchError::Http(format!("status {}", resp.status())));
+
+        let status = resp.status();
+        if !(200..300).contains(&status) {
+            return Err(FetchError::Http(format!("status {status}")));
         }
-        let etag = resp
-            .headers()
-            .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| FetchError::Http(e.to_string()))?
-            .to_vec();
+
+        let etag = resp.header("etag").map(|s| s.to_string());
+        let content_type = resp.header("content-type").map(|s| s.to_string());
+
+        let mut bytes = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut bytes)
+            .map_err(|e| FetchError::Http(e.to_string()))?;
+
         Ok(FetchedBytes {
             bytes,
             etag,

@@ -1094,15 +1094,13 @@ name = "flare-docs"
 version = "0.1.0"
 dependencies = [
  "agentflare-store",
- "async-trait",
  "dirs",
- "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
- "tokio",
+ "ureq 2.12.1",
  "zstd",
 ]
 
