@@ -51,6 +51,20 @@ errors on non-2xx by default — belt-and-suspenders, not wrong, worth a
 comment; no dedicated UreqFetcher unit test (brief-mandated deferral to Task
 3's integration test — Task 3 reviewer should confirm that coverage lands).
 
+Task 3: complete (00b9eae6..87e01431, review approved, no Critical/Important).
+docs.rs JSON resolver: docs_rs_json_url, extract_root_docstring, sync
+fetch_and_store tying Fetcher+decompress_zstd+DocsStore together, all through
+DocsStore's PROJECT_ID="global" facade (never a raw agentflare_store::Store
+call) — confirmed no async/tokio/async_trait leakage anywhere. One deviation
+(agentflare_store::documents::{Document, DocUpsertOpts} import path instead
+of brief's flat agentflare_store::{...}) verified necessary and consistent
+with Task 1's already-established lib.rs re-export pattern. 8/8 tests pass.
+Task 3's own fake-fetcher integration test confirmed real (only the network
+boundary is faked; zstd/JSON-parse/DocsStore/FTS all run for real).
+Minor (plan-inherited): store_raw_json_blob is a boilerplate 1-line wrapper
+(brief-mandated); RustdocError::InvalidJson stringifies serde_json::Error
+instead of #[from]-wrapping it (brief-mandated simplification).
+
 Task 1: complete (68cd5dd..df08c42, review approved — one Important finding
 resolved by controller as a false positive: brief's "Interfaces" line used
 gateway_registry::db:: as a fully-qualified-path label, not a public-API
