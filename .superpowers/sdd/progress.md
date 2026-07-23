@@ -172,6 +172,34 @@ Minor findings (not auto-fixed, for human triage before merge):
    even the theoretical redirect-amplification surface (defense-in-depth
    only, not a real vuln today).
 
+FINAL-REVIEW FIX (83f76add): blocking-runtime hazard fixed and re-reviewed,
+approved, no Critical/Important. flare_docs tool method made async, network
+fetch isolated to tokio::task::spawn_blocking using only an owned
+UreqFetcher+url (no self/store borrow crosses the spawn boundary -- no
+lifetime/Send hacks needed). fetch_and_store split into itself (unchanged
+signature/behavior, confirmed via CLI's zero-diff + 9/9 crate tests still
+passing) + new store_fetched (decompress/parse/store, called synchronously
+AFTER the spawn_blocking().await resolves -- traced: no std::sync::MutexGuard
+ever spans an .await). crates/flare-docs stayed fully sync (zero tokio in its
+Cargo.toml); search/list/get-by-id untouched; src/cli/docs.rs zero diff.
+JoinError (task panic) mapped distinctly from fetch error, not swallowed.
+744-test full workspace run + live MCP stdio concurrency smoke test (fast
+`list` calls return before a slow `get` completes) both independently
+reproduced by the reviewer (9/9 flare-docs, 2/2 flare_docs:: MCP-layer).
+Minor (not auto-fixed): the concurrency/non-freezing property has no
+committed regression test, only the ad-hoc (gitignored, uncommitted)
+mcp_smoke.py script -- a future regression wouldn't be caught by `cargo
+test`; get-by-id's `if req.id.is_some() { req.id.expect(...) }` restructure
+is a slightly indirect way to consume an Option vs `if let Some(id)`.
+
+ALL WORK COMPLETE: 5 tasks + 2 cross-task fixes (numeric-root-id parsing,
+blocking-runtime hazard), every task and fix individually reviewed and
+approved, final whole-branch review completed with its one Important finding
+fixed and re-approved. Full commit range: 4aee28c4..83f76add (feature scope;
+merge-base d503df01 also includes 2 unrelated already-merged PRs #313/#314
+at its base, not part of this feature). Next: superpowers:finishing-a-
+development-branch.
+
 Task 1: complete (68cd5dd..df08c42, review approved — one Important finding
 resolved by controller as a false positive: brief's "Interfaces" line used
 gateway_registry::db:: as a fully-qualified-path label, not a public-API
