@@ -5,6 +5,13 @@ Branch: task/325
 feature (gateway-search-execute, commits 68cd5dd..a8da060) — reset before
 starting this plan's execution.)
 
+Task 1: complete (4aee28c4..d013ec10, review approved, no Critical/Important.
+Minor (plan-inherited, for final-review triage): open_default() discards
+create_dir_all errors via `let _`; no test exercises open_file/default_db_path/
+open_default (tempfile dev-dep unused until a later task); get() takes no
+PROJECT_ID scoping — brief-mandated signature, doc_get's safety in a shared
+global store unverifiable from this diff alone.)
+
 Task 1: complete (68cd5dd..df08c42, review approved — one Important finding
 resolved by controller as a false positive: brief's "Interfaces" line used
 gateway_registry::db:: as a fully-qualified-path label, not a public-API
