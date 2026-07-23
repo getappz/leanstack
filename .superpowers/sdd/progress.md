@@ -110,6 +110,28 @@ Minor (plan-inherited): Get's --help text says "or read from cache" but
 always re-fetches (TTL/cache-check explicitly deferred); print_or_die-style
 error-handling boilerplate repeated per arm (brief-mandated verbatim code).
 
+Task 3 FIX (numeric root id): complete (0f8bc70b..e3ced028, review approved,
+no Critical/Important). extract_root_docstring now discriminates on the raw
+serde_json::Value for "root": Value::String kept as-is (no regression for
+existing string-root fixtures), Value::Number stringified before the index
+lookup (matches real docs.rs payload: root=3177 (bare number), index keyed
+by "3177"), any other type -> descriptive InvalidJson error, no panic path.
+9/9 tests pass, full workspace cargo build clean, LIVE cargo run -- docs get
+serde --version latest confirmed working end-to-end (real serde docstring
+returned). Diff scoped strictly to rustdoc.rs as directed.
+Minor: error message uses {other:?} Debug-dumps the whole Value for
+unexpected root types (could be verbose for Object/Array, not observed in
+practice); n.to_string() assumes integer JSON number, would mismatch if root
+were ever serialized as a float (theoretical, not observed in real payload).
+
+ALL 5 TASKS + 1 CROSS-TASK FIX COMPLETE. Full history: 4aee28c4 (base) ->
+d013ec10 (T1) -> b1a2076c/cd53ee78/00b9eae6 (T2, 3 design iterations:
+wreq->reqwest->ureq, human-directed) -> 87e01431 (T3) -> 3c407e50 (T4) ->
+0f8bc70b (T5) -> e3ced028 (T3 numeric-root-id fix, discovered via T5's live
+network smoke test). Next: final whole-branch review per
+superpowers:subagent-driven-development, then
+superpowers:finishing-a-development-branch.
+
 Task 1: complete (68cd5dd..df08c42, review approved — one Important finding
 resolved by controller as a false positive: brief's "Interfaces" line used
 gateway_registry::db:: as a fully-qualified-path label, not a public-API
