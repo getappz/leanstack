@@ -1,0 +1,19 @@
+[package]
+name = "flare-docs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "Apache-2.0"
+description = "On-demand third-party package/API documentation fetch, cache, and search for agentflare — global store, separate from project docs."
+publish = false
+
+[dependencies]
+agentflare-store = { path = "../agentflare-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+dirs = "6"
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
