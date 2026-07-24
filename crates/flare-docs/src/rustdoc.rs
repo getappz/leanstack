@@ -39,12 +39,26 @@ pub fn extract_root_docstring(json_bytes: &[u8]) -> Result<Option<String>, Rustd
             )));
         }
     };
-    let docs = value
+    // A missing index entry, or a "docs" field that's absent or the wrong
+    // type, is a malformed/unexpected response — treat it as an error, not
+    // as "no docs" (Value::Null). Conflating the two would let a malformed
+    // response silently overwrite a previously-cached, valid docstring with
+    // an empty placeholder on the next fetch_and_store.
+    let item = value
         .get("index")
         .and_then(|idx| idx.get(&root_key))
-        .and_then(|item| item.get("docs"))
-        .and_then(|d| d.as_str())
-        .map(|s| s.to_string());
+        .ok_or_else(|| {
+            RustdocError::InvalidJson(format!("missing root item {root_key:?} in \"index\""))
+        })?;
+    let docs = match item.get("docs") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(other) => {
+            return Err(RustdocError::InvalidJson(format!(
+                "root item \"docs\" has unexpected type: {other:?}"
+            )));
+        }
+    };
     Ok(docs)
 }
 
@@ -155,6 +169,44 @@ mod tests {
             docs,
             Some("A generic serialization/deserialization framework.".to_string())
         );
+    }
+
+    #[test]
+    fn errors_when_root_id_is_missing_from_index() {
+        // root points at "0:0", but that key doesn't exist in "index" at all
+        // (malformed/unexpected response shape) -- must not be silently
+        // treated the same as a legitimate "no docs" (docs: null) response,
+        // or a malformed fetch could overwrite a good cached docstring with
+        // an empty placeholder.
+        let fixture = br#"{
+            "root": "0:0",
+            "index": { "1:1": { "docs": "some other item" } }
+        }"#;
+        let result = extract_root_docstring(fixture);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn errors_when_docs_field_has_unexpected_type() {
+        let fixture = br#"{
+            "root": "0:0",
+            "index": { "0:0": { "docs": 42 } }
+        }"#;
+        let result = extract_root_docstring(fixture);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extracts_none_when_docs_field_is_absent() {
+        // rustdoc JSON commonly omits optional fields entirely (serde
+        // skip_serializing_if) rather than emitting `null` -- an absent
+        // "docs" key means the same thing as an explicit null: no docs.
+        let fixture = br#"{
+            "root": "0:0",
+            "index": { "0:0": {} }
+        }"#;
+        let docs = extract_root_docstring(fixture).unwrap();
+        assert_eq!(docs, None);
     }
 
     use crate::fetch::FetchedBytes;

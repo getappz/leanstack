@@ -141,7 +141,7 @@ agentflare_store::Store's doc methods directly or opens the shared store.db;
 ONE Important finding (real, invisible to any single task's diff): the
 blocking ureq fetch inside the sync #[tool] fn flare_docs runs INLINE on the
 MCP server's single-threaded (new_current_thread) tokio runtime -- rmcp's
-#[tool] macro only Box::pins async fns, so a sync fn's body (including a
+`#[tool]` macro only Box::pins async fns, so a sync fn's body (including a
 blocking network call) executes directly on the runtime thread with no
 spawn_blocking anywhere in rmcp's dispatch tree. A get/refresh freezes the
 WHOLE MCP server (transport, other tool calls, cancellation) for the fetch
