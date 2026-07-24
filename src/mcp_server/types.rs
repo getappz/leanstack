@@ -412,6 +412,29 @@ pub(crate) struct MemoryRequest {
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub(crate) struct FlareDocsRequest {
+    #[schemars(description = "Action: search|get|list|refresh")]
+    pub(crate) action: String,
+    #[schemars(description = "Search query text (search)")]
+    #[serde(default)]
+    pub(crate) query: Option<String>,
+    #[schemars(description = "Document id returned by search/list (get)")]
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[schemars(description = "Package/crate name to fetch or refresh (get, refresh)")]
+    #[serde(default)]
+    pub(crate) package: Option<String>,
+    #[schemars(
+        description = "Version requirement, e.g. \"latest\" or an exact semver (get, refresh); defaults to \"latest\""
+    )]
+    #[serde(default)]
+    pub(crate) version: Option<String>,
+    #[schemars(description = "Max results to return (search, list); defaults to 10")]
+    #[serde(default)]
+    pub(crate) limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub(crate) struct GitHubRequest {
     #[schemars(
         description = "Action: pr_create|pr_list|pr_get|pr_status|pr_merge|pr_comment|pr_request_review|issue_create|issue_list|issue_get|issue_comment|issue_close|issue_label|release_list|release_get|release_latest|release_create|run_list|run_get|run_rerun|workflow_dispatch"
